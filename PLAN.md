@@ -103,6 +103,20 @@ it's just an API key, no feasibility question to resolve. It's useful as:
 - A way to try other models (e.g. GPT, Llama) in either role without adding
   another provider integration later.
 
+**Update from Phase A infrastructure work:** `openrouter.ai` is itself
+blocked by this sandboxed environment's network egress policy (confirmed
+via both a direct `curl` through the configured proxy and `WebFetch` — both
+returned a policy denial, not a code/key problem). So the OpenRouter backend
+code is written and the user supplied a disposable `OPENROUTER_API_KEY`, but
+neither the key nor the requested default model (a cheap/fast DeepSeek
+model, "deepseek v4 flash") could be verified against OpenRouter's real
+`/models` list from inside this container. `DEFAULT_MODEL` is set to
+`deepseek/deepseek-v4-flash` as a best guess at the slug — **unverified,
+confirm at openrouter.ai/models** before Phase B relies on it. The supplied
+key was not committed anywhere; set `OPENROUTER_API_KEY` in your own
+environment (or a local, gitignored `.env`) wherever this actually runs
+with real network access.
+
 ### 4. Confidence / caveats
 
 - Claude findings are from Anthropic's own current docs (`code.claude.com`),
@@ -222,7 +236,10 @@ convention to keep in sync across three providers.
   Code, build → Antigravity, with OpenRouter as an override/fallback) —
   and how the user switches backends per run (config file vs CLI flag vs
   env var).
-- Pick default OpenRouter model(s) per role if that backend is selected.
+- Confirm the real OpenRouter slug for the requested cheap/fast DeepSeek
+  model — `deepseek/deepseek-v4-flash` is an unverified guess (openrouter.ai
+  is blocked from this sandbox); check https://openrouter.ai/models from an
+  environment that can actually reach it.
 - Define the exact commit message template/convention (e.g. goal line +
   plan summary + verify result in the body) so it stays consistent across
   runs and is easy for any backend to parse back out of `git log`.

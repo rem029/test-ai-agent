@@ -13,7 +13,12 @@ import httpx
 
 from .base import HealthCheckResult
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4.5"
+# Requested default: a cheap/fast DeepSeek model for the build role. This
+# exact slug is UNVERIFIED — openrouter.ai is blocked by this sandbox's
+# network egress policy (confirmed via curl and WebFetch), so it couldn't be
+# checked against OpenRouter's actual /models list. Confirm the real slug at
+# https://openrouter.ai/models before relying on this in Phase B.
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 API_BASE = "https://openrouter.ai/api/v1"
 
 
@@ -44,7 +49,9 @@ class OpenRouterBackend:
                 self.name, False, f"HTTP {resp.status_code}: {resp.text[:200]}"
             )
 
-        return HealthCheckResult(self.name, True, f"API key valid: {resp.json()}")
+        return HealthCheckResult(
+            self.name, True, f"API key valid, model={self.model}: {resp.json()}"
+        )
 
     def run(self, prompt: str, *, cwd: str) -> dict:
         raise NotImplementedError("run() lands in Phase B")
