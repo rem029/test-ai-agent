@@ -1,0 +1,18 @@
+# Copy to agentflow.config.yaml (gitignored) and adjust per role.
+# Each role can independently use: claude-code | antigravity | openrouter
+# Env var overrides win over this file: AGENTFLOW_<ROLE>_BACKEND / AGENTFLOW_<ROLE>_MODEL
+# Default mapping below is a starting point, not finalized — see PLAN.md, Open items.
+
+review:
+  backend: claude-code
+
+build:
+  backend: antigravity
+
+verify:
+  backend: claude-code
+
+# Example OpenRouter override for the build role:
+# build:
+#   backend: openrouter
+#   model: anthropic/claude-sonnet-4.5

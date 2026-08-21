@@ -74,6 +74,20 @@ Practical takeaway: drive the junior-dev role via the **Antigravity CLI in
 headless/non-interactive mode**, authenticated once with the user's Google
 account, mirroring the Claude side exactly.
 
+**Update from Phase A infrastructure work:** `google-antigravity` (the SDK)
+installs cleanly from PyPI in this sandbox and is confirmed to be exactly
+the Python library described above (`Agent`, `LocalAgentConfig`, etc.) — no
+bundled CLI binary, no console-script entry point. The actual `antigravity`
+CLI is not installable here: it is distributed from `antigravity.google`
+with an interactive browser-based OAuth login, and this sandboxed
+environment's network egress to that domain is blocked. `AntigravityBackend`
+therefore tries the CLI first and falls back to the SDK
+(GEMINI_API_KEY/Vertex) when the CLI isn't present, so infra can still be
+validated in CI/sandboxed environments — but reusing the actual Google
+subscription (Pro/Ultra rate limits) requires running the CLI path on a
+machine that can reach `antigravity.google` and complete the browser login,
+i.e. the user's own machine, not this container.
+
 ### 3. OpenRouter — straightforward, no open questions
 
 OpenRouter is a standard hosted API: one OpenAI-compatible endpoint
