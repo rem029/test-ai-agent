@@ -36,6 +36,7 @@ Goal: {goal}
 
 Plan:
 {plan}
+{context_section}
 {feedback_section}
 Make the necessary changes to the repository now."""
 
@@ -46,11 +47,51 @@ Goal: {goal}
 Plan that was implemented:
 {plan}
 
-Check the changes: run any relevant tests/lint, and judge whether the goal \
-was actually met. Respond with your findings, and end your response with \
-exactly one of these two lines:
+Actually run the relevant commands to check this - do not just read the code
+and judge whether it looks right. At minimum, run whatever confirms the
+changed code actually executes (for a Python CLI project, that means
+literally running the CLI, e.g. `uv run agentflow --check`, or importing the
+changed module: `uv run python -c "import agentflow.cli"`), and run any
+existing tests/lint. A file that "looks correct" but crashes when run is a
+FAIL. Respond with your findings, and end your response with exactly one of
+these two lines:
 VERIFY_RESULT: PASS
 VERIFY_RESULT: FAIL"""
+
+# Backends without a confirmed native file-reading tool (OpenRouter's plain
+# chat completion; Antigravity's SDK fallback) can't see the current repo -
+# left alone they rewrite files from guesswork instead of editing them. This
+# is what actually broke cli.py during Phase B's first live validation run
+# (see PLAN.md): the build backend invented APIs that didn't match the real
+# code because it never saw it. Backends with real tools (claude-code,
+# antigravity CLI) read the repo themselves, so they're excluded here.
+NO_NATIVE_TOOLS_BACKENDS = {"openrouter"}
+MAX_CONTEXT_BYTES = 60_000
+
+
+def _repo_context(cwd: str) -> str:
+    """Dump current contents of tracked source files, for backends with no Read tool."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "src"], cwd=cwd, capture_output=True, text=True, check=True
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+    parts = []
+    total = 0
+    for rel_path in result.stdout.splitlines():
+        path = Path(cwd) / rel_path
+        try:
+            content = path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        block = f"--- {rel_path} ---\n{content}\n"
+        if total + len(block) > MAX_CONTEXT_BYTES:
+            break
+        parts.append(block)
+        total += len(block)
+    return "\n".join(parts)
 
 
 def _build_backend(role_config: RoleConfig):
@@ -138,10 +179,21 @@ def run_workflow(goal: str, config: Config, cwd: str) -> RunState:
     verified = False
     for iteration in range(1, config.max_iterations + 1):
         print(f"[build] iteration {iteration}/{config.max_iterations}")
+
+        # Re-read on every iteration - a prior iteration may have changed
+        # files, and a stale dump would be as misleading as no context.
+        context_section = ""
+        if config.build.backend in NO_NATIVE_TOOLS_BACKENDS:
+            context = _repo_context(cwd)
+            if context:
+                context_section = f"\nCurrent contents of the repository's source files:\n{context}\n"
+
         feedback_section = (
             f"\nFeedback from the previous attempt:\n{feedback}\n" if feedback else ""
         )
-        build_prompt = BUILD_PROMPT.format(goal=goal, plan=plan, feedback_section=feedback_section)
+        build_prompt = BUILD_PROMPT.format(
+            goal=goal, plan=plan, context_section=context_section, feedback_section=feedback_section
+        )
         build_result = build_backend.run(build_prompt, cwd=cwd, mode="write")
         state.steps.append(_record("build", "write", iteration, build_result))
         state.save(cwd)

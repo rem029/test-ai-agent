@@ -1,76 +1,75 @@
-"""Command-line interface for agentflow: a multi-agent software development workflow orchestrator."""
+"""agentflow CLI entrypoint.
+
+Usage model (see PLAN.md, Interface section): cd into the target repo, then
+run `agentflow "<goal>"`, same pattern as `claude`.
+"""
+
+from __future__ import annotations
 
 import argparse
-import sys
 import importlib.metadata
+import os
+import sys
 
 from .backends import BACKENDS
 from .config import DEFAULT_CONFIG_PATH, load_config
 from .orchestrator import run_workflow
 
 
-def _build_backend(config):
-    """Build the backend instance from configuration."""
-    backend_name = config.get("backend", "anthropic")
-    backend_cls = BACKENDS.get(backend_name)
-    if not backend_cls:
-        print(f"Error: Unknown backend '{backend_name}'. Available backends: {', '.join(BACKENDS.keys())}", file=sys.stderr)
-        sys.exit(1)
-    return backend_cls(config.get(backend_name, {}))
+def _build_backend(role_name: str, role_config):
+    backend_cls = BACKENDS[role_config.backend]
+    return backend_cls(model=role_config.model)
 
 
-def run_checks(config):
-    """Run health checks on all configured backends."""
-    for name, backend_cls in BACKENDS.items():
-        backend_config = config.get(name, {})
-        if not backend_config:
-            print(f"  {name}: not configured (skipped)")
-            continue
-        try:
-            backend = backend_cls(backend_config)
-            backend.check()
-            print(f"  {name}: OK")
-        except Exception as e:
-            print(f"  {name}: FAIL ({e})")
+def run_checks(config_path: str) -> int:
+    config = load_config(config_path)
+
+    seen: dict[str, object] = {}
+    for role_name, role_config in config.roles().items():
+        key = f"{role_config.backend}:{role_config.model or ''}"
+        if key not in seen:
+            seen[key] = (role_name, _build_backend(role_name, role_config))
+
+    ok = True
+    for _, (role_name, backend) in seen.items():
+        result = backend.health_check()
+        status = "OK" if result.ok else "FAIL"
+        print(f"[{status}] {role_name} -> {result.backend}: {result.detail}")
+        ok = ok and result.ok
+
+    return 0 if ok else 1
 
 
-def main(argv=None):
-    """Main entry point for the agentflow CLI."""
-    parser = argparse.ArgumentParser(
-        description="agentflow: Multi-agent software development workflow orchestrator"
-    )
-    parser.add_argument("--version", action="store_true", help="Print the installed agentflow version and exit")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="agentflow")
+    parser.add_argument("goal", nargs="?", help="The goal to work toward")
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG_PATH,
-        help=f"Path to config file (default: {DEFAULT_CONFIG_PATH})",
+        help=f"Path to backend config (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Check backend connectivity and configuration",
+        help="Validate that each configured backend is installed/authenticated",
     )
-    parser.add_argument("goal", nargs="?", help="The software development goal to accomplish")
-
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print the installed agentflow version and exit",
+    )
     args = parser.parse_args(argv)
 
     if args.version:
         print(importlib.metadata.version("agentflow"))
         return 0
 
+    if args.check or not args.goal:
+        return run_checks(args.config)
+
     config = load_config(args.config)
-
-    if args.check:
-        run_checks(config)
-        return 0
-
-    if args.goal:
-        backend = _build_backend(config)
-        run_workflow(goal=args.goal, backend=backend, config=config)
-        return 0
-
-    parser.print_help()
-    return 0
+    state = run_workflow(args.goal, config, cwd=os.getcwd())
+    return 0 if state.pushed and state.pushed.get("pushed") else 1
 
 
 if __name__ == "__main__":
