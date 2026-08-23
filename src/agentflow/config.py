@@ -33,6 +33,7 @@ class Config(BaseModel):
     review: RoleConfig
     build: RoleConfig
     verify: RoleConfig
+    max_iterations: int = 3
 
     def roles(self) -> dict[str, RoleConfig]:
         return {"review": self.review, "build": self.build, "verify": self.verify}
@@ -73,4 +74,11 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     for role, default in DEFAULTS.items():
         data = file_data.get(role, default.model_dump())
         roles[role] = _env_override(role, data)
+
+    max_iterations = file_data.get("max_iterations")
+    if os.environ.get("AGENTFLOW_MAX_ITERATIONS"):
+        max_iterations = int(os.environ["AGENTFLOW_MAX_ITERATIONS"])
+    if max_iterations is not None:
+        roles["max_iterations"] = max_iterations
+
     return Config(**roles)

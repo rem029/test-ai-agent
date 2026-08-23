@@ -2,19 +2,17 @@
 
 Usage model (see PLAN.md, Interface section): cd into the target repo, then
 run `agentflow "<goal>"`, same pattern as `claude`.
-
-Phase A only wires up infrastructure — `--check` validates that each
-configured backend is installed/authenticated. The actual review -> build ->
-verify -> iterate -> push loop lands in Phase B.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from .backends import BACKENDS
 from .config import DEFAULT_CONFIG_PATH, load_config
+from .orchestrator import run_workflow
 
 
 def _build_backend(role_name: str, role_config):
@@ -59,11 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.check or not args.goal:
         return run_checks(args.config)
 
-    print(
-        "Phase B (build/test/verify/iterate/push loop) isn't implemented yet.\n"
-        "Run `agentflow --check` to validate backend connectivity for now."
-    )
-    return 0
+    config = load_config(args.config)
+    state = run_workflow(args.goal, config, cwd=os.getcwd())
+    return 0 if state.pushed and state.pushed.get("pushed") else 1
 
 
 if __name__ == "__main__":
