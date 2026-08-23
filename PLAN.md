@@ -275,20 +275,44 @@ any orchestration logic is built on top of it.
 8. Commit infrastructure scaffolding, stop, and let the user review before
    Phase B starts.
 
-### Phase B — Core orchestrator loop (after Phase A review)
+### Phase B — Core orchestrator loop (done)
 
-- Implement `run(prompt, tools, cwd) -> structured result` for real on each
-  backend.
-- Implement the review/plan → build → test/verify → iterate → push steps
-  described above, wired to the config from Phase A.
-- Define the commit message convention from the open items and use it for
-  the push step.
+- Implemented `run(prompt, cwd, mode) -> RunResult` for real on each backend
+  (`mode` is "read"/"write"/"verify"; see `backends/base.py`).
+- Implemented review → build → verify → iterate → push in `orchestrator.py`,
+  wired to Phase A's config. Commit message includes goal/plan/verify
+  result per the memory-via-git-history design above.
+- Every step's `Usage` is persisted to `.agentflow/runs/<id>.json`
+  (gitignored) and summarized at the end of each run.
 
-### Phase C — Validate end-to-end on a toy task
+**Live validation caught a real bug, now fixed** (see Phase C below for the
+full story): the first real run pushed a commit that broke `cli.py`, because
+`OpenRouterBackend` has no file-reading tool and rewrote the file from
+guesswork. Fixed by (1) dumping current `src/` contents into the build
+prompt for backends without confirmed native tools, and (2) requiring verify
+to actually *run* the changed code, not just read it.
 
-- Run the full loop on a small real goal in this repo, confirm it produces
-  a sensible plan, a working change, a passing verify step, and a
-  descriptive commit pushed to a branch.
+### Phase C — Validate end-to-end on a toy task (done)
+
+Ran the full loop twice against this repo on `phase-b`, build on
+`openrouter`/`deepseek-v4-flash`, review+verify on `claude-code`:
+
+1. **First run** (goal: add `--version` to `cli.py`) — the loop mechanically
+   worked (plan → build → verify PASS → commit → push), but the pushed
+   commit was actually broken: DeepSeek invented APIs that didn't match the
+   real `Config`/`Backend` classes, and Claude's verify step said "compiles
+   cleanly" without actually running anything. Caught by manually testing
+   `agentflow --check` after the "successful" run.
+2. Fixed the two root causes in `orchestrator.py` (repo-context injection
+   for tool-less backends; verify prompt now requires actually executing
+   the code).
+3. **Second run** (goal: reject a missing `--config` path) — build correctly
+   read and edited the real file this time; verify's PASS was independently
+   re-checked by hand (`agentflow --config missing.yaml`, `--version`,
+   `--check` all behave correctly). Confirms the fix.
+
+Take-away for any future non-tool-using backend (or any backend, really):
+don't trust a self-reported PASS without spot-checking at least once.
 
 ### Phase D — Optional web viewer (later, only if still wanted)
 
@@ -297,6 +321,9 @@ any orchestration logic is built on top of it.
 
 ## Status
 
-Feasibility confirmed. The user has approved moving forward: execute Phase A
-(infrastructure) now, commit the results, and stop for review before Phase B
-(core orchestrator loop) begins.
+Phases A, B, and C are done. Branch structure: `dev` is the source of truth
+(currently equal to `phase-a`); `phase-b` (branched from `dev`) has the
+working core loop, validated live twice against this repo, with one real
+bug found and fixed along the way. Not yet merged back to `dev` — pending
+user review of Phase B before that merge, matching the same
+merge-before-next-phase workflow used for Phase A.
