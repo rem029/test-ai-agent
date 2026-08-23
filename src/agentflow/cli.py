@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("goal", nargs="?", help="The goal to work toward")
     parser.add_argument(
         "--config",
-        default=DEFAULT_CONFIG_PATH,
+        default=None,
         help=f"Path to backend config (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
@@ -60,14 +60,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # If user explicitly passed --config but the path does not exist, error out
+    if args.config is not None and not os.path.isfile(args.config):
+        print(f"Error: config file not found: {args.config}", file=sys.stderr)
+        return 1
+
+    # Compute the effective config path (user-provided or default)
+    config_path = args.config if args.config is not None else DEFAULT_CONFIG_PATH
+
     if args.version:
         print(importlib.metadata.version("agentflow"))
         return 0
 
     if args.check or not args.goal:
-        return run_checks(args.config)
+        return run_checks(config_path)
 
-    config = load_config(args.config)
+    config = load_config(config_path)
     state = run_workflow(args.goal, config, cwd=os.getcwd())
     return 0 if state.pushed and state.pushed.get("pushed") else 1
 
