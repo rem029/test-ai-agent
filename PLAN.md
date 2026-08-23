@@ -103,19 +103,24 @@ it's just an API key, no feasibility question to resolve. It's useful as:
 - A way to try other models (e.g. GPT, Llama) in either role without adding
   another provider integration later.
 
-**Update from Phase A infrastructure work:** `openrouter.ai` is itself
-blocked by this sandboxed environment's network egress policy (confirmed
-via both a direct `curl` through the configured proxy and `WebFetch` — both
-returned a policy denial, not a code/key problem). So the OpenRouter backend
-code is written and the user supplied a disposable `OPENROUTER_API_KEY`, but
-neither the key nor the requested default model (a cheap/fast DeepSeek
-model, "deepseek v4 flash") could be verified against OpenRouter's real
-`/models` list from inside this container. `DEFAULT_MODEL` is set to
-`deepseek/deepseek-v4-flash` as a best guess at the slug — **unverified,
-confirm at openrouter.ai/models** before Phase B relies on it. The supplied
-key was not committed anywhere; set `OPENROUTER_API_KEY` in your own
-environment (or a local, gitignored `.env`) wherever this actually runs
-with real network access.
+**Update from Phase A infrastructure work:** `openrouter.ai` was blocked by
+the original sandboxed session's network egress policy (confirmed via both
+`curl` and `WebFetch` — a policy denial, not a code/key problem), so the
+default model slug shipped as an unverified guess.
+
+**Verified since, from the user's own code server (real network access):**
+- The supplied disposable key is valid ($2 limit, expires 2026-08-28).
+- `deepseek/deepseek-v4-flash` is a real OpenRouter slug — confirmed against
+  the live `/models` list (1M context, ~$0.05 / $0.10 per M input/output
+  tokens). The guess was correct.
+- A real `/chat/completions` call against it succeeds, and the response's
+  `usage` object includes `cost` directly (no separate pricing lookup
+  needed) — confirms the "Cost & token tracking per task" design below.
+- `agentflow --check` passes for real on that machine for both `claude-code`
+  and `openrouter`.
+
+The key itself was never committed anywhere — it only ever lived in a shell
+env var and a gitignored local `agentflow.config.yaml`.
 
 ### 4. Confidence / caveats
 
@@ -236,10 +241,6 @@ convention to keep in sync across three providers.
   Code, build → Antigravity, with OpenRouter as an override/fallback) —
   and how the user switches backends per run (config file vs CLI flag vs
   env var).
-- Confirm the real OpenRouter slug for the requested cheap/fast DeepSeek
-  model — `deepseek/deepseek-v4-flash` is an unverified guess (openrouter.ai
-  is blocked from this sandbox); check https://openrouter.ai/models from an
-  environment that can actually reach it.
 - Define the exact commit message template/convention (e.g. goal line +
   plan summary + verify result in the body) so it stays consistent across
   runs and is easy for any backend to parse back out of `git log`.

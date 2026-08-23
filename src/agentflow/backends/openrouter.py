@@ -13,11 +13,12 @@ import httpx
 
 from .base import HealthCheckResult
 
-# Requested default: a cheap/fast DeepSeek model for the build role. This
-# exact slug is UNVERIFIED — openrouter.ai is blocked by this sandbox's
-# network egress policy (confirmed via curl and WebFetch), so it couldn't be
-# checked against OpenRouter's actual /models list. Confirm the real slug at
-# https://openrouter.ai/models before relying on this in Phase B.
+# Requested default: a cheap/fast DeepSeek model for the build role.
+# Verified against OpenRouter's live /models and /chat/completions from a
+# machine with real network access (this sandbox blocks openrouter.ai) —
+# it's a real slug, 1M context, ~$0.05/$0.10 per M input/output tokens, and
+# chat completion responses include usage.cost directly (see PLAN.md,
+# Findings #3 and "Cost & token tracking per task").
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 API_BASE = "https://openrouter.ai/api/v1"
 
@@ -35,11 +36,19 @@ class OpenRouterBackend:
                 self.name, False, "OPENROUTER_API_KEY is not set"
             )
 
+        headers = {"Authorization": f"Bearer {api_key}"}
+
         try:
-            resp = httpx.get(
-                f"{API_BASE}/key",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=15,
+            resp = httpx.post(
+                f"{API_BASE}/chat/completions",
+                headers=headers,
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "user", "content": "Reply with exactly one word: pong"}
+                    ],
+                },
+                timeout=30,
             )
         except httpx.HTTPError as exc:
             return HealthCheckResult(self.name, False, f"request failed: {exc}")
@@ -49,8 +58,13 @@ class OpenRouterBackend:
                 self.name, False, f"HTTP {resp.status_code}: {resp.text[:200]}"
             )
 
+        payload = resp.json()
+        usage = payload.get("usage", {})
         return HealthCheckResult(
-            self.name, True, f"API key valid, model={self.model}: {resp.json()}"
+            self.name,
+            True,
+            f"model={self.model}, tokens={usage.get('total_tokens')}, "
+            f"cost_usd={usage.get('cost')}",
         )
 
     def run(self, prompt: str, *, cwd: str) -> dict:
