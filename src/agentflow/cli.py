@@ -2,19 +2,18 @@
 
 Usage model (see PLAN.md, Interface section): cd into the target repo, then
 run `agentflow "<goal>"`, same pattern as `claude`.
-
-Phase A only wires up infrastructure — `--check` validates that each
-configured backend is installed/authenticated. The actual review -> build ->
-verify -> iterate -> push loop lands in Phase B.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import os
 import sys
 
 from .backends import BACKENDS
 from .config import DEFAULT_CONFIG_PATH, load_config
+from .orchestrator import run_workflow
 
 
 def _build_backend(role_name: str, role_config):
@@ -46,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("goal", nargs="?", help="The goal to work toward")
     parser.add_argument(
         "--config",
-        default=DEFAULT_CONFIG_PATH,
+        default=None,
         help=f"Path to backend config (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
@@ -54,16 +53,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Validate that each configured backend is installed/authenticated",
     )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print the installed agentflow version and exit",
+    )
     args = parser.parse_args(argv)
 
-    if args.check or not args.goal:
-        return run_checks(args.config)
+    # If user explicitly passed --config but the path does not exist, error out
+    if args.config is not None and not os.path.isfile(args.config):
+        print(f"Error: config file not found: {args.config}", file=sys.stderr)
+        return 1
 
-    print(
-        "Phase B (build/test/verify/iterate/push loop) isn't implemented yet.\n"
-        "Run `agentflow --check` to validate backend connectivity for now."
-    )
-    return 0
+    # Compute the effective config path (user-provided or default)
+    config_path = args.config if args.config is not None else DEFAULT_CONFIG_PATH
+
+    if args.version:
+        print(importlib.metadata.version("agentflow"))
+        return 0
+
+    if args.check or not args.goal:
+        return run_checks(config_path)
+
+    config = load_config(config_path)
+    state = run_workflow(args.goal, config, cwd=os.getcwd())
+    return 0 if state.pushed and state.pushed.get("pushed") else 1
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import os
 
 import httpx
 
-from .base import HealthCheckResult
+from .base import FILE_BLOCK_INSTRUCTIONS, HealthCheckResult, RunResult, Usage, apply_file_blocks
 
 # Requested default: a cheap/fast DeepSeek model for the build role.
 # Verified against OpenRouter's live /models and /chat/completions from a
@@ -67,5 +67,52 @@ class OpenRouterBackend:
             f"cost_usd={usage.get('cost')}",
         )
 
-    def run(self, prompt: str, *, cwd: str) -> dict:
-        raise NotImplementedError("run() lands in Phase B")
+    def run(self, prompt: str, *, cwd: str, mode: str = "read") -> RunResult:
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            return RunResult(False, "OPENROUTER_API_KEY is not set", self._empty_usage(), {})
+
+        write = mode == "write"
+        full_prompt = f"{prompt}\n\n{FILE_BLOCK_INSTRUCTIONS}" if write else prompt
+
+        try:
+            resp = httpx.post(
+                f"{API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": full_prompt}],
+                },
+                timeout=120,
+            )
+        except httpx.HTTPError as exc:
+            return RunResult(False, f"request failed: {exc}", self._empty_usage(), {})
+
+        if resp.status_code != 200:
+            return RunResult(
+                False, f"HTTP {resp.status_code}: {resp.text[:500]}", self._empty_usage(), {}
+            )
+
+        payload = resp.json()
+        text = payload["choices"][0]["message"]["content"] or ""
+        usage = self._extract_usage(payload)
+
+        written: list[str] = []
+        if write:
+            written = apply_file_blocks(text, cwd)
+
+        summary = text if not write else f"wrote {len(written)} file(s): {', '.join(written)}"
+        return RunResult(True, summary, usage, payload)
+
+    def _empty_usage(self) -> Usage:
+        return Usage(self.name, self.model, None, None, None)
+
+    def _extract_usage(self, payload: dict) -> Usage:
+        usage = payload.get("usage", {})
+        return Usage(
+            backend=self.name,
+            model=self.model,
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+            cost_usd=usage.get("cost"),
+        )

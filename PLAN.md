@@ -139,6 +139,35 @@ env var and a gitignored local `agentflow.config.yaml`.
   the user's Pro/Ultra plan matters for iteration speed, and this should be
   watched once running for real.
 
+## Orchestrator
+
+Naming this explicitly since "who is running this?" wasn't previously
+spelled out as its own concept: **the orchestrator is `agentflow` itself —
+plain Python control flow, not an LLM or agent.** Concretely, it's
+`orchestrator.py`'s `run_workflow()`, invoked by `cli.py` when you run
+`agentflow "<goal>"`.
+
+It is deterministic code that calls out to whichever LLM backend is
+configured for each role, and makes every control decision itself:
+
+- Calls the **review** backend, gets a plan back as text.
+- Calls the **build** backend with that plan.
+- Calls the **verify** backend and parses its own `VERIFY_RESULT: PASS/FAIL`
+  line out of the response — the orchestrator decides pass/fail from that
+  parse, it does not ask another LLM to judge.
+- Loops build → verify with feedback on FAIL, up to `config.max_iterations`.
+- Runs `git commit`/`git push` itself once verified — a subprocess call,
+  not something it delegates to a backend.
+- Records each step's `Usage` and writes the run-state JSON.
+
+No review/build/verify role is "in charge" of the run; they're workers the
+orchestrator calls and evaluates. This keeps the control loop reproducible
+and auditable regardless of which backend is doing the actual work — the
+same principle behind Bernstein's "no model in the coordination loop"
+design (see the open-source landscape note below), arrived at
+independently here for the same reason: an LLM deciding its own retry/pass
+logic is exactly the failure mode Phase B's live test caught (see Phase C).
+
 ## Recommended architecture (for a later implementation phase)
 
 A Python orchestrator (matches the user's language choice) built around a
@@ -245,6 +274,33 @@ convention to keep in sync across three providers.
   plan summary + verify result in the body) so it stays consistent across
   runs and is easy for any backend to parse back out of `git log`.
 
+## Open-source landscape (related projects)
+
+Checked after Phase C, since it's worth knowing what already exists before
+investing further. Both verified directly (repo/docs fetched, not taken
+from search snippets alone):
+
+- **[OpenCode](https://github.com/sst/opencode)** — closest mature match.
+  200k+ stars, actively maintained, genuinely provider-agnostic (Claude,
+  Gemini, OpenRouter, Bedrock, local via Ollama). Already has a "plan"
+  (read-only) vs "build" (full access) agent-mode split — the same
+  read/write role separation used here.
+- **[Bernstein](https://github.com/sipyourdrink-ltd/bernstein)** —
+  conceptually closer to this project's specific shape: goal → tasks →
+  multiple pluggable CLI coding-agent backends (Claude Code, Codex, Gemini
+  CLI, 40+ adapters), each in an isolated git worktree, tests/lint gating
+  the merge, "no model in the coordination loop" (see the Orchestrator
+  section above). Newer/smaller (beta, single maintainer) than OpenCode —
+  promising, not as proven.
+- **[awesome-cli-coding-agents](https://github.com/bradAGI/awesome-cli-coding-agents)**
+  — curated list for browsing the wider space (Aider, Goose, SWE-agent,
+  etc.) if this project's scope ever needs re-justifying against it.
+
+What this project does that neither documents as a built-in: subscription-
+vs-API-key billing as a first-class design constraint (Findings #1/#2), and
+per-role token/cost tracking from day one (see "Cost & token tracking per
+task").
+
 ## Task breakdown
 
 Broken into phases so infrastructure lands first and can be reviewed before
@@ -275,20 +331,44 @@ any orchestration logic is built on top of it.
 8. Commit infrastructure scaffolding, stop, and let the user review before
    Phase B starts.
 
-### Phase B — Core orchestrator loop (after Phase A review)
+### Phase B — Core orchestrator loop (done)
 
-- Implement `run(prompt, tools, cwd) -> structured result` for real on each
-  backend.
-- Implement the review/plan → build → test/verify → iterate → push steps
-  described above, wired to the config from Phase A.
-- Define the commit message convention from the open items and use it for
-  the push step.
+- Implemented `run(prompt, cwd, mode) -> RunResult` for real on each backend
+  (`mode` is "read"/"write"/"verify"; see `backends/base.py`).
+- Implemented review → build → verify → iterate → push in `orchestrator.py`,
+  wired to Phase A's config. Commit message includes goal/plan/verify
+  result per the memory-via-git-history design above.
+- Every step's `Usage` is persisted to `.agentflow/runs/<id>.json`
+  (gitignored) and summarized at the end of each run.
 
-### Phase C — Validate end-to-end on a toy task
+**Live validation caught a real bug, now fixed** (see Phase C below for the
+full story): the first real run pushed a commit that broke `cli.py`, because
+`OpenRouterBackend` has no file-reading tool and rewrote the file from
+guesswork. Fixed by (1) dumping current `src/` contents into the build
+prompt for backends without confirmed native tools, and (2) requiring verify
+to actually *run* the changed code, not just read it.
 
-- Run the full loop on a small real goal in this repo, confirm it produces
-  a sensible plan, a working change, a passing verify step, and a
-  descriptive commit pushed to a branch.
+### Phase C — Validate end-to-end on a toy task (done)
+
+Ran the full loop twice against this repo on `phase-b`, build on
+`openrouter`/`deepseek-v4-flash`, review+verify on `claude-code`:
+
+1. **First run** (goal: add `--version` to `cli.py`) — the loop mechanically
+   worked (plan → build → verify PASS → commit → push), but the pushed
+   commit was actually broken: DeepSeek invented APIs that didn't match the
+   real `Config`/`Backend` classes, and Claude's verify step said "compiles
+   cleanly" without actually running anything. Caught by manually testing
+   `agentflow --check` after the "successful" run.
+2. Fixed the two root causes in `orchestrator.py` (repo-context injection
+   for tool-less backends; verify prompt now requires actually executing
+   the code).
+3. **Second run** (goal: reject a missing `--config` path) — build correctly
+   read and edited the real file this time; verify's PASS was independently
+   re-checked by hand (`agentflow --config missing.yaml`, `--version`,
+   `--check` all behave correctly). Confirms the fix.
+
+Take-away for any future non-tool-using backend (or any backend, really):
+don't trust a self-reported PASS without spot-checking at least once.
 
 ### Phase D — Optional web viewer (later, only if still wanted)
 
@@ -297,6 +377,9 @@ any orchestration logic is built on top of it.
 
 ## Status
 
-Feasibility confirmed. The user has approved moving forward: execute Phase A
-(infrastructure) now, commit the results, and stop for review before Phase B
-(core orchestrator loop) begins.
+Phases A, B, and C are done. Branch structure: `dev` is the source of truth
+(currently equal to `phase-a`); `phase-b` (branched from `dev`) has the
+working core loop, validated live twice against this repo, with one real
+bug found and fixed along the way. Not yet merged back to `dev` — pending
+user review of Phase B before that merge, matching the same
+merge-before-next-phase workflow used for Phase A.

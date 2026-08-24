@@ -21,11 +21,12 @@ Two ways to reach Antigravity, tried in this order:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
 
-from .base import HealthCheckResult
+from .base import FILE_BLOCK_INSTRUCTIONS, HealthCheckResult, RunResult, Usage, apply_file_blocks
 
 
 class AntigravityBackend:
@@ -92,5 +93,69 @@ class AntigravityBackend:
             "connectivity not exercised yet, see PLAN.md Phase B",
         )
 
-    def run(self, prompt: str, *, cwd: str) -> dict:
-        raise NotImplementedError("run() lands in Phase B")
+    def run(self, prompt: str, *, cwd: str, mode: str = "read") -> RunResult:
+        if shutil.which("antigravity"):
+            return self._run_cli(prompt, cwd=cwd, mode=mode)
+        return self._run_sdk(prompt, cwd=cwd, mode=mode)
+
+    def _run_cli(self, prompt: str, *, cwd: str, mode: str) -> RunResult:
+        # UNVERIFIED: the real antigravity CLI's flags for scoping tool
+        # access (read-only vs write) are not confirmed - see PLAN.md open
+        # items. This assumes cwd alone scopes file operations, matching
+        # claude -p's behavior, and does not pass a write/permission flag.
+        try:
+            proc = subprocess.run(
+                ["antigravity", "-p", prompt],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+        except subprocess.TimeoutExpired:
+            return RunResult(False, "antigravity -p timed out", self._empty_usage(), {})
+
+        success = proc.returncode == 0
+        text = proc.stdout.strip()
+        return RunResult(success, text or proc.stderr.strip(), self._empty_usage(), {})
+
+    def _run_sdk(self, prompt: str, *, cwd: str, mode: str) -> RunResult:
+        try:
+            from google.antigravity import Agent, LocalAgentConfig
+        except ImportError as exc:
+            return RunResult(
+                False,
+                f"neither `antigravity` CLI nor google-antigravity SDK usable: {exc}",
+                self._empty_usage(),
+                {},
+            )
+
+        # UNVERIFIED: this SDK path has not been exercised against a live
+        # Gemini key (see PLAN.md, Findings #2). It uses the FILE-block
+        # convention rather than a guessed built-in-tools API for writes,
+        # since that part of the SDK's surface was never confirmed either.
+        write = mode == "write"
+        full_prompt = f"{prompt}\n\n{FILE_BLOCK_INSTRUCTIONS}" if write else prompt
+
+        async def _call() -> str:
+            config = LocalAgentConfig(model=self.model) if self.model else LocalAgentConfig()
+            async with Agent(config) as agent:
+                response = await agent.chat(full_prompt)
+                return await response.text()
+
+        try:
+            text = asyncio.run(_call())
+        except Exception as exc:  # noqa: BLE001 - surface any SDK failure as a failed run
+            return RunResult(False, f"SDK call failed: {exc}", self._empty_usage(), {})
+
+        written: list[str] = []
+        if write:
+            written = apply_file_blocks(text, cwd)
+
+        summary = text if not write else f"wrote {len(written)} file(s): {', '.join(written)}"
+        return RunResult(True, summary, self._empty_usage(), {})
+
+    def _empty_usage(self) -> Usage:
+        # Neither path above returns real token/cost numbers yet: the CLI's
+        # output format for usage is unconfirmed, and the SDK's UsageMetadata
+        # was never exercised live. See PLAN.md, "Cost & token tracking".
+        return Usage(self.name, self.model, None, None, None)
