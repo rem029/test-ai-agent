@@ -139,6 +139,35 @@ env var and a gitignored local `agentflow.config.yaml`.
   the user's Pro/Ultra plan matters for iteration speed, and this should be
   watched once running for real.
 
+## Orchestrator
+
+Naming this explicitly since "who is running this?" wasn't previously
+spelled out as its own concept: **the orchestrator is `agentflow` itself —
+plain Python control flow, not an LLM or agent.** Concretely, it's
+`orchestrator.py`'s `run_workflow()`, invoked by `cli.py` when you run
+`agentflow "<goal>"`.
+
+It is deterministic code that calls out to whichever LLM backend is
+configured for each role, and makes every control decision itself:
+
+- Calls the **review** backend, gets a plan back as text.
+- Calls the **build** backend with that plan.
+- Calls the **verify** backend and parses its own `VERIFY_RESULT: PASS/FAIL`
+  line out of the response — the orchestrator decides pass/fail from that
+  parse, it does not ask another LLM to judge.
+- Loops build → verify with feedback on FAIL, up to `config.max_iterations`.
+- Runs `git commit`/`git push` itself once verified — a subprocess call,
+  not something it delegates to a backend.
+- Records each step's `Usage` and writes the run-state JSON.
+
+No review/build/verify role is "in charge" of the run; they're workers the
+orchestrator calls and evaluates. This keeps the control loop reproducible
+and auditable regardless of which backend is doing the actual work — the
+same principle behind Bernstein's "no model in the coordination loop"
+design (see the open-source landscape note below), arrived at
+independently here for the same reason: an LLM deciding its own retry/pass
+logic is exactly the failure mode Phase B's live test caught (see Phase C).
+
 ## Recommended architecture (for a later implementation phase)
 
 A Python orchestrator (matches the user's language choice) built around a
@@ -244,6 +273,33 @@ convention to keep in sync across three providers.
 - Define the exact commit message template/convention (e.g. goal line +
   plan summary + verify result in the body) so it stays consistent across
   runs and is easy for any backend to parse back out of `git log`.
+
+## Open-source landscape (related projects)
+
+Checked after Phase C, since it's worth knowing what already exists before
+investing further. Both verified directly (repo/docs fetched, not taken
+from search snippets alone):
+
+- **[OpenCode](https://github.com/sst/opencode)** — closest mature match.
+  200k+ stars, actively maintained, genuinely provider-agnostic (Claude,
+  Gemini, OpenRouter, Bedrock, local via Ollama). Already has a "plan"
+  (read-only) vs "build" (full access) agent-mode split — the same
+  read/write role separation used here.
+- **[Bernstein](https://github.com/sipyourdrink-ltd/bernstein)** —
+  conceptually closer to this project's specific shape: goal → tasks →
+  multiple pluggable CLI coding-agent backends (Claude Code, Codex, Gemini
+  CLI, 40+ adapters), each in an isolated git worktree, tests/lint gating
+  the merge, "no model in the coordination loop" (see the Orchestrator
+  section above). Newer/smaller (beta, single maintainer) than OpenCode —
+  promising, not as proven.
+- **[awesome-cli-coding-agents](https://github.com/bradAGI/awesome-cli-coding-agents)**
+  — curated list for browsing the wider space (Aider, Goose, SWE-agent,
+  etc.) if this project's scope ever needs re-justifying against it.
+
+What this project does that neither documents as a built-in: subscription-
+vs-API-key billing as a first-class design constraint (Findings #1/#2), and
+per-role token/cost tracking from day one (see "Cost & token tracking per
+task").
 
 ## Task breakdown
 
