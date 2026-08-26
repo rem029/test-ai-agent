@@ -370,16 +370,81 @@ Ran the full loop twice against this repo on `phase-b`, build on
 Take-away for any future non-tool-using backend (or any backend, really):
 don't trust a self-reported PASS without spot-checking at least once.
 
-### Phase D — Optional web viewer (later, only if still wanted)
+### Phase D — Local admin web UI (done)
 
-- Read-only dashboard reading the structured per-run state, once Phase B/C
-  prove the CLI loop out.
+Grew beyond the original "optional read-only viewer" scope: the user wanted
+a real local admin panel — live run progress, creating new tasks from the
+browser, and editing `agentflow.config.yaml` from the browser. Full design
+in `plan-web-ui.md`. Built on `phase-d`, branched from `dev`:
+
+- **Stack**: FastAPI + Jinja2 + htmx (vendored locally, no CDN at runtime),
+  uvicorn dev server, bound to `127.0.0.1` by default, no auth (personal
+  single-user tool). New CLI flags: `agentflow --serve [--host] [--port]`.
+  Dev deployment note (this project runs inside a Coolify-hosted
+  code-server): reachable at `https://agentui.app.rem029.com/` when started
+  with `--host 0.0.0.0 --port 4200` — see `plan-web-ui.md`, "Development
+  environment", for why `0.0.0.0` is needed here specifically.
+- **Live progress**: htmx polls a run's `/fragment` endpoint every 2s, which
+  just re-reads the same `.agentflow/runs/<id>.json` `orchestrator.py`
+  already writes incrementally — polling stops itself once `finished_at` is
+  set, no manual stop button or extra plumbing needed.
+- **Task creation**: `POST /runs` spawns `run_workflow` in a real background
+  `threading.Thread` (not the request threadpool) and redirects immediately
+  to the new run's detail page. Only one run at a time is allowed — a
+  module-level lock serializes runs against the same git working tree
+  (concurrent builds/commits would clobber each other); a second submission
+  while one is active just redirects to the run already in flight.
+- **Config editing**: a structured form (dropdown per role, not raw YAML)
+  posts to `/config`, which builds a validated `Config(...)` pydantic model
+  before writing anything to disk via a new `dump_config()` helper — bad
+  input never reaches the file.
+- `orchestrator.py`'s `run_workflow` gained an optional `run_id` param (so
+  the web layer can know the id before the run starts) and now saves its
+  initial state immediately instead of only after the review step — both
+  changes are backward compatible with existing callers/tests.
+- Verified: `uv run pytest` (10 tests, all mocked — no real backend calls),
+  plus manual smoke tests against the two real run fixtures from Phase C and
+  a fake fast `run_workflow` (confirmed immediate redirect, live polling,
+  polling stopping on completion, and the concurrency guard via the
+  dedicated `threading.Event`-synchronized test). Also confirmed live
+  through the real Coolify-hosted URL via browser automation: dashboard,
+  run detail, and config editor (including a real save/round-trip/revert on
+  `agentflow.config.yaml`) all render and work correctly.
+
+### Phase E — Design polish pass (Impeccable) (not started)
+
+Separate from Phase D's core functionality: a polish pass over what got
+built, using [Impeccable](https://impeccable.style) (installed as a Claude
+Code, Antigravity, and Gemini CLI skill via `npx impeccable install` — see
+`.claude/skills/impeccable/`). `/impeccable init` hasn't been run yet to set
+up its design context (`PRODUCT.md`/`DESIGN.md`), so this phase hasn't
+actually started.
+
+- **Web UI** — the natural target: `dashboard.html`, `run_detail.html`,
+  `_run_fragment.html`, `config_edit.html`, and `style.css` under
+  `src/agentflow/web/templates/` and `static/`. Impeccable reads
+  `PRODUCT.md`/`DESIGN.md` before making targeted alignment/spacing/
+  typography/color-consistency suggestions, so `/impeccable init` runs
+  first, then something like `/impeccable polish the dashboard and run
+  detail pages` / `/impeccable audit` against the templates.
+- **CLI** — "if possible": Impeccable is built for visual/DOM surfaces (it
+  screenshots and inspects rendered HTML), so it has no direct notion of a
+  terminal's output. Worth trying `/impeccable audit` pointed at `cli.py`'s
+  `--help`/error text anyway to see whether its copy-clarity commands
+  (`clarify`, `distill`) produce anything useful on plain text — but don't
+  expect the same kind of result as the web UI gets, and fall back to
+  manual review of the help strings/error messages if it doesn't.
+- A hook Impeccable's installer added (`.claude/settings.local.json`) runs a
+  design-detector script after every `Edit`/`Write` and on session `Stop` —
+  already active project-wide, not something this phase needs to set up.
 
 ## Status
 
-Phases A, B, and C are done. Branch structure: `dev` is the source of truth
-(currently equal to `phase-a`); `phase-b` (branched from `dev`) has the
-working core loop, validated live twice against this repo, with one real
-bug found and fixed along the way. Not yet merged back to `dev` — pending
-user review of Phase B before that merge, matching the same
-merge-before-next-phase workflow used for Phase A.
+Phases A, B, and C are done and merged into `dev`. Phase D (local admin web
+UI) is implemented on `phase-d`, branched from `dev`, and not yet merged —
+left for the user to review first, matching the merge-before-next-phase
+workflow used for prior phases. See `plan-web-ui.md` for its design. Phase E
+(design polish via Impeccable) is planned but not started. Also outstanding:
+the "Open items before implementation" list above (Antigravity CLI headless
+flags unconfirmed, default backend-per-role mapping undecided, commit
+message template undefined, push branch convention unconfirmed).

@@ -58,6 +58,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the installed agentflow version and exit",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Start the local admin web UI",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind the web UI to when using --serve (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8420,
+        help="Port to bind the web UI to when using --serve (default: 8420)",
+    )
     args = parser.parse_args(argv)
 
     # If user explicitly passed --config but the path does not exist, error out
@@ -70,6 +86,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.version:
         print(importlib.metadata.version("agentflow"))
+        return 0
+
+    if args.serve:
+        from .web.app import create_app
+        import uvicorn
+
+        uvicorn.run(create_app(cwd=os.getcwd(), config_path=config_path), host=args.host, port=args.port)
         return 0
 
     if args.check or not args.goal:

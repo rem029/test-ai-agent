@@ -1,0 +1,61 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --bg: #ffffff;
+  --muted: #666;
+  --border: #ddd;
+  --ok: #1a7f37;
+  --fail: #b42318;
+  --accent: #2563eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e6e6;
+    --bg: #121212;
+    --muted: #999;
+    --border: #333;
+    --ok: #4ade80;
+    --fail: #f87171;
+    --accent: #60a5fa;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  margin: 0;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+header nav a { margin-right: 1rem; color: var(--accent); text-decoration: none; }
+main { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+h1 { font-size: 1.4rem; }
+.muted { color: var(--muted); font-size: 0.9rem; }
+table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.status { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
+.status.running { background: #fde68a; color: #713f12; }
+.status.pushed, .status.ok { background: #dcfce7; color: var(--ok); }
+.status.failed { background: #fee2e2; color: var(--fail); }
+.banner { padding: 0.6rem 1rem; border-radius: 6px; background: #fef3c7; color: #713f12; margin: 0.75rem 0; }
+.banner-ok { background: #dcfce7; color: var(--ok); }
+form { display: flex; flex-direction: column; gap: 0.6rem; max-width: 500px; }
+fieldset { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.6rem; }
+label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9rem; margin-bottom: 0.5rem; }
+input, select, textarea, button {
+  font: inherit;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+button { cursor: pointer; align-self: flex-start; background: var(--accent); color: #fff; border: none; padding: 0.5rem 1rem; }
+.step-text { white-space: pre-wrap; font-size: 0.8rem; max-width: 40ch; max-height: 8rem; overflow: auto; margin: 0; }

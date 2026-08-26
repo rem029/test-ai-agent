@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}agentflow — {{ run.run_id }}{% endblock %}
+{% block content %}
+  <p><a href="/">&larr; Dashboard</a></p>
+  <h1>{{ run.goal }}</h1>
+  <p class="muted">
+    run_id: {{ run.run_id }} &middot; started: {{ run.started_at | fmt_time }}
+    {% if run.finished_at %}&middot; finished: {{ run.finished_at | fmt_time }}{% endif %}
+  </p>
+
+  {% if run.config %}
+    <details>
+      <summary>Config used</summary>
+      <ul>
+        {% for role in ["review", "build", "verify"] %}
+          {% if run.config[role] %}
+            <li>{{ role }}: {{ run.config[role].backend }}{% if run.config[role].model %} ({{ run.config[role].model }}){% endif %}</li>
+          {% endif %}
+        {% endfor %}
+        {% if run.config.max_iterations %}<li>max_iterations: {{ run.config.max_iterations }}</li>{% endif %}
+      </ul>
+    </details>
+  {% endif %}
+
+  {% include "_run_fragment.html" %}
+{% endblock %}

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}agentflow — Dashboard{% endblock %}
+{% block content %}
+  <h1>Dashboard</h1>
+
+  {% if active_run_id %}
+    <div class="banner">
+      A run is currently in progress: <a href="/runs/{{ active_run_id }}">{{ active_run_id }}</a>.
+      Only one run happens at a time — submitting a new task now will just take you to this one.
+    </div>
+  {% endif %}
+
+  <section>
+    <h2>New task</h2>
+    <form method="post" action="/runs">
+      <textarea name="goal" rows="3" placeholder="Describe the goal for this task..." required></textarea>
+      <button type="submit">Start</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Runs</h2>
+    {% if not runs %}
+      <p class="muted">No runs yet.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr><th>Started</th><th>Goal</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for run in runs %}
+            <tr>
+              <td>{{ run.started_at | fmt_time }}</td>
+              <td><a href="/runs/{{ run.run_id }}">{{ run.goal }}</a></td>
+              <td>
+                {% if run.finished_at is none %}
+                  <span class="status running">running</span>
+                {% elif run.pushed and run.pushed.pushed %}
+                  <span class="status pushed">pushed</span>
+                {% else %}
+                  <span class="status failed">not pushed</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+{% endblock %}

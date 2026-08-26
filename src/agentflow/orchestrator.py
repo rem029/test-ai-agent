@@ -98,6 +98,10 @@ def _build_backend(role_config: RoleConfig):
     return BACKENDS[role_config.backend](model=role_config.model)
 
 
+def new_run_id() -> str:
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+
+
 @dataclass
 class RunState:
     run_id: str
@@ -147,14 +151,19 @@ def _parse_verify_result(text: str) -> bool:
     return False  # no explicit verdict in the response - don't guess pass
 
 
-def run_workflow(goal: str, config: Config, cwd: str) -> RunState:
-    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+def run_workflow(goal: str, config: Config, cwd: str, run_id: str | None = None) -> RunState:
+    run_id = run_id or new_run_id()
+    state_config = {role: cfg.model_dump() for role, cfg in config.roles().items()}
+    state_config["max_iterations"] = config.max_iterations
     state = RunState(
         run_id=run_id,
         goal=goal,
         started_at=time.time(),
-        config={role: cfg.model_dump() for role, cfg in config.roles().items()},
+        config=state_config,
     )
+    # Save immediately so a poller (e.g. the web UI) sees the run exists
+    # right away, not only after the review step completes.
+    state.save(cwd)
 
     review_backend = _build_backend(config.review)
     build_backend = _build_backend(config.build)

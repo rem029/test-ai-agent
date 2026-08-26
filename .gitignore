@@ -2,7 +2,16 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 *.egg-info/
 agentflow.config.yaml
 .env
 .agentflow/
+
+# Vendored coding-agent skill installs (reinstall via `npx impeccable install`)
+.claude/skills/
+.gemini/skills/
+.agent/skills/
+
+# Claude Code local/personal settings (machine-specific, not shared)
+.claude/settings.local.json

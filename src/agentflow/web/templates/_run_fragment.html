@@ -1,0 +1,39 @@
+<div id="run-fragment"
+     {% if run.finished_at is none %}
+     hx-get="/runs/{{ run.run_id }}/fragment" hx-trigger="every 2s" hx-swap="outerHTML"
+     {% endif %}>
+
+  <p>
+    Status:
+    {% if run.finished_at is none %}
+      <span class="status running">running</span>
+    {% elif run.pushed and run.pushed.pushed %}
+      <span class="status pushed">pushed ({{ run.pushed.commit[:8] }} to {{ run.pushed.branch }})</span>
+    {% else %}
+      <span class="status failed">not pushed</span>
+    {% endif %}
+  </p>
+
+  {% if not run.steps %}
+    <p class="muted">No steps recorded yet.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr><th>#</th><th>Role</th><th>Mode</th><th>Result</th><th>Backend</th><th>Cost</th><th>Output</th></tr>
+      </thead>
+      <tbody>
+        {% for step in run.steps %}
+          <tr>
+            <td>{{ step.iteration }}</td>
+            <td>{{ step.role }}</td>
+            <td>{{ step.mode }}</td>
+            <td>{% if step.success %}<span class="status pushed">ok</span>{% else %}<span class="status failed">failed</span>{% endif %}</td>
+            <td>{{ step.usage.backend }}{% if step.usage.model %} / {{ step.usage.model }}{% endif %}</td>
+            <td>{% if step.usage.cost_usd is not none %}${{ "%.6f" | format(step.usage.cost_usd) }}{% else %}-{% endif %}</td>
+            <td><pre class="step-text">{{ step.text }}</pre></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
