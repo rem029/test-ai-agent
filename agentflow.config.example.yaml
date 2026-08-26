@@ -1,19 +1,19 @@
 # Copy to agentflow.config.yaml (gitignored) and adjust per role.
 # Each role can independently use: claude-code | antigravity | openrouter
 # Env var overrides win over this file: AGENTFLOW_<ROLE>_BACKEND / AGENTFLOW_<ROLE>_MODEL
-# Default mapping below is a starting point, not finalized — see PLAN.md, Open items.
 
+# Cost-effective, high-intelligence setup using OpenRouter (requires OPENROUTER_API_KEY):
 review:
-  backend: claude-code
+  backend: openrouter
+  model: deepseek/deepseek-chat  # Alternative: google/gemini-2.0-flash-001
 
 build:
-  backend: antigravity
+  backend: openrouter
+  model: deepseek/deepseek-chat  # Alternative: qwen/qwen-2.5-coder-32b-instruct
 
 verify:
-  backend: claude-code
+  backend: openrouter
+  model: deepseek/deepseek-chat  # Alternative: google/gemini-2.0-flash-001
 
-# Example OpenRouter override for the build role (cheap/fast model, requires
-# OPENROUTER_API_KEY in your environment — see .env, gitignored):
-# build:
-#   backend: openrouter
-#   model: deepseek/deepseek-v4-flash  # unverified slug, confirm at openrouter.ai/models
+max_iterations: 3
+

@@ -170,3 +170,14 @@ def test_config_form_writes_valid_yaml_roundtrip(tmp_path):
     assert reloaded.build.backend == "openrouter"
     assert reloaded.build.model == "deepseek/deepseek-v4-flash"
     assert reloaded.max_iterations == 5
+
+
+def test_api_models_endpoint(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/models")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "openrouter" in data
+    assert "claude-code" in data
+    assert "antigravity" in data
+

@@ -13,6 +13,7 @@ import sys
 
 from .backends import BACKENDS
 from .config import DEFAULT_CONFIG_PATH, load_config
+from .models import get_all_models
 from .orchestrator import run_workflow
 
 
@@ -21,7 +22,23 @@ def _build_backend(role_name: str, role_config):
     return backend_cls(model=role_config.model)
 
 
+def print_models(backend_filter: str | None = None) -> int:
+    all_models = get_all_models()
+    backends = [backend_filter] if backend_filter in all_models else list(all_models.keys())
+    print("=== Available Models & Pricing ===")
+    for b in backends:
+        models = all_models.get(b, [])
+        print(f"\n[Backend: {b}] ({len(models)} models)")
+        for m in models:
+            rec = " ★ (recommended)" if m.get("recommended") else ""
+            pricing = m.get("pricing", "N/A")
+            desc = m.get("description", "")
+            print(f"  • {m['id']:<35} {pricing:<30} {desc}{rec}")
+    return 0
+
+
 def run_checks(config_path: str) -> int:
+
     config = load_config(config_path)
 
     seen: dict[str, object] = {}
@@ -59,6 +76,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the installed agentflow version and exit",
     )
     parser.add_argument(
+        "--list-models",
+        nargs="?",
+        const="all",
+        metavar="BACKEND",
+        help="List available models and pricing for all or a specific backend (openrouter, claude-code, antigravity)",
+    )
+    parser.add_argument("--review-backend", choices=list(BACKENDS), help="Override review backend")
+    parser.add_argument("--review-model", help="Override review model")
+    parser.add_argument("--build-backend", choices=list(BACKENDS), help="Override build backend")
+    parser.add_argument("--build-model", help="Override build model")
+    parser.add_argument("--verify-backend", choices=list(BACKENDS), help="Override verify backend")
+    parser.add_argument("--verify-model", help="Override verify model")
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Start the local admin web UI",
@@ -88,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
         print(importlib.metadata.version("agentflow"))
         return 0
 
+    if args.list_models is not None:
+        backend_filter = None if args.list_models == "all" else args.list_models
+        return print_models(backend_filter)
+
     if args.serve:
         from .web.app import create_app
         import uvicorn
@@ -99,6 +133,19 @@ def main(argv: list[str] | None = None) -> int:
         return run_checks(config_path)
 
     config = load_config(config_path)
+    if args.review_backend:
+        config.review.backend = args.review_backend
+    if args.review_model is not None:
+        config.review.model = args.review_model or None
+    if args.build_backend:
+        config.build.backend = args.build_backend
+    if args.build_model is not None:
+        config.build.model = args.build_model or None
+    if args.verify_backend:
+        config.verify.backend = args.verify_backend
+    if args.verify_model is not None:
+        config.verify.model = args.verify_model or None
+
     state = run_workflow(args.goal, config, cwd=os.getcwd())
     return 0 if state.pushed and state.pushed.get("pushed") else 1
 
