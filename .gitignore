@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+# Legacy project-local config files may contain credentials.
 agentflow.config.yaml
 .env
 .agentflow/

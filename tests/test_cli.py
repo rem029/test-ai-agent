@@ -97,3 +97,27 @@ def test_cli_role_model_override():
     assert passed_config.build.backend == "openrouter"
     assert passed_config.build.model == "deepseek/deepseek-chat"
 
+
+def test_openrouter_key_flag_sets_invocation_environment(monkeypatch):
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch("agentflow.cli.load_config", return_value=mock_config):
+        with patch("agentflow.cli.run_workflow") as mock_run:
+            mock_run.return_value = type("State", (), {"pushed": {"pushed": True}})()
+            ret = main(["--openrouter-key", "test-key", "test goal"])
+
+    assert ret == 0
+    assert os.environ["OPENROUTER_API_KEY"] == "test-key"
+
+
+def test_set_openrouter_key_persists_to_selected_config(tmp_path):
+    config_path = tmp_path / "agentflow.config.yaml"
+
+    ret = main(["--config", str(config_path), "--set-openrouter-key", "saved-key"])
+
+    assert ret == 0
+    assert "openrouter_api_key: saved-key" in config_path.read_text()

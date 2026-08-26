@@ -8,7 +8,6 @@ tracking per task" and "Interface: CLI first, web later").
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 import uuid
@@ -18,8 +17,7 @@ from pathlib import Path
 from .backends import BACKENDS
 from .backends.base import RunResult
 from .config import Config, RoleConfig
-
-STATE_DIR = ".agentflow/runs"
+from .database import save_run
 
 REVIEW_PROMPT = """You are the reviewer/planner for a coding task in this repository.
 
@@ -125,12 +123,11 @@ class RunState:
             bucket["cost_usd"] += u.get("cost_usd") or 0.0
         return totals
 
+    def to_dict(self) -> dict:
+        return asdict(self)
+
     def save(self, cwd: str) -> Path:
-        out_dir = Path(cwd) / STATE_DIR
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{self.run_id}.json"
-        path.write_text(json.dumps(asdict(self), indent=2, default=str))
-        return path
+        return save_run(self, cwd)
 
 
 def _record(role: str, mode: str, iteration: int, result: RunResult) -> dict:

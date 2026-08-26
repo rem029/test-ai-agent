@@ -59,7 +59,7 @@ Routes:
 
 | Method | Path | Behavior |
 |---|---|---|
-| GET | `/` | Dashboard: list `.agentflow/runs/*.json` newest-first, new-task form, active-run banner |
+| GET | `/` | Dashboard: list SQLite-backed run snapshots newest-first, new-task form, active-run banner |
 | GET | `/runs/{run_id}` | Full detail page; polls via htmx only while `finished_at is None` |
 | GET | `/runs/{run_id}/fragment` | Steps/status fragment, htmx poll target |
 | POST | `/runs` | Create task: under a lock, redirect to the active run if one exists, else spawn a daemon thread running `run_workflow(..., run_id=...)` and redirect to it |
@@ -92,7 +92,7 @@ uv run agentflow --check
 ```
 
 Manual: `agentflow --serve` against a scratch copy of the two real
-`.agentflow/runs/*.json` fixtures; submit a task against a monkeypatched slow
+SQLite-backed run fixtures; submit a task against a monkeypatched slow
 fake `run_workflow` to confirm live polling and its stop condition; confirm a
 second submission while one is active redirects instead of double-starting;
 exercise `/config`'s validation and round-trip.

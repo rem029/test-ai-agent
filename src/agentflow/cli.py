@@ -89,6 +89,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify-backend", choices=list(BACKENDS), help="Override verify backend")
     parser.add_argument("--verify-model", help="Override verify model")
     parser.add_argument(
+        "--openrouter-key",
+        metavar="KEY",
+        help="Use an OpenRouter API key for this invocation without writing it to disk",
+    )
+    parser.add_argument(
+        "--set-openrouter-key",
+        metavar="KEY",
+        help="Save an OpenRouter API key to the selected agentflow config and exit",
+    )
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Start the local admin web UI",
@@ -106,13 +116,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # If user explicitly passed --config but the path does not exist, error out
-    if args.config is not None and not os.path.isfile(args.config):
-        print(f"Error: config file not found: {args.config}", file=sys.stderr)
-        return 1
+    if args.openrouter_key:
+        os.environ["OPENROUTER_API_KEY"] = args.openrouter_key
 
     # Compute the effective config path (user-provided or default)
     config_path = args.config if args.config is not None else DEFAULT_CONFIG_PATH
+
+    # If user explicitly passed --config but the path does not exist, error out
+    if (
+        args.config is not None
+        and not os.path.isfile(args.config)
+        and args.set_openrouter_key is None
+    ):
+        print(f"Error: config file not found: {args.config}", file=sys.stderr)
+        return 1
+
+    if args.set_openrouter_key is not None:
+        from .config import dump_config
+
+        dump_config(load_config(config_path), config_path, openrouter_api_key=args.set_openrouter_key)
+        print(f"OpenRouter API key saved to {config_path}")
+        return 0
 
     if args.version:
         print(importlib.metadata.version("agentflow"))

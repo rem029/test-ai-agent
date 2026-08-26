@@ -6,7 +6,7 @@
 ## Key Architecture Principles
 - **No LLM in coordination loop**: Control flow, step iteration, and git operations are managed in deterministic Python (`orchestrator.py`).
 - **Pluggable backends**: Roles (`review`, `build`, `verify`) are configured in `agentflow.config.yaml` and loaded via Pydantic models (`config.py`).
-- **State persistence**: Workflow runs persist JSON state in `.agentflow/runs/<run_id>.json`.
+- **State persistence**: Workflow runs persist as SQLite snapshots in `~/.agentflow/agentflow.db`.
 - **Web UI**: Zero-build frontend using vendored htmx (`static/htmx.min.js`), server-rendered Jinja2 templates, and vanilla CSS (`style.css`).
 
 ## Common Commands

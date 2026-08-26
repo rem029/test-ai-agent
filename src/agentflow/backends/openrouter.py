@@ -7,10 +7,9 @@ see PLAN.md, Findings #3.
 
 from __future__ import annotations
 
-import os
-
 import httpx
 
+from ..credentials import CredentialConfigError, openrouter_api_key
 from .base import FILE_BLOCK_INSTRUCTIONS, HealthCheckResult, RunResult, Usage, apply_file_blocks
 
 # Requested default: a cheap/fast DeepSeek model for the build role.
@@ -30,10 +29,15 @@ class OpenRouterBackend:
         self.model = model or DEFAULT_MODEL
 
     def health_check(self) -> HealthCheckResult:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        try:
+            api_key = openrouter_api_key()
+        except CredentialConfigError as exc:
+            return HealthCheckResult(self.name, False, str(exc))
         if not api_key:
             return HealthCheckResult(
-                self.name, False, "OPENROUTER_API_KEY is not set"
+                self.name,
+                False,
+                "OPENROUTER_API_KEY is not set (environment or agentflow config)",
             )
 
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -68,9 +72,17 @@ class OpenRouterBackend:
         )
 
     def run(self, prompt: str, *, cwd: str, mode: str = "read") -> RunResult:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        try:
+            api_key = openrouter_api_key()
+        except CredentialConfigError as exc:
+            return RunResult(False, str(exc), self._empty_usage(), {})
         if not api_key:
-            return RunResult(False, "OPENROUTER_API_KEY is not set", self._empty_usage(), {})
+            return RunResult(
+                False,
+                "OPENROUTER_API_KEY is not set (environment or agentflow config)",
+                self._empty_usage(),
+                {},
+            )
 
         write = mode == "write"
         full_prompt = f"{prompt}\n\n{FILE_BLOCK_INSTRUCTIONS}" if write else prompt

@@ -338,7 +338,7 @@ any orchestration logic is built on top of it.
 - Implemented review → build → verify → iterate → push in `orchestrator.py`,
   wired to Phase A's config. Commit message includes goal/plan/verify
   result per the memory-via-git-history design above.
-- Every step's `Usage` is persisted to `.agentflow/runs/<id>.json`
+- Every step's `Usage` is persisted to `~/.agentflow/agentflow.db`
   (gitignored) and summarized at the end of each run.
 
 **Live validation caught a real bug, now fixed** (see Phase C below for the
@@ -374,7 +374,7 @@ don't trust a self-reported PASS without spot-checking at least once.
 
 Grew beyond the original "optional read-only viewer" scope: the user wanted
 a real local admin panel — live run progress, creating new tasks from the
-browser, and editing `agentflow.config.yaml` from the browser. Full design
+browser, and editing backend configuration from the browser. Full design
 in `plan-web-ui.md`. Built on `phase-d`, branched from `dev`:
 
 - **Stack**: FastAPI + Jinja2 + htmx (vendored locally, no CDN at runtime),
@@ -385,8 +385,8 @@ in `plan-web-ui.md`. Built on `phase-d`, branched from `dev`:
   with `--host 0.0.0.0 --port 4200` — see `plan-web-ui.md`, "Development
   environment", for why `0.0.0.0` is needed here specifically.
 - **Live progress**: htmx polls a run's `/fragment` endpoint every 2s, which
-  just re-reads the same `.agentflow/runs/<id>.json` `orchestrator.py`
-  already writes incrementally — polling stops itself once `finished_at` is
+  re-reads the run snapshot that `orchestrator.py` writes incrementally —
+  polling stops itself once `finished_at` is
   set, no manual stop button or extra plumbing needed.
 - **Task creation**: `POST /runs` spawns `run_workflow` in a real background
   `threading.Thread` (not the request threadpool) and redirects immediately
@@ -409,7 +409,7 @@ in `plan-web-ui.md`. Built on `phase-d`, branched from `dev`:
   dedicated `threading.Event`-synchronized test). Also confirmed live
   through the real Coolify-hosted URL via browser automation: dashboard,
   run detail, and config editor (including a real save/round-trip/revert on
-  `agentflow.config.yaml`) all render and work correctly.
+  the local agentflow config) all render and work correctly.
 
 ### Phase E — Design polish pass (Impeccable) (done)
 
@@ -430,18 +430,25 @@ design principles:
     and `config_edit.html` (grid-aligned fieldsets for roles and clear save alerts).
 - Verified: `uv run pytest` (10 tests passing).
 
-### Phase F — OpenRouter API key configuration (design)
+### Phase F — OpenRouter API key configuration
 
-**Goal:** Provide a stable, user-friendly way to set the `OPENROUTER_API_KEY` for production and development.
+**Implemented:** OpenRouter credentials resolve from `OPENROUTER_API_KEY` first,
+then the project-local `agentflow.config.yaml`.
+The CLI accepts a one-shot `--openrouter-key` override, and the web UI updates
+the saved key without ever rendering it.
 
-**Approach:**
-- **Development (current):** Key lives in `.env` (gitignored), sourced manually via `set -a && source .env && set +a` before running `uv run agentflow`.
-- **Production/CLI:** Offer environment variable (`OPENROUTER_API_KEY=...` exported before running) or CLI flag (e.g. `agentflow --openrouter-key $KEY`).
-- **Web UI:** Add a settings panel in the admin UI to store/update the key securely (encrypted at rest, or prompted for on each session if stateless preference).
+**Security:** The agentflow config is written with owner-only (`0600`)
+permissions and is gitignored.
 
-**Not doing immediately:** Don't commit credentials; keep `.env` gitignored. Avoid shell profile pollution (per user discretion only).
+### Phase G — Central local persistence
+
+**Implemented:** Backend settings and the OpenRouter key are stored in
+the project-local `agentflow.config.yaml`; the web UI and
+`agentflow --set-openrouter-key` update that file. Workflow task/run state is
+persisted in `~/.agentflow/agentflow.db` (SQLite), scoped by target repository,
+so the web UI no longer depends on `.agentflow/runs/*.json` inside individual
+projects.
 
 ## Status
 
-Phases A, B, C, D, and E are done. Phase F is planned for future work to improve credential management beyond `.env`.
-
+Phases A, B, C, D, E, F, and G are done.

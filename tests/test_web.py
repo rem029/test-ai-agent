@@ -16,6 +16,8 @@ from fastapi.testclient import TestClient
 
 import agentflow.web.app as web_app
 from agentflow.config import Config, RoleConfig
+from agentflow.database import save_run
+from agentflow.orchestrator import RunState
 
 
 def _config() -> Config:
@@ -32,7 +34,11 @@ def _reset_active_run():
 
 def _make_client(tmp_path: Path, config_path: str | None = None) -> TestClient:
     _reset_active_run()
-    app = web_app.create_app(cwd=str(tmp_path), config_path=config_path or str(tmp_path / "agentflow.config.yaml"))
+    app = web_app.create_app(
+        cwd=str(tmp_path),
+        config_path=config_path or str(tmp_path / "agentflow.config.yaml"),
+        database_path=tmp_path / "agentflow.db",
+    )
     return TestClient(app)
 
 
@@ -44,8 +50,6 @@ def test_dashboard_empty(tmp_path):
 
 
 def test_dashboard_lists_existing_run_fixture(tmp_path):
-    runs_dir = tmp_path / ".agentflow" / "runs"
-    runs_dir.mkdir(parents=True)
     run = {
         "run_id": "20260101-000000-aaaaaaaa",
         "goal": "add a --version flag",
@@ -55,7 +59,7 @@ def test_dashboard_lists_existing_run_fixture(tmp_path):
         "finished_at": time.time(),
         "pushed": {"branch": "dev", "commit": "deadbeef", "pushed": True},
     }
-    (runs_dir / f"{run['run_id']}.json").write_text(json.dumps(run))
+    save_run(RunState(**run), str(tmp_path), tmp_path / "agentflow.db")
 
     client = _make_client(tmp_path)
     resp = client.get("/")
@@ -79,7 +83,11 @@ def test_create_run_spawns_background_thread_and_redirects(tmp_path):
     with patch("agentflow.web.app.load_config", return_value=_config()), patch(
         "agentflow.web.app.run_workflow"
     ) as mock_run:
-        app = web_app.create_app(cwd=str(tmp_path), config_path=str(tmp_path / "agentflow.config.yaml"))
+        app = web_app.create_app(
+            cwd=str(tmp_path),
+            config_path=str(tmp_path / "agentflow.config.yaml"),
+            database_path=tmp_path / "agentflow.db",
+        )
         client = TestClient(app)
 
         resp = client.post("/runs", data={"goal": "test goal"}, follow_redirects=False)
@@ -108,7 +116,11 @@ def test_second_run_blocked_while_active(tmp_path):
     with patch("agentflow.web.app.load_config", return_value=_config()), patch(
         "agentflow.web.app.run_workflow", side_effect=_slow_run_workflow
     ):
-        app = web_app.create_app(cwd=str(tmp_path), config_path=str(tmp_path / "agentflow.config.yaml"))
+        app = web_app.create_app(
+            cwd=str(tmp_path),
+            config_path=str(tmp_path / "agentflow.config.yaml"),
+            database_path=tmp_path / "agentflow.db",
+        )
         client = TestClient(app)
 
         first = client.post("/runs", data={"goal": "first goal"}, follow_redirects=False)
@@ -158,6 +170,7 @@ def test_config_form_writes_valid_yaml_roundtrip(tmp_path):
             "verify_backend": "claude-code",
             "verify_model": "",
             "max_iterations": "5",
+            "openrouter_api_key": "test-key",
         },
         follow_redirects=False,
     )
@@ -170,6 +183,21 @@ def test_config_form_writes_valid_yaml_roundtrip(tmp_path):
     assert reloaded.build.backend == "openrouter"
     assert reloaded.build.model == "deepseek/deepseek-v4-flash"
     assert reloaded.max_iterations == 5
+    assert "openrouter_api_key: test-key" in config_path.read_text()
+    assert config_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_config_form_reports_agentflow_credential_source(tmp_path, monkeypatch):
+    config = tmp_path / "agentflow.config.yaml"
+    config.write_text("openrouter_api_key: test-key\n")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    client = _make_client(tmp_path, str(config))
+    resp = client.get("/config")
+
+    assert resp.status_code == 200
+    assert f"agentflow config: {config}" in resp.text
+    assert "test-key" not in resp.text
 
 
 def test_api_models_endpoint(tmp_path):
@@ -180,4 +208,3 @@ def test_api_models_endpoint(tmp_path):
     assert "openrouter" in data
     assert "claude-code" in data
     assert "antigravity" in data
-

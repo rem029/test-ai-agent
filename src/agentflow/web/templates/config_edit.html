@@ -11,7 +11,28 @@
   {% endif %}
 
   <div class="card" style="max-width: 720px;">
+    <section class="credential-status" aria-labelledby="openrouter-credential-heading">
+      <div>
+        <h2 id="openrouter-credential-heading">OpenRouter credential</h2>
+        <p class="muted">The key is stored in this project's agentflow config and never displayed here.</p>
+      </div>
+      <div class="credential-source">
+        <span class="credential-label">Source</span>
+        <code>{{ openrouter_credential_source }}</code>
+      </div>
+      <p class="muted credential-help">
+        Set <code>OPENROUTER_API_KEY</code> to override this value for one
+        process, or update the saved key below.
+      </p>
+    </section>
+
     <form method="post" action="/config">
+      <div class="form-group">
+        <label>
+          OpenRouter API key
+          <input type="password" name="openrouter_api_key" autocomplete="off" placeholder="Leave blank to keep the saved key">
+        </label>
+      </div>
       {% for role, role_config in [("review", config.review), ("build", config.build), ("verify", config.verify)] %}
         <fieldset>
           <legend>{{ role }} role</legend>
@@ -85,4 +106,3 @@
     }
   </script>
 {% endblock %}
-

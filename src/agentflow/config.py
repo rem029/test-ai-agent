@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 BackendName = Literal["claude-code", "antigravity", "openrouter"]
 
+AGENTFLOW_HOME = Path.home() / ".agentflow"
 DEFAULT_CONFIG_PATH = "agentflow.config.yaml"
 
 # Not finalized — see PLAN.md "Decide the default backend-per-role mapping".
@@ -54,7 +55,10 @@ def _from_file(path: str) -> dict:
     if not p.exists():
         return {}
     with p.open() as f:
-        return yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Config at {path} must be a YAML mapping")
+    return data
 
 
 def _env_override(role: str, data: dict) -> dict:
@@ -84,8 +88,10 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     return Config(**roles)
 
 
-def dump_config(config: Config, path: str) -> None:
-    """Write a validated Config back to YAML, same shape as agentflow.config.example.yaml.
+def dump_config(
+    config: Config, path: str, *, openrouter_api_key: str | None = None
+) -> None:
+    """Write a validated Config back to the agentflow YAML config.
 
     Callers must construct `config` via the Config model first (e.g. from
     web-form input) so invalid data never reaches disk.
@@ -96,4 +102,11 @@ def dump_config(config: Config, path: str) -> None:
         "verify": config.verify.model_dump(exclude_none=True),
         "max_iterations": config.max_iterations,
     }
-    Path(path).write_text(yaml.safe_dump(data, sort_keys=False))
+    output = Path(path)
+    existing = _from_file(path)
+    key = openrouter_api_key if openrouter_api_key is not None else existing.get("openrouter_api_key")
+    if isinstance(key, str) and key:
+        data["openrouter_api_key"] = key
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(yaml.safe_dump(data, sort_keys=False))
+    output.chmod(0o600)
