@@ -430,9 +430,18 @@ design principles:
     and `config_edit.html` (grid-aligned fieldsets for roles and clear save alerts).
 - Verified: `uv run pytest` (10 tests passing).
 
+### Phase F — OpenRouter API key configuration (design)
+
+**Goal:** Provide a stable, user-friendly way to set the `OPENROUTER_API_KEY` for production and development.
+
+**Approach:**
+- **Development (current):** Key lives in `.env` (gitignored), sourced manually via `set -a && source .env && set +a` before running `uv run agentflow`.
+- **Production/CLI:** Offer environment variable (`OPENROUTER_API_KEY=...` exported before running) or CLI flag (e.g. `agentflow --openrouter-key $KEY`).
+- **Web UI:** Add a settings panel in the admin UI to store/update the key securely (encrypted at rest, or prompted for on each session if stateless preference).
+
+**Not doing immediately:** Don't commit credentials; keep `.env` gitignored. Avoid shell profile pollution (per user discretion only).
+
 ## Status
 
-Phases A, B, and C are done and merged into `dev`. Phase D (local admin web
-UI) is implemented on `phase-d`, and Phase E (design polish via Impeccable)
-is implemented on `phase-e`. All unit and integration tests pass.
+Phases A, B, C, D, and E are done. Phase F is planned for future work to improve credential management beyond `.env`.
 
