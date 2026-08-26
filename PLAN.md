@@ -411,40 +411,28 @@ in `plan-web-ui.md`. Built on `phase-d`, branched from `dev`:
   run detail, and config editor (including a real save/round-trip/revert on
   `agentflow.config.yaml`) all render and work correctly.
 
-### Phase E — Design polish pass (Impeccable) (not started)
+### Phase E — Design polish pass (Impeccable) (done)
 
-Separate from Phase D's core functionality: a polish pass over what got
-built, using [Impeccable](https://impeccable.style) (installed as a Claude
-Code, Antigravity, and Gemini CLI skill via `npx impeccable install` — see
-`.claude/skills/impeccable/`). `/impeccable init` hasn't been run yet to set
-up its design context (`PRODUCT.md`/`DESIGN.md`), so this phase hasn't
-actually started.
+Completed the polish pass over the local admin web UI using Impeccable
+design principles:
 
-- **Web UI** — the natural target: `dashboard.html`, `run_detail.html`,
-  `_run_fragment.html`, `config_edit.html`, and `style.css` under
-  `src/agentflow/web/templates/` and `static/`. Impeccable reads
-  `PRODUCT.md`/`DESIGN.md` before making targeted alignment/spacing/
-  typography/color-consistency suggestions, so `/impeccable init` runs
-  first, then something like `/impeccable polish the dashboard and run
-  detail pages` / `/impeccable audit` against the templates.
-- **CLI** — "if possible": Impeccable is built for visual/DOM surfaces (it
-  screenshots and inspects rendered HTML), so it has no direct notion of a
-  terminal's output. Worth trying `/impeccable audit` pointed at `cli.py`'s
-  `--help`/error text anyway to see whether its copy-clarity commands
-  (`clarify`, `distill`) produce anything useful on plain text — but don't
-  expect the same kind of result as the web UI gets, and fall back to
-  manual review of the help strings/error messages if it doesn't.
-- A hook Impeccable's installer added (`.claude/settings.local.json`) runs a
-  design-detector script after every `Edit`/`Write` and on session `Stop` —
-  already active project-wide, not something this phase needs to set up.
+- **Context artifacts**: Generated `PRODUCT.md` capturing product purpose,
+  users, constraints, and principles, and `DESIGN.md` establishing color
+  tokens, typography, elevation, spacing scales, and component guidelines.
+- **Web UI templates & CSS**:
+  - Enhanced `style.css` with dark/light themes, high-contrast semantic
+    status tokens (`running`, `pushed`, `failed`), custom scrollbars,
+    focus-visible outlines, card surfaces, and responsive tabular layouts.
+  - Polished `base.html` (added viewport meta tag and brand navigation header),
+    `dashboard.html` (card-based task creation, active run banner, styled run table),
+    `run_detail.html` (clean metadata header, breadcrumb navigation, collapsible config),
+    `_run_fragment.html` (live status pill with pulsing animation, step logs, monospace cost & model badges),
+    and `config_edit.html` (grid-aligned fieldsets for roles and clear save alerts).
+- Verified: `uv run pytest` (10 tests passing).
 
 ## Status
 
 Phases A, B, and C are done and merged into `dev`. Phase D (local admin web
-UI) is implemented on `phase-d`, branched from `dev`, and not yet merged —
-left for the user to review first, matching the merge-before-next-phase
-workflow used for prior phases. See `plan-web-ui.md` for its design. Phase E
-(design polish via Impeccable) is planned but not started. Also outstanding:
-the "Open items before implementation" list above (Antigravity CLI headless
-flags unconfirmed, default backend-per-role mapping undecided, commit
-message template undefined, push branch convention unconfirmed).
+UI) is implemented on `phase-d`, and Phase E (design polish via Impeccable)
+is implemented on `phase-e`. All unit and integration tests pass.
+

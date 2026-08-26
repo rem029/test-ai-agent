@@ -66,3 +66,34 @@ def test_check_with_missing_config_fails():
 
     assert ret == 1
     assert "Error: config file not found: nonexistent.yaml" in stderr.getvalue()
+
+
+def test_list_models_prints_models(capsys):
+    ret = main(["--list-models", "claude-code"])
+    assert ret == 0
+    captured = capsys.readouterr()
+    assert "claude-3-7-sonnet" in captured.out
+    assert "Claude Subscription" in captured.out
+
+
+def test_cli_role_model_override():
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    with patch("agentflow.cli.load_config", return_value=mock_config):
+        with patch("agentflow.cli.run_workflow") as mock_run:
+            mock_run.return_value = type("State", (), {"pushed": {"pushed": True}})()
+            ret = main([
+                "--build-backend", "openrouter",
+                "--build-model", "deepseek/deepseek-chat",
+                "test goal"
+            ])
+
+    assert ret == 0
+    mock_run.assert_called_once()
+    passed_config = mock_run.call_args[0][1]
+    assert passed_config.build.backend == "openrouter"
+    assert passed_config.build.model == "deepseek/deepseek-chat"
+

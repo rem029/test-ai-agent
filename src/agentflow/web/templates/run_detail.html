@@ -1,26 +1,35 @@
 {% extends "base.html" %}
 {% block title %}agentflow — {{ run.run_id }}{% endblock %}
 {% block content %}
-  <p><a href="/">&larr; Dashboard</a></p>
+  <a href="/" class="back-link">&larr; Back to Dashboard</a>
   <h1>{{ run.goal }}</h1>
-  <p class="muted">
-    run_id: {{ run.run_id }} &middot; started: {{ run.started_at | fmt_time }}
-    {% if run.finished_at %}&middot; finished: {{ run.finished_at | fmt_time }}{% endif %}
-  </p>
+  
+  <div class="run-header-meta">
+    <span><strong>run_id:</strong> <code class="mono">{{ run.run_id }}</code></span>
+    <span>&middot;</span>
+    <span><strong>started:</strong> <span class="mono tabular">{{ run.started_at | fmt_time }}</span></span>
+    {% if run.finished_at %}
+      <span>&middot;</span>
+      <span><strong>finished:</strong> <span class="mono tabular">{{ run.finished_at | fmt_time }}</span></span>
+    {% endif %}
+  </div>
 
   {% if run.config %}
     <details>
-      <summary>Config used</summary>
+      <summary>Configuration used</summary>
       <ul>
         {% for role in ["review", "build", "verify"] %}
           {% if run.config[role] %}
-            <li>{{ role }}: {{ run.config[role].backend }}{% if run.config[role].model %} ({{ run.config[role].model }}){% endif %}</li>
+            <li><strong>{{ role }}:</strong> <code class="mono">{{ run.config[role].backend }}</code>{% if run.config[role].model %} (<code class="mono">{{ run.config[role].model }}</code>){% endif %}</li>
           {% endif %}
         {% endfor %}
-        {% if run.config.max_iterations %}<li>max_iterations: {{ run.config.max_iterations }}</li>{% endif %}
+        {% if run.config.max_iterations %}
+          <li><strong>max_iterations:</strong> {{ run.config.max_iterations }}</li>
+        {% endif %}
       </ul>
     </details>
   {% endif %}
 
   {% include "_run_fragment.html" %}
 {% endblock %}
+

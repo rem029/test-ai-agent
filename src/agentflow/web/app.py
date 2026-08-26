@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from ..backends import BACKENDS
 from ..config import Config, RoleConfig, dump_config, load_config
+from ..models import get_all_models
 from ..orchestrator import STATE_DIR, new_run_id, run_workflow
 
 _WEB_DIR = Path(__file__).parent
@@ -42,6 +43,9 @@ def create_app(cwd: str, config_path: str) -> FastAPI:
     templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
     templates.env.filters["fmt_time"] = (
         lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "-"
+    )
+    templates.env.filters["total_cost"] = (
+        lambda steps: sum((s.get("usage", {}).get("cost_usd") or 0.0) for s in (steps or []))
     )
     app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
 
@@ -116,13 +120,22 @@ def create_app(cwd: str, config_path: str) -> FastAPI:
 
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
+    @app.get("/api/models")
+    def api_models():
+        return get_all_models()
+
     @app.get("/config", response_class=HTMLResponse)
     def config_edit_form(request: Request):
         config = load_config(config_path)
         return templates.TemplateResponse(
             request,
             "config_edit.html",
-            {"config": config, "backend_names": list(BACKENDS), "saved": request.query_params.get("saved") == "1"},
+            {
+                "config": config,
+                "backend_names": list(BACKENDS),
+                "models_by_backend": get_all_models(),
+                "saved": request.query_params.get("saved") == "1",
+            },
         )
 
     @app.post("/config")
