@@ -1,74 +1,58 @@
-{% extends "base.html" %}
-{% block title %}agentflow — Dashboard{% endblock %}
-{% block content %}
-  <h1>Dashboard</h1>
-
-  {% if active_run_id %}
-    <div class="banner">
-      <span>&#9679;</span>
-      <div>
-        A run is currently in progress: <a href="/runs/{{ active_run_id }}">{{ active_run_id }}</a>.<br>
-        <span class="muted">Only one run happens at a time — submitting a new task now will just take you to this one.</span>
-      </div>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard · agentflow</title>
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body class="app-body">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <span class="brand">◈ agentflow</span>
+      <nav>
+        <a href="/">Dashboard</a>
+        <a href="/config">Config</a>
+        <a href="/logout" onclick="try { localStorage.removeItem('isAuthenticated'); } catch (e) {}">Logout</a>
+      </nav>
     </div>
-  {% endif %}
+  </header>
 
-  <section class="card">
-    <h2>New task</h2>
-    <form method="post" action="/runs">
-      <div class="form-group">
-        <label for="goal-input">Goal</label>
-        <textarea id="goal-input" name="goal" rows="3" placeholder="Describe the goal for this task (e.g. Add user authentication with JWT)..." required></textarea>
-      </div>
-      <button type="submit">Start</button>
+  <main class="container">
+    <h1>Dashboard</h1>
+    <p class="muted">Start a new agentflow run or review previous runs.</p>
+
+    <form method="post" action="/runs" class="new-run">
+      <input type="text" name="goal" placeholder="Describe the coding task..." required aria-label="Goal">
+      <button type="submit" class="btn-primary">Start run</button>
     </form>
-  </section>
 
-  <section>
-    <h2>Runs</h2>
-    {% if not runs %}
-      <div class="card">
-        <p class="muted">No runs yet.</p>
-      </div>
-    {% else %}
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>Started</th>
-              <th>Goal</th>
-              <th>Cost</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for run in runs %}
-              <tr>
-                <td class="mono tabular muted">{{ run.started_at | fmt_time }}</td>
-                <td><a href="/runs/{{ run.run_id }}">{{ run.goal }}</a></td>
-                <td class="mono tabular" style="font-size: 0.85rem;">
-                  {% set run_cost = run.steps | total_cost %}
-                  {% if run_cost > 0 %}
-                    ${{ "%.6f" | format(run_cost) }}
-                  {% else %}
-                    <span class="muted">-</span>
-                  {% endif %}
-                </td>
-                <td>
-                  {% if run.finished_at is none %}
-                    <span class="status running">running</span>
-                  {% elif run.pushed and run.pushed.pushed %}
-                    <span class="status pushed">pushed</span>
-                  {% else %}
-                    <span class="status failed">not pushed</span>
-                  {% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% endif %}
-  </section>
-{% endblock %}
+    <section>
+      <h2>Runs</h2>
+      {% if runs %}
+        <ul class="run-list">
+          {% for run in runs %}
+            <li class="run-item">
+              <a class="run-link" href="/runs/{{ run['run_id'] }}">{{ run['goal'] }}</a>
+              <span class="run-id">{{ run['run_id'] }}</span>
+              {% if run['finished_at'] %}
+                <span class="run-status">finished</span>
+              {% else %}
+                <span class="run-status running">running</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted">No runs yet. Start one above.</p>
+      {% endif %}
+    </section>
+  </main>
 
+  <script>
+    try {
+      localStorage.setItem('isAuthenticated', 'true');
+    } catch (e) {}
+  </script>
+</body>
+</html>

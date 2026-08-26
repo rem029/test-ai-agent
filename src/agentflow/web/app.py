@@ -1,8 +1,9 @@
 """Local admin web UI: view run progress, create tasks, edit backend config.
 
-Bound to 127.0.0.1 by default (see cli.py --serve) - no auth, personal
-single-user tool. Runs render live progress by polling the same run-state
-JSON orchestrator.py writes (see PLAN.md, "Interface: CLI first, web later").
+Bound to 127.0.0.1 by default (see cli.py --serve). The UI is gated behind a
+simple static-credential login page (no backend/database). Runs render live
+progress by polling the same run-state JSON orchestrator.py writes (see
+PLAN.md, "Interface: CLI first, web later").
 """
 
 from __future__ import annotations
@@ -34,6 +35,14 @@ _WEB_DIR = Path(__file__).parent
 _run_lock = threading.Lock()
 _active_run: dict | None = None
 
+# Static auth credentials for the local admin UI. This is intentionally a
+# hard-coded gate (per the task: "Dont need backend here") rather than a
+# real user database.
+STATIC_USERNAME = "admin"
+STATIC_PASSWORD = "admin123"
+AUTH_COOKIE = "isAuthenticated"
+AUTH_COOKIE_VALUE = "true"
+
 
 def create_app(cwd: str, config_path: str, database_path: Path = DEFAULT_DATABASE_PATH) -> FastAPI:
     app = FastAPI()
@@ -51,11 +60,61 @@ def create_app(cwd: str, config_path: str, database_path: Path = DEFAULT_DATABAS
     )
     app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
 
+    # Route guard: every page except the login/logout/static endpoints
+    # requires the static-auth cookie. Equivalent to a React Router guard,
+    # but enforced server-side so protected routes cannot be reached by
+    # directly typing a URL.
+    @app.middleware("http")
+    async def require_auth(request: Request, call_next):
+        path = request.url.path
+        if path in {"/login", "/logout"} or path.startswith("/static"):
+            return await call_next(request)
+        if request.cookies.get(AUTH_COOKIE) != AUTH_COOKIE_VALUE:
+            return RedirectResponse("/login", status_code=303)
+        return await call_next(request)
+
     def _list_runs() -> list[dict]:
         return list_runs(cwd, database_path)
 
     def _load_run(run_id: str) -> dict | None:
         return load_run(run_id, cwd, database_path)
+
+    # --- Auth views --------------------------------------------------
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_page(request: Request):
+        if request.cookies.get(AUTH_COOKIE) == AUTH_COOKIE_VALUE:
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse(request, "login.html", {"error": None})
+
+    @app.post("/login")
+    def login_submit(request: Request, username: str = Form(""), password: str = Form("")):
+        if not username.strip() or not password:
+            error = "Username and password are required."
+        elif username.strip() == STATIC_USERNAME and password == STATIC_PASSWORD:
+            response = RedirectResponse("/", status_code=303)
+            response.set_cookie(
+                key=AUTH_COOKIE,
+                value=AUTH_COOKIE_VALUE,
+                max_age=60 * 60 * 24 * 7,
+                httponly=True,
+                samesite="lax",
+            )
+            return response
+        else:
+            error = "Invalid username or password."
+
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": error},
+        )
+
+    @app.get("/logout")
+    def logout():
+        response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie(AUTH_COOKIE)
+        return response
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
