@@ -544,3 +544,135 @@ timeline, persistence, tests, benchmarks, and documentation are all in place.
 - ✅ Tool calls are persisted and queryable in SQLite.
 - ✅ `uv run pytest` passes; no security vulnerabilities introduced.
 - ✅ Existing CLI and web UI behavior remains backward compatible.
+
+---
+
+## Post-Phase-H review (2026-08-27)
+
+A code review of the shipped Phase H work found the tool layer and the
+"no LLM in the coordination loop" design worth keeping, but three structural
+limits block the next goal: a terminal UI that behaves like Claude Code and a
+web UI that behaves like a modern agent console (OpenCode-style chat threads).
+
+### What Phase H got right (keep)
+
+- `Tool` + pydantic `param_model`, `ToolRegistry`, the XML/JSON request parser.
+- 14 built-in tools, path-escape guards, `ToolResult.structured` for diffs.
+- `tool_calls` SQLite table and the web timeline.
+- Deterministic review -> build -> verify -> iterate -> push control flow.
+
+### Structural limits found
+
+1. **Everything is synchronous and single-shot.** `Backend.run()` returns one
+   final string. Neither UI can show live output, streaming tokens, or
+   tool-call progress - only a finished result.
+2. **No conversation model.** `_run_with_tools` rebuilds the entire prompt +
+   full tool schema + all prior tool output as one concatenated string on
+   every iteration (`orchestrator.py`). Token-wasteful, fragile past
+   `MAX_TOOL_CALLS_PER_STEP`, and not a real message history.
+3. **No sessions or follow-up.** A run is one goal, then it ends. The
+   "follow-up chat / what's next" item in `NOTES.md` is impossible today.
+
+### Web UI cleanup debt (do first, before adding anything)
+
+- `web/static/htmx.min.js` is a 0-byte file.
+- Three overlapping stylesheets: `style.css` (Phase E), `styles.css` (current
+  SPA), `auth.css`.
+- Orphaned Jinja templates - `base.html`, `dashboard.html`, `run_detail.html`,
+  `_run_fragment.html`, `config_edit.html` are not referenced by `app.py`,
+  which serves a static SPA. Left behind when the SPA replaced the templated
+  UI.
+- Orphaned login page - `login.html` + `auth.css`, hardcoded `admin/admin123`,
+  no `/login` route and no session middleware. Dead code. For a single-user
+  local tool, delete it rather than wire up real auth.
+- The Phase D single-run lock (serialize runs against one git worktree) is not
+  present in the current `app.py`; `create_run` spawns a thread with no guard.
+  Treat as a regression to fix.
+
+### Persistence fixes
+
+- `save_run` does `DELETE FROM tool_calls WHERE run_id=?` then re-INSERTs every
+  tool call on every snapshot - O(n^2) writes per run and `created_at` becomes
+  meaningless. Make it append-only.
+- `runs` stores one opaque `state_json` blob. Add normalized `sessions` and
+  `events` tables (below).
+- No budget guardrail: add `max_cost_usd` per run.
+
+---
+
+## Phase I - Streaming + sessions core (do next)
+
+**Goal:** make the orchestrator stream, converse, and resume - with no UI work
+yet. This unblocks Phases J and K. Keep the deterministic review/build/verify
+control flow; the change is *how* each role talks to its backend and *how*
+progress is observed.
+
+1. **Streaming event interface.** `Backend.run()` becomes a generator that
+   yields typed events: `text_delta`, `tool_call`, `tool_result`, `usage`,
+   `done`, `error`. A `run_sync()` helper drains it to the current `RunResult`
+   so existing callers/tests keep working.
+   - `ClaudeCodeBackend`: `claude -p --output-format stream-json`.
+   - `OpenRouterBackend`: SSE with `stream: true`.
+   - `AntigravityBackend`: best-effort; may buffer and emit one `text_delta`.
+2. **Structured conversation.** Replace the string concatenation in
+   `_run_with_tools` with `list[Message]` (role, content, tool_calls,
+   tool_results). Tool schemas are sent once, not re-embedded per iteration.
+3. **Persisted event log.** New `events` table
+   (`run_id, seq, type, payload_json, ts`). The orchestrator appends events as
+   they happen; both UIs read this log for live view and for replay. Single
+   source of truth.
+4. **Sessions.** New `sessions` table; `runs` gets a `session_id` FK. A
+   follow-up message starts a new lightweight agent turn seeded with repo
+   context + a summary of prior runs in the session.
+5. **Permission layer.** Tool execution goes through a policy: auto-allow the
+   read-only tools; in interactive mode prompt for `WriteFile`, `Shell`, and
+   git-mutating tools; in headless mode follow config
+   (`permissions: auto | prompt | deny` per tool class). `Shell` stays
+   explicitly "not a sandbox".
+6. **Budget guardrail.** Abort a run when cumulative `cost_usd` exceeds
+   `max_cost_usd` (config, default unset = no limit).
+
+**Success criteria**
+
+- `Backend.run()` streams events for all three backends (Antigravity may
+  buffer); `run_sync()` preserves the old return shape.
+- `_run_with_tools` holds a real message list; tool schema sent once per step.
+- `events` and `sessions` tables exist; a run is fully reconstructable from its
+  event log.
+- A follow-up turn can be issued against an existing session and is persisted.
+- Permission policy gates write/shell/git tools; read tools stay automatic.
+- `uv run pytest` passes; existing CLI and web behavior unchanged for callers
+  that use `run_sync()` / the current endpoints.
+
+## Phase J - Terminal UI (Claude Code-like)
+
+Built on Phase I's event stream. `agentflow` with no goal argument opens an
+interactive REPL (the one-shot `agentflow "<goal>"` form stays).
+
+- Prompt loop with streaming assistant output rendered live.
+- Tool calls rendered with status spinners; results collapsible.
+- Permission prompts: `allow` / `allow for session` / `deny`.
+- Inline colored diffs for file edits.
+- Slash commands: `/model`, `/config`, `/tools`, `/resume <session>`,
+  `/clear`, `/cost`.
+- `Ctrl+C` interrupts the current step, not the process.
+- Session resume from SQLite; cost/token footer per turn.
+- Rendering via `rich`/`textual` + `prompt_toolkit` (presentation libraries,
+  not agent frameworks - consistent with the hand-rolled-orchestrator rule).
+
+## Phase K - Web console rewrite (OpenCode-like)
+
+- Delete the dead templates, `login.html`, `auth.css`, and the empty
+  `htmx.min.js`; collapse to one stylesheet.
+- Single SPA: session sidebar + message thread + follow-up composer.
+- Live updates via SSE off the Phase I event log (replaces 2s JS polling).
+- Inline collapsible tool calls with output and visual file diffs (reuse
+  `ToolResult.structured`).
+- Model/backend picker per session; config panel continues to write
+  `agentflow.config.yaml`.
+- Restore the single-run worktree lock.
+
+## Housekeeping
+
+- Gitignore `.agentflow-test-todo/` (a stray workflow output artifact committed
+  to the repo root).
