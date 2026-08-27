@@ -1,1 +1,2 @@
-Task UI needs to have a follow up chat. What needs to be done next.
+- Task UI needs to have a follow up chat. What needs to be done next.
+- Better UI to display output, and show file changes

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentFlow Web UI</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container nav-container">
+            <div class="nav-logo">AgentFlow</div>
+            <div class="nav-links">
+                <a href="#" data-tab="run" class="nav-link active">Run</a>
+                <a href="#" data-tab="config" class="nav-link">Config</a>
+                <a href="#" data-tab="health" class="nav-link">Health</a>
+                <a href="#" data-tab="runs" class="nav-link">Runs</a>
+            </div>
+            <button id="theme-toggle" class="btn-theme">🌙</button>
+        </div>
+    </nav>
+
+    <main class="container main-container">
+        <!-- Run Section -->
+        <section id="tab-run" class="tab-content active">
+            <h1>Start a New Run</h1>
+            <div class="card">
+                <form id="run-form" class="run-form">
+                    <div class="form-group">
+                        <label for="goal">Goal</label>
+                        <textarea id="goal" name="goal" rows="2" required placeholder="Describe what you want to achieve..."></textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="review_backend">Review Backend</label>
+                            <select id="review_backend" name="review_backend">
+                                <option value="claude-code">Claude Code</option>
+                                <option value="antigravity">Antigravity</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="review_model">Review Model</label>
+                            <input type="text" id="review_model" name="review_model" placeholder="e.g. claude-3-7-sonnet">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="build_backend">Build Backend</label>
+                            <select id="build_backend" name="build_backend">
+                                <option value="claude-code">Claude Code</option>
+                                <option value="antigravity" selected>Antigravity</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="build_model">Build Model</label>
+                            <input type="text" id="build_model" name="build_model" placeholder="e.g. gemini-2.5-flash">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="verify_backend">Verify Backend</label>
+                            <select id="verify_backend" name="verify_backend">
+                                <option value="claude-code" selected>Claude Code</option>
+                                <option value="antigravity">Antigravity</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="verify_model">Verify Model</label>
+                            <input type="text" id="verify_model" name="verify_model" placeholder="e.g. claude-3-5-haiku">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="max_iterations">Max Iterations</label>
+                        <input type="number" id="max_iterations" name="max_iterations" min="1" max="10" value="3">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Start Run</button>
+                    <div id="run-status" class="status-message"></div>
+                </form>
+            </div>
+        </section>
+
+        <!-- Config Section -->
+        <section id="tab-config" class="tab-content">
+            <h2>Configuration</h2>
+            <div class="card">
+                <form id="config-form" class="config-form">
+                    <h3>Review Role</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="config-review_backend">Backend</label>
+                            <select id="config-review_backend" name="review_backend">
+                                <option value="claude-code">Claude Code</option>
+                                <option value="antigravity">Antigravity</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="config-review_model">Model</label>
+                            <input type="text" id="config-review_model" name="review_model">
+                        </div>
+                    </div>
+
+                    <h3>Build Role</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="config-build_backend">Backend</label>
+                            <select id="config-build_backend" name="build_backend">
+                                <option value="claude-code">Claude Code</option>
+                                <option value="antigravity">Antigravity</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="config-build_model">Model</label>
+                            <input type="text" id="config-build_model" name="build_model">
+                        </div>
+                    </div>
+
+                    <h3>Verify Role</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="config-verify_backend">Backend</label>
+                            <select id="config-verify_backend" name="verify_backend">
+                                <option value="claude-code">Claude Code</option>
+                                <option value="antigravity">Antigravity</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="config-verify_model">Model</label>
+                            <input type="text" id="config-verify_model" name="verify_model">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="config-max_iterations">Max Iterations</label>
+                        <input type="number" id="config-max_iterations" name="max_iterations" min="1" max="10" value="3">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Save Config</button>
+                    <div id="config-status" class="status-message"></div>
+                </form>
+            </div>
+        </section>
+
+        <!-- Health Section -->
+        <section id="tab-health" class="tab-content">
+            <h2>Backend Health</h2>
+            <div class="card">
+                <div id="health-list" class="health-list"></div>
+            </div>
+        </section>
+
+        <!-- Runs Section -->
+        <section id="tab-runs" class="tab-content">
+            <h2>Recent Runs</h2>
+            <div class="card">
+                <div id="runs-list" class="runs-list"></div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

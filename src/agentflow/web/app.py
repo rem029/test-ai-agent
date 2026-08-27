@@ -1,212 +1,179 @@
-"""Local admin web UI: view run progress, create tasks, edit backend config.
-
-Bound to 127.0.0.1 by default (see cli.py --serve). The UI is gated behind a
-simple static-credential login page (no backend/database). Runs render live
-progress by polling the same run-state JSON orchestrator.py writes (see
-PLAN.md, "Interface: CLI first, web later").
-"""
+"""FastAPI application for the agentflow web UI."""
 
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+import time
 from pathlib import Path
+from typing import Any, Optional
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import ValidationError
+from pydantic import BaseModel, Field
 
 from ..backends import BACKENDS
-from ..config import Config, RoleConfig, dump_config, load_config
-from ..credentials import openrouter_credential_source
-from ..database import DEFAULT_DATABASE_PATH, list_runs, load_run
+from ..config import Config, RoleConfig, load_config, dump_config, DEFAULT_CONFIG_PATH
+from ..database import list_runs, load_run
 from ..models import get_all_models
-from ..orchestrator import new_run_id, run_workflow
+from ..orchestrator import run_workflow, new_run_id
 
-_WEB_DIR = Path(__file__).parent
-
-# Only one workflow run at a time - concurrent runs against the same git
-# working tree would clobber each other's file edits/commits. This module is
-# imported once per running server process, so a single module-level guard
-# is sufficient (no queueing - a second submission just points at the run
-# already in flight).
-_run_lock = threading.Lock()
-_active_run: dict | None = None
-
-# Static auth credentials for the local admin UI. This is intentionally a
-# hard-coded gate (per the task: "Dont need backend here") rather than a
-# real user database.
-STATIC_USERNAME = "admin"
-STATIC_PASSWORD = "admin123"
-AUTH_COOKIE = "isAuthenticated"
-AUTH_COOKIE_VALUE = "true"
+STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(cwd: str, config_path: str, database_path: Path = DEFAULT_DATABASE_PATH) -> FastAPI:
-    app = FastAPI()
-    app.state.cwd = cwd
-    app.state.config_path = config_path
-    app.state.database_path = database_path
-    app.state.last_thread = None  # test hook: lets tests join() the background thread
+# ---------- Pydantic models ----------
+class ConfigUpdate(BaseModel):
+    review_backend: str = Field(..., description="Backend for review role")
+    review_model: Optional[str] = None
+    build_backend: str = Field(..., description="Backend for build role")
+    build_model: Optional[str] = None
+    verify_backend: str = Field(..., description="Backend for verify role")
+    verify_model: Optional[str] = None
+    max_iterations: int = Field(3, ge=1, le=10)
 
-    templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
-    templates.env.filters["fmt_time"] = (
-        lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "-"
-    )
-    templates.env.filters["total_cost"] = (
-        lambda steps: sum((s.get("usage", {}).get("cost_usd") or 0.0) for s in (steps or []))
-    )
-    app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
 
-    # Route guard: every page except the login/logout/static endpoints
-    # requires the static-auth cookie. Equivalent to a React Router guard,
-    # but enforced server-side so protected routes cannot be reached by
-    # directly typing a URL.
-    @app.middleware("http")
-    async def require_auth(request: Request, call_next):
-        path = request.url.path
-        if path in {"/login", "/logout"} or path.startswith("/static"):
-            return await call_next(request)
-        if request.cookies.get(AUTH_COOKIE) != AUTH_COOKIE_VALUE:
-            return RedirectResponse("/login", status_code=303)
-        return await call_next(request)
+class RunCreate(BaseModel):
+    goal: str = Field(..., min_length=1)
+    review_backend: Optional[str] = None
+    review_model: Optional[str] = None
+    build_backend: Optional[str] = None
+    build_model: Optional[str] = None
+    verify_backend: Optional[str] = None
+    verify_model: Optional[str] = None
+    max_iterations: Optional[int] = Field(None, ge=1, le=10)
 
-    def _list_runs() -> list[dict]:
-        return list_runs(cwd, database_path)
 
-    def _load_run(run_id: str) -> dict | None:
-        return load_run(run_id, cwd, database_path)
+# ---------- Helper functions ----------
+def _build_config_from_overrides(
+    base_config: Config,
+    overrides: Optional[RunCreate] = None,
+) -> Config:
+    """Create a Config from base and optional per‑role overrides."""
+    if overrides is None:
+        return base_config
 
-    # --- Auth views --------------------------------------------------
-
-    @app.get("/login", response_class=HTMLResponse)
-    def login_page(request: Request):
-        if request.cookies.get(AUTH_COOKIE) == AUTH_COOKIE_VALUE:
-            return RedirectResponse("/", status_code=303)
-        return templates.TemplateResponse(request, "login.html", {"error": None})
-
-    @app.post("/login")
-    def login_submit(request: Request, username: str = Form(""), password: str = Form("")):
-        if not username.strip() or not password:
-            error = "Username and password are required."
-        elif username.strip() == STATIC_USERNAME and password == STATIC_PASSWORD:
-            response = RedirectResponse("/", status_code=303)
-            response.set_cookie(
-                key=AUTH_COOKIE,
-                value=AUTH_COOKIE_VALUE,
-                max_age=60 * 60 * 24 * 7,
-                httponly=True,
-                samesite="lax",
-            )
-            return response
-        else:
-            error = "Invalid username or password."
-
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": error},
+    def update_role(role: str, backend_override: Optional[str], model_override: Optional[str]) -> RoleConfig:
+        current = getattr(base_config, role)
+        return RoleConfig(
+            backend=backend_override if backend_override else current.backend,
+            model=model_override if model_override is not None else current.model,
         )
 
-    @app.get("/logout")
-    def logout():
-        response = RedirectResponse("/login", status_code=303)
-        response.delete_cookie(AUTH_COOKIE)
-        return response
+    new_config = Config(
+        review=update_role("review", overrides.review_backend, overrides.review_model),
+        build=update_role("build", overrides.build_backend, overrides.build_model),
+        verify=update_role("verify", overrides.verify_backend, overrides.verify_model),
+        max_iterations=overrides.max_iterations if overrides.max_iterations else base_config.max_iterations,
+    )
+    return new_config
 
+
+def _health_check_all() -> dict[str, Any]:
+    """Run health checks for all configured backend types (unique by name+model)."""
+    results = {}
+    try:
+        config = load_config()  # Use default config; adjustments come via query params
+    except Exception:
+        config = Config(review=RoleConfig(backend="claude-code"),
+                        build=RoleConfig(backend="antigravity"),
+                        verify=RoleConfig(backend="claude-code"))
+
+    seen = set()
+    for role_name, role_config in config.roles().items():
+        key = f"{role_config.backend}:{role_config.model or ''}"
+        if key in seen:
+            continue
+        seen.add(key)
+        backend_class = BACKENDS[role_config.backend]
+        backend = backend_class(model=role_config.model)
+        try:
+            result = backend.health_check()
+            results[key] = {"backend": result.backend, "ok": result.ok, "detail": result.detail}
+        except Exception as exc:
+            results[key] = {"backend": key, "ok": False, "detail": str(exc)}
+    return results
+
+
+# ---------- FastAPI app ----------
+def create_app(cwd: str, config_path: str = DEFAULT_CONFIG_PATH) -> FastAPI:
+    app = FastAPI(title="agentflow Web UI", version="0.1.0")
+
+    # Mount static files (CSS, JS, etc.)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    # ---------- HTML page ----------
     @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request):
-        return templates.TemplateResponse(
-            request,
-            "dashboard.html",
-            {"runs": _list_runs(), "active_run_id": _active_run["run_id"] if _active_run else None},
-        )
+    async def index() -> HTMLResponse:
+        return STATIC_DIR / "index.html"
 
-    @app.get("/runs/{run_id}", response_class=HTMLResponse)
-    def run_detail(request: Request, run_id: str):
-        run = _load_run(run_id)
-        if run is None:
-            return HTMLResponse("run not found", status_code=404)
-        return templates.TemplateResponse(request, "run_detail.html", {"run": run})
-
-    @app.get("/runs/{run_id}/fragment", response_class=HTMLResponse)
-    def run_fragment(request: Request, run_id: str):
-        run = _load_run(run_id)
-        if run is None:
-            return HTMLResponse("run not found", status_code=404)
-        return templates.TemplateResponse(request, "_run_fragment.html", {"run": run})
-
-    @app.post("/runs")
-    def create_run(goal: str = Form(...)):
-        global _active_run
-        with _run_lock:
-            if _active_run is not None:
-                return RedirectResponse(f"/runs/{_active_run['run_id']}", status_code=303)
-
-            run_id = new_run_id()
+    # ---------- API endpoints ----------
+    @app.get("/api/config")
+    async def get_config() -> dict:
+        try:
             config = load_config(config_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return config.model_dump()
 
-            def _worker():
-                global _active_run
-                try:
-                    run_workflow(goal, config, cwd=cwd, run_id=run_id)
-                finally:
-                    with _run_lock:
-                        _active_run = None
+    @app.post("/api/config")
+    async def update_config(data: ConfigUpdate) -> dict:
+        # Validate backend names
+        for role in ["review", "build", "verify"]:
+            backend_name = getattr(data, f"{role}_backend")
+            if backend_name not in BACKENDS:
+                raise HTTPException(status_code=400, detail=f"Invalid backend for {role}: {backend_name}")
 
-            thread = threading.Thread(target=_worker, daemon=True)
-            _active_run = {"run_id": run_id}
-            app.state.last_thread = thread
-            thread.start()
+        config = Config(
+            review=RoleConfig(backend=data.review_backend, model=data.review_model),
+            build=RoleConfig(backend=data.build_backend, model=data.build_model),
+            verify=RoleConfig(backend=data.verify_backend, model=data.verify_model),
+            max_iterations=data.max_iterations,
+        )
+        try:
+            dump_config(config, config_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return {"ok": True, "config": config.model_dump()}
 
-        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+    @app.get("/api/health")
+    async def health() -> dict:
+        return _health_check_all()
 
     @app.get("/api/models")
-    def api_models():
+    async def models() -> dict:
         return get_all_models()
 
-    @app.get("/config", response_class=HTMLResponse)
-    def config_edit_form(request: Request):
-        config = load_config(config_path)
-        return templates.TemplateResponse(
-            request,
-            "config_edit.html",
-            {
-                "config": config,
-                "backend_names": list(BACKENDS),
-                "models_by_backend": get_all_models(),
-                "openrouter_credential_source": openrouter_credential_source(config_path),
-                "saved": request.query_params.get("saved") == "1",
-            },
-        )
+    @app.get("/api/runs")
+    async def runs() -> dict:
+        run_list = list_runs(cwd)
+        return {"runs": run_list}
 
-    @app.post("/config")
-    def config_edit_save(
-        review_backend: str = Form(...),
-        review_model: str = Form(""),
-        build_backend: str = Form(...),
-        build_model: str = Form(""),
-        verify_backend: str = Form(...),
-        verify_model: str = Form(""),
-        max_iterations: int = Form(3),
-        openrouter_api_key: str = Form(""),
-    ):
+    @app.get("/api/runs/{run_id}")
+    async def run_detail(run_id: str) -> dict:
+        run = load_run(run_id, cwd)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return run
+
+    @app.post("/api/runs")
+    async def create_run(data: RunCreate) -> dict:
+        # Build base config (from file or defaults)
         try:
-            config = Config(
-                review=RoleConfig(backend=review_backend, model=review_model or None),
-                build=RoleConfig(backend=build_backend, model=build_model or None),
-                verify=RoleConfig(backend=verify_backend, model=verify_model or None),
-                max_iterations=max_iterations,
-            )
-        except ValidationError as e:
-            return HTMLResponse(f"Invalid config: {e}", status_code=422)
-        dump_config(
-            config,
-            config_path,
-            openrouter_api_key=openrouter_api_key or None,
+            base_config = load_config(config_path)
+        except Exception:
+            base_config = Config(review=RoleConfig(backend="claude-code"),
+                                build=RoleConfig(backend="antigravity"),
+                                verify=RoleConfig(backend="claude-code"))
+        config = _build_config_from_overrides(base_config, data)
+
+        run_id = new_run_id()
+        # Start workflow in a background thread so the API returns immediately
+        thread = threading.Thread(
+            target=run_workflow,
+            kwargs={"goal": data.goal, "config": config, "cwd": cwd, "run_id": run_id},
+            daemon=True,
         )
-        return RedirectResponse("/config?saved=1", status_code=303)
+        thread.start()
+        return {"run_id": run_id, "status": "started"}
 
     return app
