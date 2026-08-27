@@ -18,6 +18,32 @@ from .backends import BACKENDS
 from .backends.base import RunResult
 from .config import Config, RoleConfig
 from .database import save_run
+from .tools import ToolContext, get_tool, list_tools, parse_tool_requests
+from .tools.base import ToolResult
+
+MAX_TOOL_CALLS_PER_STEP = 10
+
+TOOL_USE_INSTRUCTIONS = """\
+You may invoke tools by writing one or more blocks like this:
+
+<tool_call>
+{"name": "ToolName", "args": {"arg_name": "value"}}
+</tool_call>
+
+Available tools:
+"""
+
+
+def _tool_schemas_text() -> str:
+    lines = []
+    for name in list_tools():
+        tool = get_tool(name)
+        schema = tool.schema()
+        lines.append(f"- {name}: {schema['description']}")
+        params = schema["parameters"].get("properties", {})
+        for param_name, info in params.items():
+            lines.append(f"    • {param_name}: {info.get('description', '')}")
+    return "\n".join(lines)
 
 REVIEW_PROMPT = """You are the reviewer/planner for a coding task in this repository.
 
@@ -96,6 +122,91 @@ def _build_backend(role_config: RoleConfig):
     return BACKENDS[role_config.backend](model=role_config.model)
 
 
+def _execute_tool_call(name: str, args: dict, cwd: str) -> ToolResult:
+    """Execute a single parsed tool call and return its result."""
+    try:
+        tool = get_tool(name)
+        return tool.run(args, context=ToolContext(cwd=cwd))
+    except Exception as exc:  # noqa: BLE001
+        return ToolResult(success=False, error=f"Tool execution failed: {exc}")
+
+
+def _run_with_tools(
+    backend,
+    prompt: str,
+    *,
+    cwd: str,
+    mode: str,
+    state: RunState,
+    step_index: int,
+    max_calls: int = MAX_TOOL_CALLS_PER_STEP,
+) -> RunResult:
+    """Run a backend prompt, executing any requested tools iteratively."""
+    full_prompt = f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{_tool_schemas_text()}"
+    tool_history: list[str] = []
+
+    for call_index in range(max_calls):
+        if tool_history:
+            tool_results_text = "\n\n".join(tool_history)
+            full_prompt = (
+                f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{_tool_schemas_text()}\n\n"
+                f"Previous tool results:\n{tool_results_text}\n\n"
+                f"Continue with the original task."
+            )
+
+        result = backend.run(full_prompt, cwd=cwd, mode=mode)
+        if not result.success:
+            return result
+
+        try:
+            requests = parse_tool_requests(result.text)
+        except Exception as exc:  # noqa: BLE001
+            # If parsing fails, treat the raw response as the final answer.
+            return RunResult(
+                success=False,
+                text=f"Failed to parse tool requests: {exc}\n\n{result.text}",
+                usage=result.usage,
+                raw=result.raw,
+            )
+
+        if not requests:
+            return result
+
+        # Execute requested tools and build a results section for the next prompt.
+        results_parts: list[str] = []
+        for req in requests:
+            tool_result = _execute_tool_call(req.name, req.args, cwd)
+            state.add_tool_call(
+                step_index=step_index,
+                tool_name=req.name,
+                args=req.args,
+                result=tool_result.model_dump_truncated(),
+            )
+            status = "OK" if tool_result.success else "ERROR"
+            results_parts.append(
+                f"[{status}] {req.name}({req.args}) -> {tool_result.output}"
+            )
+            if tool_result.error:
+                results_parts.append(f"Error: {tool_result.error}")
+
+        tool_history.append(
+            f"Agent requested:\n" + "\n".join(f"  {r.name}({r.args})" for r in requests)
+            + f"\n\nResults:\n" + "\n".join(results_parts)
+        )
+
+    # If we exhaust the loop without the agent producing a non-tool response,
+    # return the last response along with a note that we hit the limit.
+    return RunResult(
+        success=False,
+        text=(
+            f"Reached the maximum of {max_calls} tool calls without a final response.\n\n"
+            f"Last response:\n{result.text}"
+        ),
+        usage=result.usage,
+        raw=result.raw,
+    )
+
+
 def new_run_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
@@ -107,6 +218,7 @@ class RunState:
     started_at: float
     config: dict
     steps: list = field(default_factory=list)
+    tool_calls: list = field(default_factory=list)
     finished_at: float | None = None
     pushed: dict | None = None
 
@@ -123,11 +235,32 @@ class RunState:
             bucket["cost_usd"] += u.get("cost_usd") or 0.0
         return totals
 
+    def add_tool_call(
+        self,
+        *,
+        step_index: int,
+        tool_name: str,
+        args: dict,
+        result: dict,
+    ) -> None:
+        """Record a tool invocation in the run state."""
+        self.tool_calls.append(
+            {
+                "step_index": step_index,
+                "tool_name": tool_name,
+                "args": args,
+                "result": result,
+                "status": "success" if result.get("success") else "failure",
+                "execution_time_ms": result.get("duration_ms", 0),
+                "error": result.get("error"),
+            }
+        )
+
     def to_dict(self) -> dict:
         return asdict(self)
 
-    def save(self, cwd: str) -> Path:
-        return save_run(self, cwd)
+    def save(self, cwd: str, database_path: Path | None = None) -> Path:
+        return save_run(self, cwd, path=database_path)
 
 
 def _record(role: str, mode: str, iteration: int, result: RunResult) -> dict:
@@ -148,7 +281,13 @@ def _parse_verify_result(text: str) -> bool:
     return False  # no explicit verdict in the response - don't guess pass
 
 
-def run_workflow(goal: str, config: Config, cwd: str, run_id: str | None = None) -> RunState:
+def run_workflow(
+    goal: str,
+    config: Config,
+    cwd: str,
+    run_id: str | None = None,
+    database_path: Path | None = None,
+) -> RunState:
     run_id = run_id or new_run_id()
     state_config = {role: cfg.model_dump() for role, cfg in config.roles().items()}
     state_config["max_iterations"] = config.max_iterations
@@ -160,21 +299,28 @@ def run_workflow(goal: str, config: Config, cwd: str, run_id: str | None = None)
     )
     # Save immediately so a poller (e.g. the web UI) sees the run exists
     # right away, not only after the review step completes.
-    state.save(cwd)
+    state.save(cwd, database_path=database_path)
 
     review_backend = _build_backend(config.review)
     build_backend = _build_backend(config.build)
     verify_backend = _build_backend(config.verify)
 
     print(f"[review] planning for goal: {goal}")
-    review_result = review_backend.run(REVIEW_PROMPT.format(goal=goal), cwd=cwd, mode="read")
+    review_result = _run_with_tools(
+        review_backend,
+        REVIEW_PROMPT.format(goal=goal),
+        cwd=cwd,
+        mode="read",
+        state=state,
+        step_index=0,
+    )
     state.steps.append(_record("review", "read", 0, review_result))
-    state.save(cwd)
+    state.save(cwd, database_path=database_path)
 
     if not review_result.success:
         print(f"[review] FAILED: {review_result.text[:300]}")
         state.finished_at = time.time()
-        state.save(cwd)
+        state.save(cwd, database_path=database_path)
         _print_summary(state)
         return state
 
@@ -200,9 +346,16 @@ def run_workflow(goal: str, config: Config, cwd: str, run_id: str | None = None)
         build_prompt = BUILD_PROMPT.format(
             goal=goal, plan=plan, context_section=context_section, feedback_section=feedback_section
         )
-        build_result = build_backend.run(build_prompt, cwd=cwd, mode="write")
+        build_result = _run_with_tools(
+            build_backend,
+            build_prompt,
+            cwd=cwd,
+            mode="write",
+            state=state,
+            step_index=iteration,
+        )
         state.steps.append(_record("build", "write", iteration, build_result))
-        state.save(cwd)
+        state.save(cwd, database_path=database_path)
 
         if not build_result.success:
             print(f"[build] FAILED: {build_result.text[:300]}")
@@ -210,11 +363,16 @@ def run_workflow(goal: str, config: Config, cwd: str, run_id: str | None = None)
             continue
 
         print(f"[verify] iteration {iteration}/{config.max_iterations}")
-        verify_result = verify_backend.run(
-            VERIFY_PROMPT.format(goal=goal, plan=plan), cwd=cwd, mode="verify"
+        verify_result = _run_with_tools(
+            verify_backend,
+            VERIFY_PROMPT.format(goal=goal, plan=plan),
+            cwd=cwd,
+            mode="verify",
+            state=state,
+            step_index=iteration,
         )
         state.steps.append(_record("verify", "verify", iteration, verify_result))
-        state.save(cwd)
+        state.save(cwd, database_path=database_path)
 
         verified = verify_result.success and _parse_verify_result(verify_result.text)
         print(f"[verify] {'PASS' if verified else 'FAIL'}: {verify_result.text[:300]}")
@@ -230,7 +388,7 @@ def run_workflow(goal: str, config: Config, cwd: str, run_id: str | None = None)
     else:
         print(f"[iterate] gave up after {config.max_iterations} iteration(s) without passing verify")
 
-    state.save(cwd)
+    state.save(cwd, database_path=database_path)
     _print_summary(state)
     return state
 

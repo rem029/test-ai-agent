@@ -93,7 +93,14 @@ class AntigravityBackend:
             "connectivity not exercised yet, see PLAN.md Phase B",
         )
 
-    def run(self, prompt: str, *, cwd: str, mode: str = "read") -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        *,
+        cwd: str,
+        mode: str = "read",
+        tools: list[dict] | None = None,
+    ) -> RunResult:
         if shutil.which("antigravity"):
             return self._run_cli(prompt, cwd=cwd, mode=mode)
         return self._run_sdk(prompt, cwd=cwd, mode=mode)

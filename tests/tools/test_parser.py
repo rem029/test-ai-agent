@@ -1,0 +1,80 @@
+"""Tests for the tool request parser."""
+
+from __future__ import annotations
+
+import pytest
+
+from agentflow.tools.parser import ParsedToolRequest, parse_tool_requests
+
+
+def test_parse_xml_tool_call():
+    text = """
+<tool_call>
+  <ReadFile>
+    <args>
+      <path>src/foo.py</path>
+      <start_line>1</start_line>
+      <end_line>10</end_line>
+    </args>
+  </ReadFile>
+</tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ReadFile"
+    assert calls[0].args == {"path": "src/foo.py", "start_line": 1, "end_line": 10}
+
+
+def test_parse_multiple_xml_tool_calls():
+    text = """
+<tool_call>
+  <ReadFile>
+    <args><path>foo.py</path></args>
+  </ReadFile>
+</tool_call>
+<tool_call>
+  <Shell>
+    <args><command>echo hi</command></args>
+  </Shell>
+</tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 2
+    assert calls[0].name == "ReadFile"
+    assert calls[1].name == "Shell"
+
+
+def test_parse_json_tool_call():
+    text = """
+```json
+{"name": "Shell", "args": {"command": "echo hello"}}
+```
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "Shell"
+    assert calls[0].args == {"command": "echo hello"}
+
+
+def test_parse_no_tool_calls():
+    assert parse_tool_requests("Just a plain response.") == []
+
+
+def test_xml_takes_precedence_over_json():
+    text = """
+<tool_call>
+  <ReadFile><args><path>foo.py</path></args></ReadFile>
+</tool_call>
+```json
+{"name": "Shell", "args": {"command": "echo hi"}}
+```
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ReadFile"
+
+
+def test_invalid_xml_is_skipped():
+    text = "<tool_call><ReadFile><args><path>foo.py</path><<bad>></args></ReadFile></tool_call>"
+    calls = parse_tool_requests(text)
+    assert len(calls) == 0

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..backends import BACKENDS
 from ..config import Config, RoleConfig, load_config, dump_config, DEFAULT_CONFIG_PATH
-from ..database import list_runs, load_run
+from ..database import DEFAULT_DATABASE_PATH, get_tool_calls, list_runs, load_run
 from ..models import get_all_models
 from ..orchestrator import run_workflow, new_run_id
 
@@ -95,8 +95,13 @@ def _health_check_all() -> dict[str, Any]:
 
 
 # ---------- FastAPI app ----------
-def create_app(cwd: str, config_path: str = DEFAULT_CONFIG_PATH) -> FastAPI:
+def create_app(
+    cwd: str,
+    config_path: str = DEFAULT_CONFIG_PATH,
+    database_path: Path | None = None,
+) -> FastAPI:
     app = FastAPI(title="agentflow Web UI", version="0.1.0")
+    db_path = database_path or DEFAULT_DATABASE_PATH
 
     # Mount static files (CSS, JS, etc.)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -104,7 +109,7 @@ def create_app(cwd: str, config_path: str = DEFAULT_CONFIG_PATH) -> FastAPI:
     # ---------- HTML page ----------
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
-        return STATIC_DIR / "index.html"
+        return HTMLResponse(content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
     # ---------- API endpoints ----------
     @app.get("/api/config")
@@ -145,15 +150,24 @@ def create_app(cwd: str, config_path: str = DEFAULT_CONFIG_PATH) -> FastAPI:
 
     @app.get("/api/runs")
     async def runs() -> dict:
-        run_list = list_runs(cwd)
+        run_list = list_runs(cwd, path=db_path)
         return {"runs": run_list}
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict:
-        run = load_run(run_id, cwd)
+        run = load_run(run_id, cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return run
+
+    @app.get("/api/runs/{run_id}/tool_calls")
+    async def run_tool_calls(run_id: str) -> dict:
+        """Return the tool call history for a run."""
+        run = load_run(run_id, cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        calls = get_tool_calls(run_id, cwd, path=db_path)
+        return {"tool_calls": calls}
 
     @app.post("/api/runs")
     async def create_run(data: RunCreate) -> dict:
@@ -170,7 +184,13 @@ def create_app(cwd: str, config_path: str = DEFAULT_CONFIG_PATH) -> FastAPI:
         # Start workflow in a background thread so the API returns immediately
         thread = threading.Thread(
             target=run_workflow,
-            kwargs={"goal": data.goal, "config": config, "cwd": cwd, "run_id": run_id},
+            kwargs={
+                "goal": data.goal,
+                "config": config,
+                "cwd": cwd,
+                "run_id": run_id,
+                "database_path": db_path,
+            },
             daemon=True,
         )
         thread.start()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 # Shared convention for backends with no confirmed native file-editing tool
 # (OpenRouter's plain chat completion, Antigravity's SDK fallback): ask the
@@ -91,11 +91,21 @@ class Backend(Protocol):
         """Verify the backend is installed/authenticated and reachable."""
         ...
 
-    def run(self, prompt: str, *, cwd: str, mode: str = "read") -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        *,
+        cwd: str,
+        mode: str = "read",
+        tools: list[dict[str, Any]] | None = None,
+    ) -> RunResult:
         """Execute prompt against this backend, scoped to cwd.
 
         mode is "read" (review/plan, no side effects), "write" (build, may
         change files), or "verify" (run tests/lint, may run commands but not
         edit files) - see MODE_ALLOWED_TOOLS.
+
+        ``tools`` is a list of tool JSON schemas the backend may request.
+        Backends that don't support tool calling should ignore it.
         """
         ...

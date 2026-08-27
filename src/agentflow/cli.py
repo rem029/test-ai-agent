@@ -15,6 +15,7 @@ from .backends import BACKENDS
 from .config import DEFAULT_CONFIG_PATH, load_config
 from .models import get_all_models
 from .orchestrator import run_workflow
+from .tools import list_tools
 
 
 def _build_backend(role_name: str, role_config):
@@ -82,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="BACKEND",
         help="List available models and pricing for all or a specific backend (openrouter, claude-code, antigravity)",
     )
+    parser.add_argument(
+        "--list-tools",
+        action="store_true",
+        help="List available tools that agents can invoke",
+    )
     parser.add_argument("--review-backend", choices=list(BACKENDS), help="Override review backend")
     parser.add_argument("--review-model", help="Override review model")
     parser.add_argument("--build-backend", choices=list(BACKENDS), help="Override build backend")
@@ -145,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_models is not None:
         backend_filter = None if args.list_models == "all" else args.list_models
         return print_models(backend_filter)
+
+    if args.list_tools:
+        print("=== Available Tools ===")
+        for name in list_tools():
+            print(f"  • {name}")
+        return 0
 
     if args.serve:
         from .web.app import create_app

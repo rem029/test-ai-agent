@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auth Todo App</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .hidden { display: none; }
+        #auth, #todo { border: 1px solid #ccc; padding: 20px; border-radius: 8px; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 8px; margin: 5px 0; box-sizing: border-box; }
+        button { padding: 10px 15px; margin-top: 10px; background: #4CAF50; color: white; border: none; cursor: pointer; }
+        button.secondary { background: #ccc; color: black; }
+        #todo-list { list-style: none; padding: 0; }
+        #todo-list li { display: flex; align-items: center; padding: 10px; margin: 5px 0; background: #f9f9f9; border-radius: 4px; cursor: grab; }
+        #todo-list li.dragging { opacity: 0.5; }
+        #todo-list .actions { margin-left: auto; }
+        #todo-list .actions button { margin-left: 5px; padding: 5px 8px; font-size: 12px; }
+        .done { text-decoration: line-through; color: #888; }
+    </style>
+</head>
+<body>
+    <h1>Todo App with SQLite</h1>
+
+    <!-- Auth Section -->
+    <div id="auth">
+        <h2 id="auth-title">Login</h2>
+        <form id="auth-form">
+            <label for="username">Username</label>
+            <input type="text" id="username" required>
+            <label for="password">Password</label>
+            <input type="password" id="password" required>
+            <button type="submit" id="auth-btn">Login</button>
+            <button type="button" id="toggle-auth" class="secondary">Switch to Sign Up</button>
+            <p id="auth-msg" style="color: red;"></p>
+        </form>
+    </div>
+
+    <!-- Todo Section -->
+    <div id="todo" class="hidden">
+        <h2>Your Todo List</h2>
+        <div>
+            <input type="text" id="new-todo" placeholder="Add a new todo...">
+            <button id="add-todo">Add</button>
+        </div>
+        <ul id="todo-list"></ul>
+        <button id="logout" class="secondary">Logout</button>
+    </div>
+
+    <!-- SQL.js Dependency -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script>
+        let db = null;
+        let currentUserId = null;
+        let todos = [];
+        let draggedItem = null;
+
+        // Load SQL.js and initialize database
+        const initSqlJsPromise = initSqlJs({
+            locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+        });
+
+        initSqlJsPromise.then(SQL => {
+            // Try to load from localStorage
+            const saved = localStorage.getItem('todo_sqlite_db');
+            if (saved) {
+                db = new SQL.Database(new Uint8Array(JSON.parse(saved)));
+            } else {
+                db = new SQL.Database();
+                createTables();
+                // Add default user (admin / password)
+                const defaultUser = { username: 'admin', password: 'password' };
+                addUser(defaultUser.username, defaultUser.password);
+                persistDb();
+            }
+            console.log('SQL.js loaded');
+        });
+
+        function createTables() {
+            db.run(`
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS todos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    done INTEGER DEFAULT 0,
+                    position INTEGER NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                );
+            `);
+        }
+
+        function persistDb() {
+            const data = db.export();
+            localStorage.setItem('todo_sqlite_db', JSON.stringify(Array.from(data)));
+        }
+
+        function addUser(username, password) {
+            db.run('INSERT INTO users (username, password) VALUES (?, ?)', [username, password]);
+            persistDb();
+        }
+
+        function findUser(username, password) {
+            const res = db.exec('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
+            if (res.length && res[0].values.length) {
+                return res[0].values[0];
+            }
+            return null;
+        }
+
+        function findUserByUsername(username) {
+            const res = db.exec('SELECT * FROM users WHERE username = ?', [username]);
+            if (res.length && res[0].values.length) {
+                return res[0].values[0];
+            }
+            return null;
+        }
+
+        function loadTodos() {
+            const res = db.exec('SELECT * FROM todos WHERE user_id = ? ORDER BY position', [currentUserId]);
+            todos = res.length ? res[0].values.map(row => ({
+                id: row[0],
+                user_id: row[1],
+                title: row[2],
+                done: row[3] === 1,
+                position: row[4]
+            })) : [];
+            renderTodos();
+        }
+
+        function renderTodos() {
+            const list = document.getElementById('todo-list');
+            list.innerHTML = '';
+            todos.forEach(todo => {
+                const li = document.createElement('li');
+                li.draggable = true;
+                li.dataset.id = todo.id;
+                li.innerHTML = `
+                    <input type="checkbox" ${todo.done ? 'checked' : ''} class="toggle-done">
+                    <span class="todo-title ${todo.done ? 'done' : ''}">${escapeHtml(todo.title)}</span>
+                    <span class="actions">
+                        <button class="edit">Edit</button>
+                        <button class="delete">Delete</button>
+                    </span>
+                `;
+                list.appendChild(li);
+            });
+            attachEventListeners();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function attachEventListeners() {
+            // Toggle done
+            document.querySelectorAll('.toggle-done').forEach(checkbox => {
+                checkbox.addEventListener('change', function() {
+                    const id = parseInt(this.closest('li').dataset.id);
+                    const todo = todos.find(t => t.id === id);
+                    todo.done = this.checked;
+                    db.run('UPDATE todos SET done = ? WHERE id = ?', [todo.done ? 1 : 0, id]);
+                    persistDb();
+                    renderTodos();
+                });
+            });
+
+            // Edit
+            document.querySelectorAll('.edit').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const id = parseInt(this.closest('li').dataset.id);
+                    const todo = todos.find(t => t.id === id);
+                    const newTitle = prompt('Edit todo:', todo.title);
+                    if (newTitle !== null && newTitle.trim()) {
+                        todo.title = newTitle.trim();
+                        db.run('UPDATE todos SET title = ? WHERE id = ?', [todo.title, id]);
+                        persistDb();
+                        renderTodos();
+                    }
+                });
+            });
+
+            // Delete
+            document.querySelectorAll('.delete').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const id = parseInt(this.closest('li').dataset.id);
+                    if (confirm('Delete this todo?')) {
+                        db.run('DELETE FROM todos WHERE id = ?', [id]);
+                        todos = todos.filter(t => t.id !== id);
+                        persistDb();
+                        renderTodos();
+                    }
+                });
+            });
+
+            // Drag and drop
+            document.querySelectorAll('#todo-list li').forEach(item => {
+                item.addEventListener('dragstart', function(e) {
+                    draggedItem = this;
+                    e.dataTransfer.effectAllowed = 'move';
+                    this.classList.add('dragging');
+                });
+                item.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    const original = draggedItem;
+                    if (this !== original) {
+                        // Reorder DOM
+                        const list = document.getElementById('todo-list');
+                        const items = Array.from(list.children);
+                        const dragIndex = items.indexOf(original);
+                        const dropIndex = items.indexOf(this);
+                        if (dragIndex < dropIndex) {
+                            list.insertBefore(original, this.nextSibling);
+                        } else {
+                            list.insertBefore(original, this);
+                        }
+                    }
+                });
+                item.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('dragging');
+                    const list = document.getElementById('todo-list');
+                    const items = Array.from(list.children);
+                    // Rebuild todos array with new positions
+                    todos = items.map((li) => {
+                        const id = parseInt(li.dataset.id);
+                        return todos.find(t => t.id === id);
+                    });
+                    // Update positions in DB
+                    todos.forEach((todo, idx) => {
+                        db.run('UPDATE todos SET position = ? WHERE id = ?', [idx, todo.id]);
+                    });
+                    persistDb();
+                    renderTodos(); // Re-render to ensure consistent state
+                });
+                item.addEventListener('dragend', function() {
+                    this.classList.remove('dragging');
+                    draggedItem = null;
+                });
+            });
+        }
+
+        // Auth handlers
+        const authForm = document.getElementById('auth-form');
+        const authTitle = document.getElementById('auth-title');
+        const authBtn = document.getElementById('auth-btn');
+        const toggleAuth = document.getElementById('toggle-auth');
+        const authMsg = document.getElementById('auth-msg');
+        let isLoginMode = true;
+
+        function setAuthMode(login) {
+            isLoginMode = login;
+            authTitle.textContent = login ? 'Login' : 'Sign Up';
+            authBtn.textContent = login ? 'Login' : 'Sign Up';
+            toggleAuth.textContent = login ? 'Switch to Sign Up' : 'Switch to Login';
+        }
+
+        toggleAuth.addEventListener('click', () => setAuthMode(!isLoginMode));
+
+        authForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                authMsg.textContent = 'Please fill all fields';
+                return;
+            }
+
+            if (isLoginMode) {
+                const user = findUser(username, password);
+                if (user) {
+                    currentUserId = user[0];
+                    authMsg.textContent = '';
+                    showTodoApp();
+                } else {
+                    authMsg.textContent = 'Invalid username or password';
+                }
+            } else {
+                // Sign up
+                if (findUserByUsername(username)) {
+                    authMsg.textContent = 'Username already exists';
+                    return;
+                }
+                addUser(username, password);
+                const newUser = findUserByUsername(username);
+                currentUserId = newUser[0];
+                authMsg.textContent = 'Account created, logged in!';
+                showTodoApp();
+            }
+        });
+
+        function showTodoApp() {
+            document.getElementById('auth').classList.add('hidden');
+            document.getElementById('todo').classList.remove('hidden');
+            loadTodos();
+        }
+
+        // Add todo
+        document.getElementById('add-todo').addEventListener('click', function() {
+            const input = document.getElementById('new-todo');
+            const title = input.value.trim();
+            if (!title) return;
+
+            const maxPos = todos.reduce((max, t) => Math.max(max, t.position), -1) + 1;
+            db.run('INSERT INTO todos (user_id, title, done, position) VALUES (?, ?, ?, ?)', [currentUserId, title, 0, maxPos]);
+            persistDb();
+            loadTodos();
+            input.value = '';
+        });
+
+        // Logout
+        document.getElementById('logout').addEventListener('click', function() {
+            currentUserId = null;
+            todos = [];
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+            document.getElementById('new-todo').value = '';
+            document.getElementById('todo').classList.add('hidden');
+            document.getElementById('auth').classList.remove('hidden');
+            setAuthMode(true);
+        });
+    </script>
+</body>
+</html>

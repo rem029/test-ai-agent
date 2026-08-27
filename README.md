@@ -55,6 +55,15 @@ uv run agentflow --list-models
 uv run agentflow --list-models openrouter
 ```
 
+List available tools agents can invoke:
+
+```bash
+uv run agentflow --list-tools
+```
+
+Agentflow includes file, shell, code-analysis, search, and git tools. See
+[`TOOLS.md`](TOOLS.md) for the full list and developer guide.
+
 ## Run a workflow
 
 Run from the repository you want agentflow to work on:
@@ -85,8 +94,21 @@ uv run agentflow --serve --host 0.0.0.0 --port 4200
 Open `http://localhost:4200` in your browser. The default host and port are
 `127.0.0.1` and `8420`.
 
+The UI shows recent runs, a run detail view with step history, a tool call
+timeline with expandable output, and a visual diff viewer for file changes.
+The runs list and run detail auto-refresh while a workflow is active.
+
 ## Test
 
 ```bash
 uv run pytest
+```
+
+## Benchmarks
+
+A lightweight benchmark for the parser, registry, and `ReadFile` tool is
+included in `benchmarks/tool_loop_bench.py`:
+
+```bash
+uv run python benchmarks/tool_loop_bench.py
 ```

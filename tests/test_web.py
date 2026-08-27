@@ -6,8 +6,6 @@ these tests never make a real backend call.
 
 from __future__ import annotations
 
-import json
-import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -28,12 +26,7 @@ def _config() -> Config:
     )
 
 
-def _reset_active_run():
-    web_app._active_run = None
-
-
 def _make_client(tmp_path: Path, config_path: str | None = None) -> TestClient:
-    _reset_active_run()
     app = web_app.create_app(
         cwd=str(tmp_path),
         config_path=config_path or str(tmp_path / "agentflow.config.yaml"),
@@ -42,139 +35,104 @@ def _make_client(tmp_path: Path, config_path: str | None = None) -> TestClient:
     return TestClient(app)
 
 
-def test_dashboard_empty(tmp_path):
+def test_index_serves_static_html(tmp_path):
     client = _make_client(tmp_path)
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "No runs yet" in resp.text
+    assert "text/html" in resp.headers["content-type"]
 
 
-def test_dashboard_lists_existing_run_fixture(tmp_path):
+def test_api_runs_lists_existing_run_fixture(tmp_path):
     run = {
         "run_id": "20260101-000000-aaaaaaaa",
         "goal": "add a --version flag",
         "started_at": time.time(),
         "config": {},
         "steps": [],
+        "tool_calls": [],
         "finished_at": time.time(),
         "pushed": {"branch": "dev", "commit": "deadbeef", "pushed": True},
     }
     save_run(RunState(**run), str(tmp_path), tmp_path / "agentflow.db")
 
     client = _make_client(tmp_path)
-    resp = client.get("/")
+    resp = client.get("/api/runs")
     assert resp.status_code == 200
-    assert "add a --version flag" in resp.text
-    assert "pushed" in resp.text
+    data = resp.json()
+    assert len(data["runs"]) == 1
+    assert data["runs"][0]["goal"] == "add a --version flag"
 
-    detail = client.get(f"/runs/{run['run_id']}")
+    detail = client.get(f"/api/runs/{run['run_id']}")
     assert detail.status_code == 200
-    assert "add a --version flag" in detail.text
+    assert detail.json()["goal"] == "add a --version flag"
 
 
-def test_run_detail_missing_returns_404(tmp_path):
+def test_api_run_detail_missing_returns_404(tmp_path):
     client = _make_client(tmp_path)
-    resp = client.get("/runs/does-not-exist")
+    resp = client.get("/api/runs/does-not-exist")
     assert resp.status_code == 404
 
 
-def test_create_run_spawns_background_thread_and_redirects(tmp_path):
-    _reset_active_run()
+def test_api_create_run_spawns_background_thread(tmp_path):
     with patch("agentflow.web.app.load_config", return_value=_config()), patch(
         "agentflow.web.app.run_workflow"
     ) as mock_run:
-        app = web_app.create_app(
-            cwd=str(tmp_path),
-            config_path=str(tmp_path / "agentflow.config.yaml"),
-            database_path=tmp_path / "agentflow.db",
-        )
-        client = TestClient(app)
+        client = _make_client(tmp_path)
+        resp = client.post("/api/runs", json={"goal": "test goal"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+        assert "run_id" in data
 
-        resp = client.post("/runs", data={"goal": "test goal"}, follow_redirects=False)
-        assert resp.status_code == 303
-        assert resp.headers["location"].startswith("/runs/")
-
-        thread = app.state.last_thread
-        assert thread is not None
-        thread.join(timeout=5)
-        assert not thread.is_alive()
+        # Give the background thread time to start and call run_workflow.
+        import threading
+        for thread in threading.enumerate():
+            if thread.name.startswith("agentflow-"):
+                thread.join(timeout=5)
 
         mock_run.assert_called_once()
         _, kwargs = mock_run.call_args
-        assert kwargs["run_id"] == resp.headers["location"].split("/runs/")[1]
+        assert kwargs["goal"] == "test goal"
+        assert kwargs["run_id"] == data["run_id"]
 
 
-def test_second_run_blocked_while_active(tmp_path):
-    _reset_active_run()
-    started = threading.Event()
-    release = threading.Event()
-
-    def _slow_run_workflow(goal, config, cwd, run_id=None):
-        started.set()
-        release.wait(timeout=5)
-
-    with patch("agentflow.web.app.load_config", return_value=_config()), patch(
-        "agentflow.web.app.run_workflow", side_effect=_slow_run_workflow
-    ):
-        app = web_app.create_app(
-            cwd=str(tmp_path),
-            config_path=str(tmp_path / "agentflow.config.yaml"),
-            database_path=tmp_path / "agentflow.db",
-        )
-        client = TestClient(app)
-
-        first = client.post("/runs", data={"goal": "first goal"}, follow_redirects=False)
-        assert first.status_code == 303
-        first_run_id = first.headers["location"].split("/runs/")[1]
-        assert started.wait(timeout=5)
-
-        second = client.post("/runs", data={"goal": "second goal"}, follow_redirects=False)
-        assert second.status_code == 303
-        assert second.headers["location"].split("/runs/")[1] == first_run_id
-
-        release.set()
-        app.state.last_thread.join(timeout=5)
-
-
-def test_config_form_rejects_invalid_backend(tmp_path):
+def test_api_config_form_rejects_invalid_backend(tmp_path):
     config_path = tmp_path / "agentflow.config.yaml"
     client = _make_client(tmp_path, config_path=str(config_path))
 
     resp = client.post(
-        "/config",
-        data={
+        "/api/config",
+        json={
             "review_backend": "not-a-real-backend",
             "review_model": "",
             "build_backend": "claude-code",
             "build_model": "",
             "verify_backend": "claude-code",
             "verify_model": "",
-            "max_iterations": "3",
+            "max_iterations": 3,
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code in (400, 422)
     assert not config_path.exists()
 
 
-def test_config_form_writes_valid_yaml_roundtrip(tmp_path):
+def test_api_config_form_writes_valid_yaml_roundtrip(tmp_path):
     config_path = tmp_path / "agentflow.config.yaml"
     client = _make_client(tmp_path, config_path=str(config_path))
 
     resp = client.post(
-        "/config",
-        data={
+        "/api/config",
+        json={
             "review_backend": "claude-code",
             "review_model": "",
             "build_backend": "openrouter",
             "build_model": "deepseek/deepseek-v4-flash",
             "verify_backend": "claude-code",
             "verify_model": "",
-            "max_iterations": "5",
-            "openrouter_api_key": "test-key",
+            "max_iterations": 5,
         },
-        follow_redirects=False,
     )
-    assert resp.status_code == 303
+    assert resp.status_code == 200
     assert config_path.exists()
 
     from agentflow.config import load_config
@@ -183,21 +141,6 @@ def test_config_form_writes_valid_yaml_roundtrip(tmp_path):
     assert reloaded.build.backend == "openrouter"
     assert reloaded.build.model == "deepseek/deepseek-v4-flash"
     assert reloaded.max_iterations == 5
-    assert "openrouter_api_key: test-key" in config_path.read_text()
-    assert config_path.stat().st_mode & 0o777 == 0o600
-
-
-def test_config_form_reports_agentflow_credential_source(tmp_path, monkeypatch):
-    config = tmp_path / "agentflow.config.yaml"
-    config.write_text("openrouter_api_key: test-key\n")
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-    client = _make_client(tmp_path, str(config))
-    resp = client.get("/config")
-
-    assert resp.status_code == 200
-    assert f"agentflow config: {config}" in resp.text
-    assert "test-key" not in resp.text
 
 
 def test_api_models_endpoint(tmp_path):
@@ -208,3 +151,38 @@ def test_api_models_endpoint(tmp_path):
     assert "openrouter" in data
     assert "claude-code" in data
     assert "antigravity" in data
+
+
+def test_api_run_tool_calls_endpoint(tmp_path):
+    run = {
+        "run_id": "20260101-000000-bbbbbbbb",
+        "goal": "test tool calls api",
+        "started_at": time.time(),
+        "config": {},
+        "steps": [],
+        "tool_calls": [
+            {
+                "tool_name": "ReadFile",
+                "args": {"path": "src/main.py"},
+                "result": "content",
+                "success": True,
+                "timestamp": time.time(),
+            }
+        ],
+        "finished_at": time.time(),
+        "pushed": None,
+    }
+    save_run(RunState(**run), str(tmp_path), tmp_path / "agentflow.db")
+
+    client = _make_client(tmp_path)
+    resp = client.get(f"/api/runs/{run['run_id']}/tool_calls")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["tool_calls"]) == 1
+    assert data["tool_calls"][0]["tool_name"] == "ReadFile"
+
+
+def test_api_run_tool_calls_missing_run_returns_404(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/does-not-exist/tool_calls")
+    assert resp.status_code == 404

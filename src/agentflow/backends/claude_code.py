@@ -68,7 +68,13 @@ class ClaudeCodeBackend:
         )
 
     def run(
-        self, prompt: str, *, cwd: str, mode: str = "read", timeout: int = 900
+        self,
+        prompt: str,
+        *,
+        cwd: str,
+        mode: str = "read",
+        timeout: int = 900,
+        tools: list[dict] | None = None,
     ) -> RunResult:
         """Run prompt via `claude -p`, scoped to cwd.
 

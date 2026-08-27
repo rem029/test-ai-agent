@@ -452,3 +452,95 @@ projects.
 ## Status
 
 Phases A, B, C, D, E, F, and G are done.
+
+---
+
+## Next Phase — Phase H: Recursive Tool Use & Agent Composition
+
+**Goal:** Evolve agentflow from a deterministic linear orchestrator into a
+claude-code-like agentic platform while keeping the existing review → build →
+verify → iterate → push workflow intact.
+
+**Core idea:** Agents can request tools during their runs. The orchestrator
+parses those requests, executes the tools deterministically, and feeds the
+results back to the agent. The orchestrator stays in control of the overall
+workflow; the LLM stays in the worker roles.
+
+### Why this matters now
+
+The current workflow already works end-to-end, but the agents are limited to
+whatever their native backend can do:
+- **OpenRouter** has no repository access unless we manually inject `src/`
+  contents into the prompt.
+- **Claude Code** can read files on its own, but agentflow doesn't surface
+  or audit those reads.
+- **Antigravity** (SDK fallback) has no repo access at all in this
+  environment.
+
+By giving agentflow its own tool layer, every backend can work with the
+repository uniformly, and every tool call becomes observable, replayable,
+and testable.
+
+### Planned capabilities
+
+1. **Tool abstraction & registry**
+   - Abstract `Tool` base class with schemas and validation.
+   - `ToolRegistry` for discovery and lookup.
+   - `agentflow --list-tools` to see available tools.
+
+2. **Core tool suite (10+ tools)**
+   - File: `ReadFile`, `WriteFile`, `ListDirectory`, `SearchFiles`.
+   - Shell: `Shell` with timeout, cwd, and output capture.
+   - Code analysis: `Lint`, `TypeCheck`, `ImportAnalysis`.
+   - Search: `WebFetch`, `CodeSearch`.
+   - Git: `GitStatus`, `GitDiff`, `GitCommitSimulation`.
+
+3. **Orchestrator tool loop**
+   - Parse tool requests from agent responses (XML or JSON protocol).
+   - Execute tools and return results back to the agent.
+   - Record every tool call in `RunState`.
+   - Enforce limits (max calls per step, timeouts) to prevent runaway loops.
+
+4. **Backend integration**
+   - Pass tool schemas to each backend via system prompt or configuration.
+   - Claude Code, OpenRouter, and Antigravity can all request the same tools.
+
+5. **Web UI visibility**
+   - Tool call timeline in run details (name, args, result, status).
+   - Expandable tool output and visual file diffs.
+   - Live updates via htmx polling.
+
+6. **Persistence**
+   - Extend SQLite schema with a `tool_calls` table.
+   - Store tool calls per step; query and filter later.
+
+7. **Documentation & safety**
+   - Tool developer guide for adding new tools.
+   - Security review of shell, file, and git tools.
+   - Integration tests and benchmarks.
+
+### Architecture principles preserved
+
+- **No LLM in the coordination loop:** The orchestrator decides when to call
+  review/build/verify and when to execute tools.
+- **Pluggable backends:** Tool availability is uniform across Claude Code,
+  OpenRouter, and Antigravity.
+- **No CDN:** Web UI continues to use vendored htmx and vanilla CSS.
+- **Single-user local deployment:** Web UI stays bound to local/container
+  network, no auth layer.
+
+### Task breakdown
+
+Phase H has been implemented. The tool layer, orchestrator loop, web UI
+timeline, persistence, tests, benchmarks, and documentation are all in place.
+
+### Success criteria
+
+- ✅ Agents in review, build, and verify steps can request tools.
+- ✅ At least 10 tools implemented, validated, and tested.
+- ✅ Orchestrator executes tool requests and returns results within the
+  existing linear workflow.
+- ✅ Web UI displays tool calls, arguments, and results.
+- ✅ Tool calls are persisted and queryable in SQLite.
+- ✅ `uv run pytest` passes; no security vulnerabilities introduced.
+- ✅ Existing CLI and web UI behavior remains backward compatible.

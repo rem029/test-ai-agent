@@ -71,7 +71,14 @@ class OpenRouterBackend:
             f"cost_usd={usage.get('cost')}",
         )
 
-    def run(self, prompt: str, *, cwd: str, mode: str = "read") -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        *,
+        cwd: str,
+        mode: str = "read",
+        tools: list[dict] | None = None,
+    ) -> RunResult:
         try:
             api_key = openrouter_api_key()
         except CredentialConfigError as exc:

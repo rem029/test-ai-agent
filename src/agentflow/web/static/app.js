@@ -17,12 +17,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Form submission handlers
     document.getElementById('config-form').addEventListener('submit', submitConfig);
     document.getElementById('run-form').addEventListener('submit', submitRun);
+    document.getElementById('back-to-runs').addEventListener('click', (e) => {
+        e.preventDefault();
+        showTab('runs');
+        stopDetailPolling();
+    });
 
     // Theme toggle
     document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
     // Load backend dropdowns with models
     populateModelOptions();
+
+    // Poll runs list while on the runs tab
+    startRunsPolling();
 });
 
 // ------------------------------------------------------------------
@@ -193,21 +201,23 @@ async function loadRuns() {
         runs.forEach(run => {
             const div = document.createElement('div');
             div.className = 'run-item';
+            div.style.cursor = 'pointer';
 
             // Determine status label
             const status = run.pushed && run.pushed.pushed ? 'Pushed' : (run.finished_at ? 'Completed' : 'Running');
             const statusClass = run.pushed && run.pushed.pushed ? 'success' : (run.finished_at ? 'info' : 'warning');
 
             div.innerHTML = `
-                <h3>${run.goal.substring(0, 60)}...</h3>
+                <h3>${escapeHtml(run.goal).substring(0, 60)}...</h3>
                 <div class="run-meta">
                     <span class="badge ${statusClass}">${status}</span>
                     <span>Run ID: ${run.run_id}</span>
-                    <span>Started: ${new Date(run.started_at * 1000).toLocaleString()}</span>
-                    ${run.finished_at ? `<span>Finished: ${new Date(run.finished_at * 1000).toLocaleString()}</span>` : ''}
+                    <span>Started: ${formatTime(run.started_at)}</span>
+                    ${run.finished_at ? `<span>Finished: ${formatTime(run.finished_at)}</span>` : ''}
                 </div>
-                <div class="run-goal">${run.goal}</div>
+                <div class="run-goal">${escapeHtml(run.goal)}</div>
             `;
+            div.addEventListener('click', () => showRunDetail(run.run_id));
             container.appendChild(div);
         });
     } catch (error) {
@@ -297,6 +307,228 @@ async function populateModelOptions() {
     } catch (error) {
         console.warn('Could not load model suggestions:', error);
     }
+}
+
+// ------------------------------------------------------------------
+// Run detail view
+// ------------------------------------------------------------------
+let detailPollingId = null;
+let currentRunId = null;
+
+function showRunDetail(runId) {
+    currentRunId = runId;
+    showTab('run-detail');
+    loadRunDetail(runId);
+    startDetailPolling(runId);
+}
+
+function showTab(tabName) {
+    document.querySelectorAll('.nav-link').forEach(nav => {
+        nav.classList.toggle('active', nav.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.toggle('active', tab.id === `tab-${tabName}`);
+    });
+}
+
+async function loadRunDetail(runId) {
+    const container = document.getElementById('run-detail-content');
+    try {
+        const [runResp, callsResp] = await Promise.all([
+            fetch(`/api/runs/${runId}`),
+            fetch(`/api/runs/${runId}/tool_calls`)
+        ]);
+        if (!runResp.ok) throw new Error('Failed to load run');
+        const run = await runResp.json();
+        const callsData = callsResp.ok ? await callsResp.json() : { tool_calls: [] };
+
+        document.getElementById('detail-goal').textContent = run.goal || 'Run Detail';
+
+        const status = run.pushed && run.pushed.pushed
+            ? 'Pushed'
+            : (run.finished_at ? 'Completed' : 'Running');
+        const statusClass = run.pushed && run.pushed.pushed
+            ? 'success'
+            : (run.finished_at ? 'info' : 'warning');
+
+        let html = `
+            <div class="card run-summary">
+                <div class="run-meta">
+                    <span class="badge ${statusClass}">${status}</span>
+                    <span>Run ID: ${run.run_id}</span>
+                    <span>Started: ${formatTime(run.started_at)}</span>
+                    ${run.finished_at ? `<span>Finished: ${formatTime(run.finished_at)}</span>` : ''}
+                </div>
+                ${run.error ? `<div class="detail-error">Error: ${escapeHtml(run.error)}</div>` : ''}
+            </div>
+        `;
+
+        html += '<h3>Steps</h3>';
+        if (run.steps && run.steps.length) {
+            run.steps.forEach((step, index) => {
+                html += renderStep(step, index);
+            });
+        } else {
+            html += '<p>No steps yet.</p>';
+        }
+
+        html += '<h3>Tool Calls</h3>';
+        const calls = callsData.tool_calls || [];
+        if (calls.length) {
+            html += '<div class="tool-timeline">';
+            calls.forEach((call, index) => {
+                html += renderToolCall(call, index);
+            });
+            html += '</div>';
+        } else {
+            html += '<p>No tool calls recorded.</p>';
+        }
+
+        container.innerHTML = html;
+        attachToolToggleListeners();
+    } catch (error) {
+        container.innerHTML = `<p class="error">Failed to load run detail: ${error.message}</p>`;
+    }
+}
+
+function renderStep(step, index) {
+    const statusClass = step.success ? 'success' : 'danger';
+    const statusText = step.success ? 'OK' : 'FAIL';
+    return `
+        <div class="step-item">
+            <div class="step-header">
+                <span class="step-number">${index + 1}</span>
+                <span class="step-role">${escapeHtml(step.role)}</span>
+                <span class="badge ${statusClass}">${statusText}</span>
+                <span class="step-mode">${escapeHtml(step.mode || '')}</span>
+            </div>
+            <div class="step-body">
+                <pre>${escapeHtml(step.text || '')}</pre>
+            </div>
+        </div>
+    `;
+}
+
+function renderToolCall(call, index) {
+    const statusClass = call.success ? 'success' : 'danger';
+    const statusText = call.success ? 'OK' : 'FAIL';
+    const args = JSON.stringify(call.args || {}, null, 2);
+    const result = call.result || '(no output)';
+    const resultObj = typeof result === 'object' ? result : {};
+    const hasDiff = resultObj.structured && resultObj.structured.previous !== undefined;
+
+    let diffHtml = '';
+    if (hasDiff) {
+        diffHtml = renderDiff(resultObj.structured.previous, resultObj.structured.current);
+    }
+
+    return `
+        <div class="tool-call-item">
+            <div class="tool-call-header" data-index="${index}">
+                <span class="tool-call-name">${escapeHtml(call.tool_name)}</span>
+                <span class="badge ${statusClass}">${statusText}</span>
+                <span class="tool-call-time">${formatTime(call.timestamp)}</span>
+                <span class="tool-toggle">+</span>
+            </div>
+            <div class="tool-call-body" id="tool-body-${index}" style="display: none;">
+                <div class="tool-section">
+                    <h4>Arguments</h4>
+                    <pre>${escapeHtml(args)}</pre>
+                </div>
+                ${hasDiff ? `
+                <div class="tool-section">
+                    <h4>Diff</h4>
+                    <div class="diff-view">${diffHtml}</div>
+                </div>
+                ` : `
+                <div class="tool-section">
+                    <h4>Result</h4>
+                    <pre>${escapeHtml(typeof result === 'object' ? JSON.stringify(result, null, 2) : result)}</pre>
+                </div>
+                `}
+            </div>
+        </div>
+    `;
+}
+
+function renderDiff(oldText, newText) {
+    const oldLines = (oldText || '').split('\n');
+    const newLines = (newText || '').split('\n');
+    let html = '<div class="diff-line diff-header"><span class="diff-lineno">-</span><span class="diff-lineno">+</span><span></span></div>';
+
+    const maxLines = Math.max(oldLines.length, newLines.length);
+    for (let i = 0; i < maxLines; i++) {
+        const oldLine = oldLines[i];
+        const newLine = newLines[i];
+        const oldNum = i < oldLines.length ? i + 1 : '';
+        const newNum = i < newLines.length ? i + 1 : '';
+
+        if (oldLine === newLine) {
+            html += `<div class="diff-line diff-context"><span class="diff-lineno">${oldNum}</span><span class="diff-lineno">${newNum}</span><span class="diff-content"> ${escapeHtml(oldLine)}</span></div>`;
+        } else if (i < oldLines.length && i >= newLines.length) {
+            html += `<div class="diff-line diff-remove"><span class="diff-lineno">${oldNum}</span><span class="diff-lineno"></span><span class="diff-content">-${escapeHtml(oldLine)}</span></div>`;
+        } else if (i >= oldLines.length && i < newLines.length) {
+            html += `<div class="diff-line diff-add"><span class="diff-lineno"></span><span class="diff-lineno">${newNum}</span><span class="diff-content">+${escapeHtml(newLine)}</span></div>`;
+        } else {
+            html += `<div class="diff-line diff-remove"><span class="diff-lineno">${oldNum}</span><span class="diff-lineno"></span><span class="diff-content">-${escapeHtml(oldLine)}</span></div>`;
+            html += `<div class="diff-line diff-add"><span class="diff-lineno"></span><span class="diff-lineno">${newNum}</span><span class="diff-content">+${escapeHtml(newLine)}</span></div>`;
+        }
+    }
+    return html;
+}
+
+function attachToolToggleListeners() {
+    document.querySelectorAll('.tool-call-header').forEach(header => {
+        header.addEventListener('click', () => {
+            const index = header.dataset.index;
+            const body = document.getElementById(`tool-body-${index}`);
+            const toggle = header.querySelector('.tool-toggle');
+            if (body.style.display === 'none') {
+                body.style.display = 'block';
+                toggle.textContent = '-';
+            } else {
+                body.style.display = 'none';
+                toggle.textContent = '+';
+            }
+        });
+    });
+}
+
+function startDetailPolling(runId) {
+    stopDetailPolling();
+    detailPollingId = setInterval(() => loadRunDetail(runId), 3000);
+}
+
+function stopDetailPolling() {
+    if (detailPollingId) {
+        clearInterval(detailPollingId);
+        detailPollingId = null;
+    }
+    currentRunId = null;
+}
+
+function startRunsPolling() {
+    setInterval(() => {
+        const runsTab = document.getElementById('tab-runs');
+        if (runsTab && runsTab.classList.contains('active')) {
+            loadRuns();
+        }
+    }, 5000);
+}
+
+function formatTime(ts) {
+    if (!ts) return '-';
+    return new Date(ts * 1000).toLocaleString();
+}
+
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 // ------------------------------------------------------------------

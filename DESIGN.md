@@ -80,3 +80,21 @@ agentflow's web admin panel is designed for clarity, high contrast, fast scanabi
 - **Do** ensure focus rings are visible on all interactive elements.
 - **Don't** add decorative animations or heavy layout shifts that distract from real-time monitoring.
 - **Don't** use low-contrast grays for secondary text or status labels.
+
+## Tool Integration
+
+The web UI surfaces tool calls as first-class events in the run detail view:
+
+- **Tool call timeline**: a chronological list of every tool invoked during a
+  step, showing tool name, status (success/failure), and execution time.
+- **Expandable output**: large outputs (file contents, diffs, command output)
+  are collapsed by default and expand on demand.
+- **Visual diff viewer**: file changes are rendered with added/removed line
+  highlighting and links to the full file content.
+- **Real-time updates**: the run detail page polls the `/api/runs/{run_id}`
+  endpoint so new tool calls appear as the orchestrator executes them.
+
+Tool calls are persisted in the run state JSON and in a dedicated
+`tool_calls` SQLite table for querying and auditing. The orchestrator remains
+in control of the workflow: it parses tool requests from agent responses,
+executes the tools, and returns the results.
