@@ -516,6 +516,30 @@ def test_js_router_via_node():
     if (!stepHtml.includes('step-noresponse') || !stepHtml.includes('The verify backend returned no written response.')) {
         process.exit(6);
     }
+
+    // renderSessionThread tests: 1 run -> empty string
+    const singleRunSession = { runs: [{ run_id: 'r1', goal: 'g1' }] };
+    if (app.renderSessionThread(singleRunSession, 'r1') !== '') {
+        process.exit(7);
+    }
+
+    // renderSessionThread tests: >1 runs -> thread HTML
+    const multiRunSession = {
+        runs: [
+            { run_id: 'r1', goal: 'First turn goal', finished_at: 100, pushed: { pushed: true } },
+            { run_id: 'r2', goal: 'Second turn goal', finished_at: null }
+        ]
+    };
+    const threadHtml = app.renderSessionThread(multiRunSession, 'r2');
+    if (!threadHtml.includes('Session — 2 turns') || !threadHtml.includes('#1') || !threadHtml.includes('#2')) {
+        process.exit(8);
+    }
+    if (!threadHtml.includes('class="session-turn current"') || !threadHtml.includes('data-run-id="r1"')) {
+        process.exit(9);
+    }
+    if (!threadHtml.includes('First turn goal') || !threadHtml.includes('Second turn goal')) {
+        process.exit(10);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
@@ -987,6 +1011,105 @@ def test_static_assets_contain_notifications_ui(tmp_path):
     assert "send-test-email" in js_resp.text
     assert "/api/notifications/test" in js_resp.text
     assert "config-smtp-status" in js_resp.text
+
+
+def test_api_create_run_returns_session_id_and_follows_up(tmp_path):
+    import threading
+
+    with patch("agentflow.web.app.load_config", return_value=_config()), patch(
+        "agentflow.web.app.run_workflow"
+    ) as mock_run:
+        client = _make_client(tmp_path)
+        # 1. First run creates session
+        resp1 = client.post("/api/runs", json={"goal": "turn 1 goal"})
+        assert resp1.status_code == 200
+        data1 = resp1.json()
+        assert data1["status"] == "started"
+        assert "run_id" in data1
+        assert "session_id" in data1
+        session_id = data1["session_id"]
+        assert session_id.startswith("session-")
+
+        for thread in threading.enumerate():
+            if thread.name.startswith("agentflow-"):
+                thread.join(timeout=5)
+
+        assert mock_run.call_count == 1
+        _, kwargs1 = mock_run.call_args
+        assert kwargs1["session_id"] == session_id
+        assert kwargs1["goal"] == "turn 1 goal"
+
+        # 2. Follow-up run in the same session passes that session_id to run_workflow
+        resp2 = client.post("/api/runs", json={"goal": "turn 2 goal", "session_id": session_id})
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        assert data2["status"] == "started"
+        assert data2["session_id"] == session_id
+
+        for thread in threading.enumerate():
+            if thread.name.startswith("agentflow-"):
+                thread.join(timeout=5)
+
+        assert mock_run.call_count == 2
+        _, kwargs2 = mock_run.call_args
+        assert kwargs2["session_id"] == session_id
+        assert kwargs2["goal"] == "turn 2 goal"
+
+
+def test_get_session_detail_returns_runs_in_order(tmp_path):
+    sid = "session-test-order-123"
+    run1 = RunState(
+        run_id="run-turn-1",
+        session_id=sid,
+        goal="First turn goal",
+        started_at=1000.0,
+        config={},
+        finished_at=1050.0,
+    )
+    run2 = RunState(
+        run_id="run-turn-2",
+        session_id=sid,
+        goal="Second turn goal",
+        started_at=1100.0,
+        config={},
+        finished_at=1150.0,
+    )
+    save_run(run1, str(tmp_path), tmp_path / "agentflow.db")
+    save_run(run2, str(tmp_path), tmp_path / "agentflow.db")
+
+    client = _make_client(tmp_path)
+    resp = client.get(f"/api/sessions/{sid}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == sid
+    assert len(data["runs"]) == 2
+    assert data["runs"][0]["run_id"] == "run-turn-1"
+    assert data["runs"][0]["goal"] == "First turn goal"
+    assert data["runs"][1]["run_id"] == "run-turn-2"
+    assert data["runs"][1]["goal"] == "Second turn goal"
+    assert data["runs"][1]["session_id"] == sid
+
+
+def test_static_assets_contain_session_composer_and_thread(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="session-composer"' in html_resp.text
+    assert 'id="composer-send"' in html_resp.text
+    assert 'id="composer-input"' in html_resp.text
+    assert 'id="composer-status"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "setupComposer" in js_resp.text
+    assert "session-thread" in js_resp.text
+    assert "renderSessionThread" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".session-thread" in css_resp.text
+    assert ".composer" in css_resp.text
+
 
 
 

@@ -756,6 +756,160 @@ function showRunDetail(runId) {
     startDetailPolling(runId);
 }
 
+function renderSessionThread(sessionData, currentRunId) {
+    if (!sessionData || !Array.isArray(sessionData.runs) || sessionData.runs.length <= 1) {
+        return '';
+    }
+    const turns = sessionData.runs.map((r, idx) => {
+        const isCurrent = r.run_id === currentRunId;
+        const currentCls = isCurrent ? ' current' : '';
+        const { label: statusLabel, cls: statusCls } = runStatus(r);
+        const goalSnippet = (r.goal || '').slice(0, 80);
+        const dataAttr = !isCurrent ? ` data-run-id="${escapeHtml(r.run_id)}"` : '';
+        return `     <li class="session-turn${currentCls}"${dataAttr}>` +
+            `<span class="turn-num">#${idx + 1}</span>` +
+            `<span class="badge ${statusCls}">${escapeHtml(statusLabel)}</span>` +
+            `<span class="turn-goal">${escapeHtml(goalSnippet)}</span>` +
+            `</li>`;
+    }).join('\n');
+
+    return `
+<div class="session-thread">
+  <h3>Session — ${sessionData.runs.length} turns</h3>
+  <ol class="session-turns">
+${turns}
+  </ol>
+</div>
+`;
+}
+
+function setupComposer(run) {
+    const composer = document.getElementById('session-composer');
+    if (!composer) return;
+    composer.hidden = false;
+
+    const isFinished = Boolean(run.finished_at);
+    const titleEl = document.getElementById('composer-title');
+    if (titleEl) {
+        titleEl.textContent = isFinished ? 'Continue this session' : 'Message the running agent';
+    }
+    const hintEl = document.getElementById('composer-hint');
+    if (hintEl) {
+        hintEl.textContent = isFinished
+            ? 'Starts the next turn with everything this session has done so far as context.'
+            : 'Queued and picked up at the next review/build/verify step.';
+    }
+
+    const oldBtn = document.getElementById('composer-send');
+    if (!oldBtn) return;
+    const sendBtn = oldBtn.cloneNode(true);
+    sendBtn.textContent = isFinished ? 'Continue' : 'Send message';
+    sendBtn.disabled = false;
+    oldBtn.parentNode.replaceChild(sendBtn, oldBtn);
+
+    sendBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const inputEl = document.getElementById('composer-input');
+        const statusEl = document.getElementById('composer-status');
+        const text = inputEl ? inputEl.value.trim() : '';
+        if (!text) return;
+
+        sendBtn.disabled = true;
+        if (statusEl) {
+            statusEl.textContent = 'Sending…';
+            statusEl.className = 'composer-status';
+        }
+
+        const pq = projectQuery();
+        const q = pq ? `?${pq}` : '';
+
+        if (!isFinished) {
+            try {
+                const resp = await fetch(`/api/runs/${encodeURIComponent(run.run_id)}/messages${q}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ body: text, kind: 'steer' }),
+                });
+                if (resp.ok) {
+                    if (statusEl) {
+                        statusEl.textContent = 'Queued — the agent will pick it up at the next step.';
+                        statusEl.className = 'composer-status success';
+                    }
+                    if (inputEl) inputEl.value = '';
+                } else {
+                    const data = await resp.json().catch(() => ({}));
+                    if (statusEl) {
+                        statusEl.textContent = data.detail || 'Failed';
+                        statusEl.className = 'composer-status error';
+                    }
+                }
+            } catch (err) {
+                if (statusEl) {
+                    statusEl.textContent = err.message || 'Failed';
+                    statusEl.className = 'composer-status error';
+                }
+            } finally {
+                sendBtn.disabled = false;
+            }
+        } else {
+            const payload = {
+                goal: text,
+                session_id: run.session_id || null,
+                project: currentProject || null,
+                review_backend: (run.config && run.config.review && run.config.review.backend) || null,
+                review_model: (run.config && run.config.review && run.config.review.model) || null,
+                build_backend: (run.config && run.config.build && run.config.build.backend) || null,
+                build_model: (run.config && run.config.build && run.config.build.model) || null,
+                verify_backend: (run.config && run.config.verify && run.config.verify.backend) || null,
+                verify_model: (run.config && run.config.verify && run.config.verify.model) || null,
+                max_iterations: (run.config && run.config.max_iterations) || null,
+            };
+
+            try {
+                const resp = await fetch('/api/runs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    if (data.status === 'started' && data.run_id) {
+                        if (statusEl) {
+                            statusEl.textContent = '';
+                            statusEl.className = 'composer-status';
+                        }
+                        if (inputEl) inputEl.value = '';
+                        navigate('/runs/' + encodeURIComponent(data.run_id));
+                    } else if (data.status === 'queued') {
+                        if (statusEl) {
+                            statusEl.textContent = 'A run is active — queued as the next turn in this session.';
+                            statusEl.className = 'composer-status success';
+                        }
+                        if (inputEl) inputEl.value = '';
+                    } else {
+                        if (statusEl) {
+                            statusEl.textContent = data.detail || 'Failed';
+                            statusEl.className = 'composer-status error';
+                        }
+                    }
+                } else {
+                    if (statusEl) {
+                        statusEl.textContent = data.detail || 'Failed';
+                        statusEl.className = 'composer-status error';
+                    }
+                }
+            } catch (err) {
+                if (statusEl) {
+                    statusEl.textContent = err.message || 'Failed';
+                    statusEl.className = 'composer-status error';
+                }
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+    });
+}
+
 async function loadRunDetail(runId) {
     const container = document.getElementById('run-detail-content');
     try {
@@ -768,6 +922,18 @@ async function loadRunDetail(runId) {
         if (!runResp.ok) throw new Error('Failed to load run');
         const run = await runResp.json();
         const callsData = callsResp.ok ? await callsResp.json() : { tool_calls: [] };
+
+        let sessionData = null;
+        if (run.session_id) {
+            try {
+                const sessResp = await fetch(`/api/sessions/${encodeURIComponent(run.session_id)}${q}`);
+                if (sessResp.ok) {
+                    sessionData = await sessResp.json();
+                }
+            } catch (e) {
+                // Ignore session fetch error
+            }
+        }
 
         if (_lastDetailState && _lastDetailState.runId === runId) {
             if (!_lastDetailState.finished_at && run.finished_at) {
@@ -783,14 +949,17 @@ async function loadRunDetail(runId) {
             fatalBlockers: (run.blockers || []).filter(b => b.fatal).length
         };
 
-        document.getElementById('detail-goal').textContent = run.goal || 'Run Detail';
+        const goalEl = document.getElementById('detail-goal');
+        if (goalEl) goalEl.textContent = run.goal || 'Run Detail';
 
         const { label: status, cls: statusClass } = runStatus(run);
 
         const totalCost = (run.steps || []).reduce(
             (sum, s) => sum + (Number(s.usage && s.usage.cost_usd) || 0), 0);
 
-        let html = `
+        let threadHtml = renderSessionThread(sessionData, run.run_id);
+
+        let html = threadHtml + `
             <div class="card run-summary">
                 <div class="run-meta">
                     <span class="badge ${statusClass}">${status}</span>
@@ -837,10 +1006,24 @@ async function loadRunDetail(runId) {
             html += '</div>';
         }
 
-        container.innerHTML = html;
-        attachToolToggleListeners();
+        if (container) {
+            container.innerHTML = html;
+            container.querySelectorAll('.session-turn:not(.current)').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const targetRunId = item.dataset.runId;
+                    if (targetRunId) {
+                        navigate('/runs/' + encodeURIComponent(targetRunId));
+                    }
+                });
+            });
+            attachToolToggleListeners();
+        }
+        setupComposer(run);
     } catch (error) {
-        container.innerHTML = `<p class="error">Failed to load run detail: ${error.message}</p>`;
+        if (container) {
+            container.innerHTML = `<p class="error">Failed to load run detail: ${error.message}</p>`;
+        }
     }
 }
 
@@ -1117,6 +1300,17 @@ function stopDetailPolling() {
     }
     currentRunId = null;
     _lastDetailState = null;
+    const c = document.getElementById('session-composer');
+    if (c) {
+        c.hidden = true;
+        const inp = document.getElementById('composer-input');
+        if (inp) inp.value = '';
+        const st = document.getElementById('composer-status');
+        if (st) {
+            st.textContent = '';
+            st.className = 'composer-status';
+        }
+    }
 }
 
 function startRunsPolling() {
@@ -1182,6 +1376,8 @@ if (typeof module !== 'undefined' && module.exports) {
         formatToolReqArgs,
         renderToolReq,
         renderStep,
+        renderSessionThread,
+        setupComposer,
         escapeHtml,
         currentRoute,
         navigate,
