@@ -342,3 +342,98 @@ def test_js_split_tool_blocks_via_node():
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+
+
+def test_api_runs_pagination(tmp_path):
+    from agentflow.database import save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    # Seed 30 runs
+    for i in range(30):
+        state = RunState(
+            run_id=f"run-page-{i:02d}",
+            goal=f"Goal {i}",
+            started_at=float(i),
+            config={},
+        )
+        save_run(state, str(tmp_path), db)
+
+    client = _make_client(tmp_path)
+
+    # 1. limit=10, offset=0 -> 10 runs, total=30
+    resp1 = client.get("/api/runs?limit=10&offset=0")
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert len(data1["runs"]) == 10
+    assert data1["total"] == 30
+    assert data1["limit"] == 10
+    assert data1["offset"] == 0
+
+    # 2. limit=10, offset=25 -> 5 runs, total=30
+    resp2 = client.get("/api/runs?limit=10&offset=25")
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert len(data2["runs"]) == 5
+    assert data2["total"] == 30
+    assert data2["limit"] == 10
+    assert data2["offset"] == 25
+
+    # 3. No params -> limit=25, 25 runs, total=30
+    resp3 = client.get("/api/runs")
+    assert resp3.status_code == 200
+    data3 = resp3.json()
+    assert len(data3["runs"]) == 25
+    assert data3["total"] == 30
+    assert data3["limit"] == 25
+    assert data3["offset"] == 0
+
+
+def test_spa_catch_all_and_404(tmp_path):
+    client = _make_client(tmp_path)
+
+    # Valid SPA client-side routes should return 200 HTML with run-form / nav-logo
+    for path in ["/runs", "/runs/abc", "/config", "/health", "/run", "/runs/20260101-000000-aaaaaaaa"]:
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert 'id="run-form"' in resp.text or 'class="nav-logo"' in resp.text
+
+    # Unknown /api routes must return 404 JSON, NOT html
+    api_404 = client.get("/api/nonesuch")
+    assert api_404.status_code == 404
+    assert "text/html" not in api_404.headers.get("content-type", "")
+    assert api_404.json()["detail"] == "Not found"
+
+    api_root_404 = client.get("/api")
+    assert api_root_404.status_code == 404
+    assert "text/html" not in api_root_404.headers.get("content-type", "")
+
+
+def test_js_router_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    // Test exported functions exist
+    if (typeof app.currentRoute !== 'function' || typeof app.navigate !== 'function' || typeof app.renderRoute !== 'function') {
+        process.exit(1);
+    }
+
+    // currentRoute default in node (no window)
+    const route = app.currentRoute();
+    if (route.view !== 'run') {
+        process.exit(2);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+

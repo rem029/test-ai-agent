@@ -389,16 +389,36 @@ def save_run(
     return db_path
 
 
-def list_runs(cwd: str, path: Path | None = None) -> list[dict]:
+def list_runs(
+    cwd: str,
+    path: Path | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
     """Return saved runs for one target repository, newest first."""
     db_path = path or DEFAULT_DATABASE_PATH
     if not db_path.exists():
         return []
+    query = "SELECT state_json FROM runs WHERE cwd = ? ORDER BY updated_at DESC"
+    params: list = [cwd]
+    if limit is not None:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     with _connection(db_path) as connection:
-        rows = connection.execute(
-            "SELECT state_json FROM runs WHERE cwd = ? ORDER BY updated_at DESC", (cwd,)
-        ).fetchall()
+        rows = connection.execute(query, tuple(params)).fetchall()
     return [json.loads(row[0]) for row in rows]
+
+
+def count_runs(cwd: str, path: Path | None = None) -> int:
+    """Return total count of saved runs for one target repository."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    if not db_path.exists():
+        return 0
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM runs WHERE cwd = ?", (cwd,)
+        ).fetchone()
+    return row[0] if row else 0
 
 
 def load_run(run_id: str, cwd: str, path: Path | None = None) -> dict | None:

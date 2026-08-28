@@ -2,6 +2,9 @@
 // AgentFlow Web UI - Enhanced Frontend
 // ------------------------------------------------------------------
 
+const RUNS_PAGE_SIZE = 25;
+let currentRunsPage = 1;
+
 if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', () => {
         // Initialize theme
@@ -10,18 +13,12 @@ if (typeof document !== 'undefined') {
         // Set up tab switching
         setupTabs();
 
-        // Load initial data
-        loadConfig();
-        loadHealth();
-        loadRuns();
-
         // Form submission handlers
         document.getElementById('config-form').addEventListener('submit', submitConfig);
         document.getElementById('run-form').addEventListener('submit', submitRun);
         document.getElementById('back-to-runs').addEventListener('click', (e) => {
             e.preventDefault();
-            showTab('runs');
-            stopDetailPolling();
+            navigate('/runs');
         });
 
         // Theme toggle
@@ -29,6 +26,10 @@ if (typeof document !== 'undefined') {
 
         // Load backend dropdowns with models
         populateModelOptions();
+
+        // Router setup & initial render
+        window.addEventListener('popstate', renderRoute);
+        renderRoute();
 
         // Poll runs list while on the runs tab
         startRunsPolling();
@@ -66,30 +67,90 @@ function updateThemeIcon() {
 }
 
 // ------------------------------------------------------------------
-// Tabs
+// Router & Tabs
 // ------------------------------------------------------------------
+function currentRoute() {
+    if (typeof window === 'undefined' || typeof location === 'undefined') {
+        return { view: 'run' };
+    }
+    const pathname = window.location.pathname;
+    if (pathname === '/' || pathname === '/run') {
+        return { view: 'run' };
+    }
+    if (pathname === '/runs') {
+        const params = new URLSearchParams(window.location.search);
+        const pageNum = parseInt(params.get('page'), 10);
+        const page = (Number.isInteger(pageNum) && pageNum >= 1) ? pageNum : 1;
+        return { view: 'runs', page };
+    }
+    const matchRunDetail = pathname.match(/^\/runs\/(.+)$/);
+    if (matchRunDetail) {
+        return { view: 'run-detail', runId: decodeURIComponent(matchRunDetail[1]) };
+    }
+    if (pathname === '/config') {
+        return { view: 'config' };
+    }
+    if (pathname === '/health') {
+        return { view: 'health' };
+    }
+    return { view: 'run' };
+}
+
+function navigate(path, { replace = false } = {}) {
+    if (typeof window !== 'undefined' && window.history) {
+        window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+    }
+    renderRoute();
+}
+
+function renderRoute() {
+    if (typeof document === 'undefined') return;
+    const route = currentRoute();
+    if (route.view === 'run') {
+        stopDetailPolling();
+        showTab('run');
+    } else if (route.view === 'config') {
+        stopDetailPolling();
+        showTab('config');
+        loadConfig();
+    } else if (route.view === 'health') {
+        stopDetailPolling();
+        showTab('health');
+        loadHealth();
+    } else if (route.view === 'runs') {
+        stopDetailPolling();
+        showTab('runs');
+        loadRuns(route.page);
+    } else if (route.view === 'run-detail') {
+        showRunDetail(route.runId);
+    }
+}
+
 function setupTabs() {
     const navLinks = document.querySelectorAll('.nav-link');
-    const tabContents = document.querySelectorAll('.tab-content');
-
     navLinks.forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            const targetTab = link.dataset.tab;
-
-            // Deactivate all links
-            navLinks.forEach(nav => nav.classList.remove('active'));
-            link.classList.add('active');
-
-            // Show corresponding content
-            tabContents.forEach(tab => {
-                if (tab.id === `tab-${targetTab}`) {
-                    tab.classList.add('active');
-                } else {
-                    tab.classList.remove('active');
-                }
-            });
+            const href = link.getAttribute('href') || '/run';
+            navigate(href);
         });
+    });
+
+    const logo = document.querySelector('.nav-logo');
+    if (logo) {
+        logo.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigate('/');
+        });
+    }
+}
+
+function showTab(tabName) {
+    document.querySelectorAll('.nav-link').forEach(nav => {
+        nav.classList.toggle('active', nav.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.toggle('active', tab.id === `tab-${tabName}`);
     });
 }
 
@@ -185,15 +246,30 @@ async function loadHealth() {
 // ------------------------------------------------------------------
 // Runs loading
 // ------------------------------------------------------------------
-async function loadRuns() {
+async function loadRuns(page = 1) {
+    const pageNum = parseInt(page, 10);
+    const validPage = (Number.isInteger(pageNum) && pageNum >= 1) ? pageNum : 1;
+    currentRunsPage = validPage;
+
     const container = document.getElementById('runs-list');
+    if (!container) return;
     container.innerHTML = '<p>Loading runs...</p>';
+
+    const offset = (validPage - 1) * RUNS_PAGE_SIZE;
     try {
-        const response = await fetch('/api/runs');
+        const response = await fetch(`/api/runs?limit=${RUNS_PAGE_SIZE}&offset=${offset}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Failed to load runs');
 
         const runs = data.runs || [];
+        const total = typeof data.total === 'number' ? data.total : runs.length;
+
+        // If a page ends up empty because runs were removed, clamp to prev page
+        if (validPage > 1 && runs.length === 0) {
+            navigate('/runs?page=' + (validPage - 1), { replace: true });
+            return;
+        }
+
         if (runs.length === 0) {
             container.innerHTML = '<p>No runs found. Start a new one to see it here.</p>';
             return;
@@ -217,9 +293,49 @@ async function loadRuns() {
                 </div>
                 <div class="run-goal">${escapeHtml(run.goal)}</div>
             `;
-            div.addEventListener('click', () => showRunDetail(run.run_id));
+            div.addEventListener('click', () => navigate('/runs/' + encodeURIComponent(run.run_id)));
             container.appendChild(div);
         });
+
+        // Pagination pager
+        if (total > RUNS_PAGE_SIZE) {
+            const totalPages = Math.max(1, Math.ceil(total / RUNS_PAGE_SIZE));
+            const pager = document.createElement('div');
+            pager.className = 'pager';
+
+            const prevBtn = document.createElement('button');
+            prevBtn.type = 'button';
+            prevBtn.className = 'btn btn-secondary';
+            prevBtn.textContent = '« Prev';
+            prevBtn.disabled = (validPage <= 1);
+            prevBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (validPage > 1) {
+                    navigate('/runs?page=' + (validPage - 1));
+                }
+            });
+
+            const pageLabel = document.createElement('span');
+            pageLabel.className = 'page-label';
+            pageLabel.textContent = `Page ${validPage} of ${totalPages}`;
+
+            const nextBtn = document.createElement('button');
+            nextBtn.type = 'button';
+            nextBtn.className = 'btn btn-secondary';
+            nextBtn.textContent = 'Next »';
+            nextBtn.disabled = (validPage >= totalPages);
+            nextBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (validPage < totalPages) {
+                    navigate('/runs?page=' + (validPage + 1));
+                }
+            });
+
+            pager.appendChild(prevBtn);
+            pager.appendChild(pageLabel);
+            pager.appendChild(nextBtn);
+            container.appendChild(pager);
+        }
     } catch (error) {
         container.innerHTML = `<p>Failed to load runs: ${error.message}</p>`;
     }
@@ -257,8 +373,13 @@ async function submitRun(e) {
         if (response.ok) {
             showStatus('run-status', `Run started with ID: ${data.run_id}`, 'success');
             form.reset();
-            // Refresh runs after a short delay to show the new run
-            setTimeout(() => loadRuns(), 2000);
+            // Refresh runs after a short delay if on runs tab
+            setTimeout(() => {
+                const runsTab = document.getElementById('tab-runs');
+                if (runsTab && runsTab.classList.contains('active')) {
+                    loadRuns(currentRunsPage);
+                }
+            }, 2000);
         } else {
             showStatus('run-status', `Error starting run: ${data.detail}`, 'error');
         }
@@ -326,15 +447,6 @@ function showRunDetail(runId) {
     showTab('run-detail');
     loadRunDetail(runId);
     startDetailPolling(runId);
-}
-
-function showTab(tabName) {
-    document.querySelectorAll('.nav-link').forEach(nav => {
-        nav.classList.toggle('active', nav.dataset.tab === tabName);
-    });
-    document.querySelectorAll('.tab-content').forEach(tab => {
-        tab.classList.toggle('active', tab.id === `tab-${tabName}`);
-    });
 }
 
 async function loadRunDetail(runId) {
@@ -671,7 +783,7 @@ function startRunsPolling() {
     setInterval(() => {
         const runsTab = document.getElementById('tab-runs');
         if (runsTab && runsTab.classList.contains('active')) {
-            loadRuns();
+            loadRuns(currentRunsPage);
         }
     }, 5000);
 }
@@ -730,5 +842,10 @@ if (typeof module !== 'undefined' && module.exports) {
         renderToolReq,
         renderStep,
         escapeHtml,
+        currentRoute,
+        navigate,
+        renderRoute,
+        showTab,
+        loadRuns,
     };
 }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentflow.database import get_tool_calls, list_runs, load_run, save_run
+from agentflow.database import count_runs, get_tool_calls, list_runs, load_run, save_run
 from agentflow.orchestrator import RunState
 
 
@@ -104,3 +104,32 @@ def test_real_database_untouched_during_workflow(tmp_path, monkeypatch):
     if real_db.exists():
         assert real_db.stat().st_mtime == mtime_before
         assert real_db.stat().st_size == size_before
+
+
+def test_list_runs_pagination_and_count_runs(tmp_path):
+    database_path = tmp_path / "agentflow.db"
+    cwd = "/projects/pagination"
+
+    # Non-existent DB count_runs returns 0
+    assert count_runs(cwd, database_path) == 0
+
+    # Seed 5 runs with distinct goals
+    for i in range(5):
+        save_run(_state(f"run-{i}", f"goal {i}"), cwd, database_path)
+
+    assert count_runs(cwd, database_path) == 5
+    assert count_runs("/other/project", database_path) == 0
+
+    # All runs without limit
+    all_runs = list_runs(cwd, database_path)
+    assert len(all_runs) == 5
+
+    # Pagination: limit=2, offset=1
+    paginated = list_runs(cwd, database_path, limit=2, offset=1)
+    assert len(paginated) == 2
+    assert paginated[0]["run_id"] == all_runs[1]["run_id"]
+    assert paginated[1]["run_id"] == all_runs[2]["run_id"]
+
+    # Offset at edge
+    assert len(list_runs(cwd, database_path, limit=2, offset=5)) == 0
+

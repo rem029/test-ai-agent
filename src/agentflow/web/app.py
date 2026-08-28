@@ -26,6 +26,7 @@ from ..database import (
     add_control_signal,
     add_pending_message,
     add_queued_run,
+    count_runs,
     get_pending_messages,
     get_session,
     get_session_runs,
@@ -187,9 +188,17 @@ def create_app(
         return get_all_models()
 
     @app.get("/api/runs")
-    async def runs() -> dict:
-        run_list = list_runs(cwd, path=db_path)
-        return {"runs": run_list}
+    async def runs(limit: int = 25, offset: int = 0) -> dict:
+        limit = max(1, min(100, limit))
+        offset = max(0, offset)
+        run_list = list_runs(cwd, path=db_path, limit=limit, offset=offset)
+        total = count_runs(cwd, path=db_path)
+        return {
+            "runs": run_list,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict:
@@ -307,5 +316,11 @@ def create_app(
             raise HTTPException(status_code=404, detail="Run not found")
         add_control_signal(run_id, "stop", path=db_path)
         return {"ok": True}
+ 
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    async def spa_catch_all(full_path: str) -> HTMLResponse:
+        if full_path == "api" or full_path.startswith("api/") or full_path == "static" or full_path.startswith("static/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        return HTMLResponse(content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
     return app
