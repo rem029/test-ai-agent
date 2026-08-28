@@ -702,7 +702,7 @@ def _record(role: str, mode: str, iteration: int, result: RunResult) -> dict:
         "mode": mode,
         "iteration": iteration,
         "success": result.success,
-        "text": result.text[:2000],
+        "text": result.text[:6000],
         "usage": asdict(result.usage),
     }
 

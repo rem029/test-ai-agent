@@ -204,16 +204,14 @@ async function loadRuns() {
             div.style.cursor = 'pointer';
 
             // Determine status label
-            const status = run.pushed && run.pushed.pushed ? 'Pushed' : (run.finished_at ? 'Completed' : 'Running');
-            const statusClass = run.pushed && run.pushed.pushed ? 'success' : (run.finished_at ? 'info' : 'warning');
+            const { label: status, cls: statusClass } = runStatus(run);
 
             div.innerHTML = `
-                <h3>${escapeHtml(run.goal).substring(0, 60)}...</h3>
                 <div class="run-meta">
                     <span class="badge ${statusClass}">${status}</span>
-                    <span>Run ID: ${run.run_id}</span>
-                    <span>Started: ${formatTime(run.started_at)}</span>
-                    ${run.finished_at ? `<span>Finished: ${formatTime(run.finished_at)}</span>` : ''}
+                    <span class="mono">${escapeHtml(run.run_id)}</span>
+                    <span>Started ${formatTime(run.started_at)}</span>
+                    ${run.finished_at ? `<span>· ${fmtDuration(run.started_at, run.finished_at)}</span>` : ''}
                 </div>
                 <div class="run-goal">${escapeHtml(run.goal)}</div>
             `;
@@ -350,22 +348,22 @@ async function loadRunDetail(runId) {
 
         document.getElementById('detail-goal').textContent = run.goal || 'Run Detail';
 
-        const status = run.pushed && run.pushed.pushed
-            ? 'Pushed'
-            : (run.finished_at ? 'Completed' : 'Running');
-        const statusClass = run.pushed && run.pushed.pushed
-            ? 'success'
-            : (run.finished_at ? 'info' : 'warning');
+        const { label: status, cls: statusClass } = runStatus(run);
+
+        const totalCost = (run.steps || []).reduce(
+            (sum, s) => sum + (Number(s.usage && s.usage.cost_usd) || 0), 0);
 
         let html = `
             <div class="card run-summary">
                 <div class="run-meta">
                     <span class="badge ${statusClass}">${status}</span>
-                    <span>Run ID: ${run.run_id}</span>
-                    <span>Started: ${formatTime(run.started_at)}</span>
-                    ${run.finished_at ? `<span>Finished: ${formatTime(run.finished_at)}</span>` : ''}
+                    <span class="mono">${escapeHtml(run.run_id)}</span>
+                    <span>Started ${formatTime(run.started_at)}</span>
+                    ${run.finished_at ? `<span>· ran ${fmtDuration(run.started_at, run.finished_at)}</span>` : ''}
+                    ${totalCost > 0 ? `<span class="mono">· $${totalCost.toFixed(totalCost < 0.01 ? 6 : 4)}</span>` : ''}
                 </div>
-                ${run.error ? `<div class="detail-error">Error: ${escapeHtml(run.error)}</div>` : ''}
+                ${run.pushed && run.pushed.commit ? `<div class="run-note">Committed <span class="mono">${escapeHtml(String(run.pushed.commit).slice(0, 8))}</span>${run.pushed.branch ? ` to <span class="mono">${escapeHtml(run.pushed.branch)}</span>` : ''}${run.pushed.pushed ? ' and pushed' : ' (push failed)'}.</div>` : ''}
+                ${run.error ? `<div class="detail-error">${escapeHtml(run.error)}</div>` : ''}
             </div>
         `;
 
@@ -375,19 +373,16 @@ async function loadRunDetail(runId) {
                 html += renderStep(step, index);
             });
         } else {
-            html += '<p>No steps yet.</p>';
+            html += '<p class="empty-note">Waiting for the first step to report back…</p>';
         }
 
-        html += '<h3>Tool Calls</h3>';
         const calls = callsData.tool_calls || [];
         if (calls.length) {
-            html += '<div class="tool-timeline">';
+            html += '<h3>Tool Calls</h3><div class="tool-timeline">';
             calls.forEach((call, index) => {
                 html += renderToolCall(call, index);
             });
             html += '</div>';
-        } else {
-            html += '<p>No tool calls recorded.</p>';
         }
 
         container.innerHTML = html;
@@ -397,63 +392,125 @@ async function loadRunDetail(runId) {
     }
 }
 
+function fmtCost(usage) {
+    if (!usage) return '';
+    const c = usage.cost_usd;
+    if (c === null || c === undefined) return '';
+    const n = Number(c);
+    if (Number.isNaN(n)) return '';
+    return '$' + n.toFixed(n > 0 && n < 0.01 ? 6 : 4);
+}
+
+function verifyVerdict(text) {
+    const m = String(text || '').match(/VERIFY_RESULT:\s*(PASS|FAIL)/i);
+    return m ? m[1].toUpperCase() : null;
+}
+
+function fmtArgs(args) {
+    const entries = Object.entries(args || {});
+    if (!entries.length) return '';
+    return entries
+        .map(([k, v]) => {
+            let val = typeof v === 'string' ? v : JSON.stringify(v);
+            if (val.length > 300) val = val.slice(0, 300) + '…';
+            return `<span class="arg-key">${escapeHtml(k)}</span> ${escapeHtml(val)}`;
+        })
+        .join('\n');
+}
+
 function renderStep(step, index) {
-    const statusClass = step.success ? 'success' : 'danger';
-    const statusText = step.success ? 'OK' : 'FAIL';
+    const ok = step.success;
+    const statusClass = ok ? 'success' : 'danger';
+    const statusText = ok ? 'OK' : 'FAIL';
+
+    let verdictHtml = '';
+    if (step.role === 'verify') {
+        const v = verifyVerdict(step.text);
+        if (v) verdictHtml = `<span class="verdict ${v === 'PASS' ? 'pass' : 'fail'}">${v}</span>`;
+    }
+
+    const usage = step.usage || {};
+    const model = usage.model ? `${usage.backend} · ${usage.model}` : (usage.backend || '');
+    const cost = fmtCost(usage);
+    const iter = step.iteration ? `#${step.iteration}` : '';
+
+    const body = step.text
+        ? `<div class="md">${renderMarkdown(step.text)}</div>`
+        : `<p class="empty-note">No response text was recorded for this step.</p>`;
+
     return `
         <div class="step-item">
             <div class="step-header">
                 <span class="step-number">${index + 1}</span>
                 <span class="step-role">${escapeHtml(step.role)}</span>
-                <span class="badge ${statusClass}">${statusText}</span>
+                ${iter ? `<span class="step-iter mono">${iter}</span>` : ''}
                 <span class="step-mode">${escapeHtml(step.mode || '')}</span>
+                ${verdictHtml}
+                <span class="badge ${statusClass}">${statusText}</span>
+                <span class="step-meta mono">
+                    ${model ? `<span>${escapeHtml(model)}</span>` : ''}
+                    ${cost ? `<span>${cost}</span>` : ''}
+                </span>
             </div>
-            <div class="step-body">
-                <pre>${escapeHtml(step.text || '')}</pre>
-            </div>
+            <div class="step-body">${body}</div>
         </div>
     `;
 }
 
 function renderToolCall(call, index) {
-    const isSuccess = call.status === 'success' || call.status === 'OK' || (call.result && call.result.success === true) || call.success === true;
+    const result = (call.result && typeof call.result === 'object') ? call.result : {};
+    const isSuccess = call.status === 'success' || call.status === 'OK' || result.success === true;
     const statusClass = isSuccess ? 'success' : 'danger';
     const statusText = isSuccess ? 'OK' : 'FAIL';
-    const args = JSON.stringify(call.args || {}, null, 2);
-    const result = call.result || '(no output)';
-    const resultObj = typeof result === 'object' ? result : {};
-    const hasDiff = resultObj.structured && resultObj.structured.previous !== undefined;
-    const timeText = call.execution_time_ms !== undefined && call.execution_time_ms !== null ? `${call.execution_time_ms}ms` : (call.timestamp ? formatTime(call.timestamp) : '-');
 
-    let diffHtml = '';
+    const ms = call.execution_time_ms;
+    const timeText = (ms !== undefined && ms !== null) ? `${ms} ms` : '';
+
+    const structured = result.structured || {};
+    const hasDiff = structured.current !== undefined;
+    const argsText = fmtArgs(call.args);
+    const output = (result.output || '').trim();
+    const error = (call.error || result.error || '').trim();
+
+    let resultSection = '';
     if (hasDiff) {
-        diffHtml = renderDiff(resultObj.structured.previous, resultObj.structured.current);
+        resultSection = `
+            <div class="tool-section">
+                <h4>${structured.previous !== undefined ? 'Diff' : 'New file'} — <span class="mono">${escapeHtml(structured.path || '')}</span></h4>
+                <div class="diff-view">${renderDiff(structured.previous || '', structured.current || '')}</div>
+            </div>`;
+    } else if (output) {
+        resultSection = `
+            <div class="tool-section">
+                <h4>Output</h4>
+                <pre class="tool-output">${escapeHtml(output)}</pre>
+            </div>`;
     }
+
+    const errorSection = error
+        ? `<div class="tool-section">
+               <h4>Error</h4>
+               <pre class="tool-output tool-error">${escapeHtml(error)}</pre>
+           </div>`
+        : '';
 
     return `
         <div class="tool-call-item">
             <div class="tool-call-header" data-index="${index}">
                 <span class="tool-call-name">${escapeHtml(call.tool_name)}</span>
                 <span class="badge ${statusClass}">${statusText}</span>
-                <span class="tool-call-time">${timeText}</span>
-                <span class="tool-toggle">+</span>
+                ${timeText ? `<span class="tool-call-time mono">${timeText}</span>` : ''}
+                <span class="tool-toggle" aria-hidden="true">+</span>
             </div>
-            <div class="tool-call-body" id="tool-body-${index}" style="display: none;">
+            <div class="tool-call-body" id="tool-body-${index}" hidden>
+                ${argsText ? `
                 <div class="tool-section">
                     <h4>Arguments</h4>
-                    <pre>${escapeHtml(args)}</pre>
-                </div>
-                ${hasDiff ? `
-                <div class="tool-section">
-                    <h4>Diff</h4>
-                    <div class="diff-view">${diffHtml}</div>
-                </div>
-                ` : `
-                <div class="tool-section">
-                    <h4>Result</h4>
-                    <pre>${escapeHtml(typeof result === 'object' ? JSON.stringify(result, null, 2) : result)}</pre>
-                </div>
-                `}
+                    <pre class="tool-args">${argsText}</pre>
+                </div>` : ''}
+                ${resultSection}
+                ${errorSection}
+                ${(!resultSection && !errorSection && !argsText) ? '<p class="empty-note">No details recorded.</p>' : ''}
             </div>
         </div>
     `;
@@ -491,13 +548,8 @@ function attachToolToggleListeners() {
             const index = header.dataset.index;
             const body = document.getElementById(`tool-body-${index}`);
             const toggle = header.querySelector('.tool-toggle');
-            if (body.style.display === 'none') {
-                body.style.display = 'block';
-                toggle.textContent = '-';
-            } else {
-                body.style.display = 'none';
-                toggle.textContent = '+';
-            }
+            body.hidden = !body.hidden;
+            toggle.textContent = body.hidden ? '+' : '−';
         });
     });
 }
@@ -527,6 +579,24 @@ function startRunsPolling() {
 function formatTime(ts) {
     if (!ts) return '-';
     return new Date(ts * 1000).toLocaleString();
+}
+
+function fmtDuration(start, end) {
+    if (!start || !end) return '';
+    const s = Math.max(0, Math.round(end - start));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function runStatus(run) {
+    if (run.pushed && run.pushed.pushed) return { label: 'Pushed', cls: 'success' };
+    if (run.pushed && run.pushed.pushed === false) return { label: 'Push failed', cls: 'danger' };
+    if (run.stopped) return { label: 'Stopped', cls: 'warning' };
+    if (run.error) return { label: 'Error', cls: 'danger' };
+    if (run.finished_at) return { label: 'Completed', cls: 'info' };
+    return { label: 'Running', cls: 'warning' };
 }
 
 function escapeHtml(text) {
