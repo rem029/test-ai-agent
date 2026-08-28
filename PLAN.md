@@ -769,7 +769,15 @@ items plus adversarial-review hardening are in the working tree:
   history-API router + a FastAPI catch-all serving `index.html`; the runs
   list has Prev/Next pagination (`GET /api/runs?limit=&offset=` →
   `{runs,total,limit,offset}`, `database.count_runs`).
-- 149 tests pass.
+- A step that returns only whitespace / only a tool call is no longer blank:
+  `_record` synthesizes "the <role> backend returned no written response
+  (ran N tools…)" and marks `no_response`. `RunState.blockers` +
+  `add_blocker` record budget / review-fail (fatal), build-fail / permission
+  denial (non-fatal); run-detail shows a blockers banner, `runStatus` adds
+  "Blocked". A 🔔 navbar toggle opts into desktop notifications
+  (Notification API, `localStorage`, not the config file) on run
+  finish / new fatal blocker — the email channel is Phase L1.
+- 161 tests pass.
 - Still open for Phase K: `permissions`/`max_cost_usd` config-form inputs;
   interrupted-old-runs "Running" display; SSE instead of polling; the
   follow-up composer + queued indicator; a stylesheet reconciliation to
