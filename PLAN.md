@@ -720,6 +720,69 @@ running one.
 - Unconsumed queued messages seed the next session run rather than vanishing.
 - `uv run pytest` passes; one-shot `agentflow "<goal>"` behavior unchanged.
 
+**Status (2026-08-28):** implemented on branch `phase-i.5`. All five design
+items plus adversarial-review hardening are in the working tree:
+- `pending_messages` table (`kind` in `steer|note|control`) + `queued_runs`
+  table, with `add_pending_message`/`get_pending_messages`/
+  `drain_pending_messages`/`mark_messages_consumed`/`add_control_signal`/
+  `has_stop_signal`/`add_queued_run`/`pop_next_queued_run`/`requeue_run`.
+- `run_workflow` wraps its body in `try/except BaseException/finally`: a
+  per-cwd `threading.Lock` **and** an `fcntl.flock` lock file under
+  `~/.agentflow/locks/` (cross-process), both released in `finally`; a
+  crashed/interrupted run is finalized (`finished_at` set, `run_finished`
+  logged with the error) instead of showing "Running" forever; the next
+  `queued_runs` entry is spawned on completion (re-queued on lock contention).
+- `_drain_steer` at every checkpoint (post-review, each build/verify
+  iteration); `has_stop_signal` checked per tool call **and** after every
+  step and immediately before `_commit_and_push`; `_finalize_stopped` marks
+  the run `stopped`, consumes the control rows, and never commits.
+- `RunResult.stopped` / `RunState.stopped` fields; `reconstruct_run` handles
+  `run_stopped`.
+- CLI: `agentflow --say/--note/--stop <RUN_ID> "<text>"` (warn on unknown
+  run), and `RunInProgressError` is caught with a clean stderr message.
+- Web: `POST /api/runs/{id}/messages`, `GET /api/runs/{id}/messages`,
+  `POST /api/runs/{id}/stop`; `POST /api/runs` routes a submission during an
+  active run to `queued_runs` (`{"status": "queued", ...}`), never silently
+  into steer; `GET /api/runs/{id}/events` now 404s for unknown runs.
+- `get_tool_calls` returns chronological (`id ASC`) order.
+- 137 tests pass (`+20`: `test_pending_messages.py`, `test_run_control.py`,
+  `test_web_control.py`, plus `test_cli.py`/`test_web.py` additions).
+- Deferred: SQLite WAL / DDL-per-connection perf pass; the narrow
+  concurrent-double-`POST /api/runs` 200-vs-404 race (acceptable for a
+  single-user tool). The web composer/queued-indicator UI stays Phase K.
+
+**Web UI fixes shipped in the same session (commits `a039df9`, `5f5eaa9`,
+`e0b1696`), ahead of the Phase K rewrite:**
+- Run-detail steps now render the agent response as Markdown (vendored
+  `static/md.js`), show a PASS/FAIL verdict pill on verify steps, and a
+  per-step backend·model·cost header. Tool calls show real output / a diff
+  view / an errors block instead of a raw `JSON.stringify` dump.
+- **Root cause of the "unreadable runs":** `deepseek-v4-flash` emits tool
+  calls wrapped in DSML delimiter tags (`<｜DSML｜tool_call>…`, U+FF5C) that
+  the strict `<tool_call>` regex never matched — so `parse_tool_requests`
+  returned `[]`, the orchestrator treated the raw block as the final answer,
+  and the whole review→build→verify loop silently no-op'd.
+  `parser._extract_loose_tool_calls` now handles DSML / ASCII-pipe / bare /
+  asymmetric / unclosed forms; `splitToolBlocks` in the UI strips any
+  residual block into a "requested tool" chip.
+- Real URL routes (`/run`, `/runs`, `/runs/<id>`, `/config`, `/health`) via a
+  history-API router + a FastAPI catch-all serving `index.html`; the runs
+  list has Prev/Next pagination (`GET /api/runs?limit=&offset=` →
+  `{runs,total,limit,offset}`, `database.count_runs`).
+- A step that returns only whitespace / only a tool call is no longer blank:
+  `_record` synthesizes "the <role> backend returned no written response
+  (ran N tools…)" and marks `no_response`. `RunState.blockers` +
+  `add_blocker` record budget / review-fail (fatal), build-fail / permission
+  denial (non-fatal); run-detail shows a blockers banner, `runStatus` adds
+  "Blocked". A 🔔 navbar toggle opts into desktop notifications
+  (Notification API, `localStorage`, not the config file) on run
+  finish / new fatal blocker — the email channel is Phase L1.
+- 161 tests pass.
+- Still open for Phase K: `permissions`/`max_cost_usd` config-form inputs;
+  interrupted-old-runs "Running" display; SSE instead of polling; the
+  follow-up composer + queued indicator; a stylesheet reconciliation to
+  DESIGN.md (styles.css predates the token discipline).
+
 ## Phase J - Terminal UI (Claude Code-like)
 
 Built on Phase I's event stream. `agentflow` with no goal argument opens an
@@ -748,6 +811,88 @@ interactive REPL (the one-shot `agentflow "<goal>"` form stays).
 - Model/backend picker per session; config panel continues to write
   `agentflow.config.yaml`.
 - Restore the single-run worktree lock.
+
+## Phase L - Projects, memory, extensibility, notifications (user backlog, 2026-08-28)
+
+Captured from the user during the Phase I.5 session. Several items overlap
+with Phase K (the web rewrite) and should land together; MCP and skills are
+new capability work on top of the Phase H tool layer.
+
+### L1 - Email notifications
+
+- New config block (`notifications:` in `agentflow.config.yaml`, or a
+  dedicated section) for SMTP / an email provider: on run **finished**
+  (pushed / completed / blocked / stopped) and on **action needed** (a
+  `blocker` event - budget, permission, backend error; see the Phase I.5
+  session's blocker work), send an email summary with a link to the run.
+- Complements the per-browser desktop-notification toggle already shipped
+  (localStorage `af_notify`). Email is the "I walked away" channel; keep the
+  send opt-in and rate-limited (one digest per run, not per event).
+- Secrets (SMTP password / API key) follow the OpenRouter-key pattern:
+  env-var first, then `0600` project config, never rendered back to the UI.
+
+### L2 - Config UI: surface the OpenRouter key
+
+- The config panel currently never shows the saved OpenRouter key (Phase F
+  deliberately write-only). Users can't tell if one is set. Fix: show a
+  masked indicator (`sk-or-…dd6d`, last 4 only) + a "set / not set" badge,
+  with a "replace" field that still writes without echoing the full value.
+- Same treatment for any L1 email secret.
+
+### L3 - Per-run project-folder selection
+
+- Today `cwd` is fixed at `agentflow --serve` launch (`os.getcwd()`); every
+  run and the whole DB scope is that one repo. Let the `/run` form pick the
+  target project folder (from an allow-list of roots the server was started
+  with, or a configurable list in `agentflow.config.yaml` - do **not** allow
+  arbitrary filesystem paths from the browser).
+- `run_workflow` already takes `cwd`; the DB is already scoped by `cwd`
+  (`list_runs`/`list_sessions`/`count_runs` all filter on it). Main work:
+  a project picker + validation + the single-run lock is already per-cwd.
+- The runs/sessions views gain a project filter.
+
+### L4 - Agentflow-level memory
+
+- A persistent instruction/fact store (à la Claude Code's `CLAUDE.md` /
+  memory) that gets injected into review/build/verify prompts: coding
+  conventions, "always run `uv run pytest`", "don't touch `legacy/`", etc.
+- Editable from the Config panel. Stored outside the repo (in
+  `~/.agentflow/`) so it applies across projects.
+
+### L5 - Per-project memory
+
+- Same mechanism as L4 but scoped to one project folder (keyed by `cwd`),
+  stored per-repo. Project memory layers on top of global memory in the
+  prompt. Editable from Config, filtered by the L3 project selector.
+
+### L6 - UI design reference pass
+
+- Current UI "looks built by AI." Research the console UIs of comparable
+  products - OpenCode, Claude Code, Cursor, Warp, Devin, plus general
+  dashboard craft (Linear, Vercel, Railway) - and commit to a real visual
+  direction (this is the Impeccable `new-work` / `DESIGN.md`-replace path,
+  not a polish pass). Do this as part of the Phase K rewrite, not before it.
+- Reconcile `styles.css` to `DESIGN.md` (it predates the token discipline;
+  ~58 off-ramp values flagged by the Impeccable hook).
+
+### L7 - MCP client support
+
+- Let agent roles call tools from configured MCP servers, alongside
+  agentflow's built-in tool registry. Config: an `mcp_servers:` list
+  (command/args/env or URL). The orchestrator's tool loop (`_run_with_tools`)
+  dispatches MCP tool calls the same way it dispatches built-ins; MCP tool
+  schemas are merged into `_tool_schemas_text()`. Permission policy
+  (`READ_ONLY_TOOLS` / `_check_tool_permission`) must extend to MCP tools -
+  default unknown MCP tools to "prompt/deny", not "auto".
+
+### L8 - User-defined skills
+
+- A skill = a named, versioned instruction bundle (like this repo's
+  `.claude/skills/`) that a role can load for a task: a `SKILL.md` plus
+  optional scripts/references. Config lists skill directories; the
+  orchestrator exposes `agentflow --list-skills` and injects a chosen
+  skill's instructions into the relevant step's prompt. Keep it
+  hand-rolled - no third-party skill runtime.
 
 ## Housekeeping
 

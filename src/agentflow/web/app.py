@@ -23,6 +23,11 @@ from ..config import (
 )
 from ..database import (
     DEFAULT_DATABASE_PATH,
+    add_control_signal,
+    add_pending_message,
+    add_queued_run,
+    count_runs,
+    get_pending_messages,
     get_session,
     get_session_runs,
     get_tool_calls,
@@ -32,7 +37,7 @@ from ..database import (
     load_run,
 )
 from ..models import get_all_models
-from ..orchestrator import run_workflow, new_run_id
+from ..orchestrator import RunInProgressError, get_active_run, new_run_id, run_workflow
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -60,6 +65,12 @@ class RunCreate(BaseModel):
     verify_backend: Optional[str] = None
     verify_model: Optional[str] = None
     max_iterations: Optional[int] = Field(None, ge=1, le=10)
+
+
+class MessageCreate(BaseModel):
+    body: str = Field(..., min_length=1)
+    kind: str = Field("steer", pattern="^(steer|note)$")
+
 
 
 # ---------- Helper functions ----------
@@ -177,9 +188,17 @@ def create_app(
         return get_all_models()
 
     @app.get("/api/runs")
-    async def runs() -> dict:
-        run_list = list_runs(cwd, path=db_path)
-        return {"runs": run_list}
+    async def runs(limit: int = 25, offset: int = 0) -> dict:
+        limit = max(1, min(100, limit))
+        offset = max(0, offset)
+        run_list = list_runs(cwd, path=db_path, limit=limit, offset=offset)
+        total = count_runs(cwd, path=db_path)
+        return {
+            "runs": run_list,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict:
@@ -200,6 +219,9 @@ def create_app(
     @app.get("/api/runs/{run_id}/events")
     async def run_events(run_id: str) -> dict:
         """Return the streaming events history for a run."""
+        run = load_run(run_id, cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
         events = list_events(run_id, path=db_path)
         return {"events": events}
 
@@ -223,26 +245,82 @@ def create_app(
         try:
             base_config = load_config(config_path)
         except Exception:
-            base_config = Config(review=RoleConfig(backend="claude-code"),
-                                build=RoleConfig(backend="antigravity"),
-                                verify=RoleConfig(backend="claude-code"))
+            base_config = Config(
+                review=RoleConfig(backend="claude-code"),
+                build=RoleConfig(backend="antigravity"),
+                verify=RoleConfig(backend="claude-code"),
+            )
         config = _build_config_from_overrides(base_config, data)
 
+        active_run_id = get_active_run(cwd)
+        if active_run_id is not None:
+            queue_id = add_queued_run(
+                cwd=cwd,
+                goal=data.goal,
+                session_id=data.session_id,
+                config=config.model_dump(),
+                path=db_path,
+            )
+            return {"status": "queued", "queue_id": queue_id}
+
         run_id = new_run_id()
+
+        def _run_worker() -> None:
+            try:
+                run_workflow(
+                    goal=data.goal,
+                    config=config,
+                    cwd=cwd,
+                    run_id=run_id,
+                    session_id=data.session_id,
+                    database_path=db_path,
+                )
+            except RunInProgressError:
+                add_queued_run(
+                    cwd=cwd,
+                    goal=data.goal,
+                    session_id=data.session_id,
+                    config=config.model_dump(),
+                    path=db_path,
+                )
+
         # Start workflow in a background thread so the API returns immediately
         thread = threading.Thread(
-            target=run_workflow,
-            kwargs={
-                "goal": data.goal,
-                "config": config,
-                "cwd": cwd,
-                "run_id": run_id,
-                "session_id": data.session_id,
-                "database_path": db_path,
-            },
+            target=_run_worker,
+            name=f"agentflow-{run_id}",
             daemon=True,
         )
         thread.start()
         return {"run_id": run_id, "status": "started"}
+
+    @app.post("/api/runs/{run_id}/messages")
+    async def send_message(run_id: str, data: MessageCreate) -> dict:
+        run = load_run(run_id, cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        msg_id = add_pending_message(run_id, data.body, kind=data.kind, path=db_path)
+        return {"ok": True, "id": msg_id}
+
+    @app.get("/api/runs/{run_id}/messages")
+    async def run_messages(run_id: str) -> dict:
+        run = load_run(run_id, cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        msgs = get_pending_messages(run_id, include_consumed=True, path=db_path)
+        return {"messages": msgs}
+
+    @app.post("/api/runs/{run_id}/stop")
+    async def stop_run(run_id: str) -> dict:
+        run = load_run(run_id, cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        add_control_signal(run_id, "stop", path=db_path)
+        return {"ok": True}
+ 
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    async def spa_catch_all(full_path: str) -> HTMLResponse:
+        if full_path == "api" or full_path.startswith("api/") or full_path == "static" or full_path.startswith("static/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        return HTMLResponse(content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
     return app

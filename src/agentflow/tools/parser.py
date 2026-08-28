@@ -19,6 +19,57 @@ class ParsedToolRequest(BaseModel):
     args: dict[str, Any]
 
 
+_LOOSE_TOOL_CALL_RE = re.compile(
+    r"<[^\n>]*?tool_call\s*>\s*(\{.*?\})\s*<\s*/[^\n>]*?tool_call\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_UNCLOSED_TOOL_CALL_RE = re.compile(
+    r"<[^\n>]*?tool_call\s*>\s*(\{.*\})\s*$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_loose_tool_calls(text: str) -> list[ParsedToolRequest]:
+    """Extract tool calls from loose/DSML tool_call blocks containing JSON payloads."""
+    calls: list[ParsedToolRequest] = []
+    last_end = 0
+    for match in _LOOSE_TOOL_CALL_RE.finditer(text):
+        last_end = match.end()
+        raw_json = match.group(1).strip()
+        try:
+            data = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(data, dict) and data.get("name") and isinstance(data["name"], str):
+            args = data.get("args")
+            calls.append(
+                ParsedToolRequest(
+                    name=data["name"],
+                    args=args if isinstance(args, dict) else {},
+                )
+            )
+
+    # Check for an unclosed trailing block after the last matched closed block
+    remainder = text[last_end:]
+    unclosed_match = _UNCLOSED_TOOL_CALL_RE.search(remainder)
+    if unclosed_match:
+        raw_json = unclosed_match.group(1).strip()
+        try:
+            data = json.loads(raw_json)
+            if isinstance(data, dict) and data.get("name") and isinstance(data["name"], str):
+                args = data.get("args")
+                calls.append(
+                    ParsedToolRequest(
+                        name=data["name"],
+                        args=args if isinstance(args, dict) else {},
+                    )
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return calls
+
+
 def _extract_xml_tool_calls(text: str) -> list[ParsedToolRequest]:
     """Extract tool calls from <tool_call> XML blocks."""
     calls: list[ParsedToolRequest] = []
@@ -95,9 +146,12 @@ def _coerce_text(value: str | None) -> Any:
 def parse_tool_requests(text: str) -> list[ParsedToolRequest]:
     """Parse all tool requests from an agent response.
 
-    Supports both <tool_call> XML blocks and ```json fenced blocks. XML blocks
-    take precedence if present.
+    Supports loose/DSML tool call blocks, standard <tool_call> XML blocks,
+    and ```json fenced blocks.
     """
+    loose_calls = _extract_loose_tool_calls(text)
+    if loose_calls:
+        return loose_calls
     xml_calls = _extract_xml_tool_calls(text)
     if xml_calls:
         return xml_calls

@@ -121,3 +121,78 @@ def test_set_openrouter_key_persists_to_selected_config(tmp_path):
 
     assert ret == 0
     assert "openrouter_api_key: saved-key" in config_path.read_text()
+
+
+def test_cli_say_flag(capsys):
+    from agentflow.database import get_pending_messages
+
+    # Missing goal/body
+    ret_fail = main(["--say", "run-test-say"])
+    assert ret_fail == 1
+    err = capsys.readouterr().err
+    assert "message body is required" in err.lower()
+
+    # Success with unknown run warning
+    ret_ok = main(["--say", "run-test-say", "Add unit tests"])
+    assert ret_ok == 0
+    captured = capsys.readouterr()
+    assert "Message sent to run run-test-say" in captured.out
+    assert "Warning: no run 'run-test-say' found" in captured.err
+
+    msgs = get_pending_messages("run-test-say")
+    assert len(msgs) == 1
+    assert msgs[0]["body"] == "Add unit tests"
+    assert msgs[0]["kind"] == "steer"
+
+
+def test_cli_note_flag(capsys):
+    from agentflow.database import get_pending_messages
+
+    # Missing goal/body
+    ret_fail = main(["--note", "run-test-note"])
+    assert ret_fail == 1
+    err = capsys.readouterr().err
+    assert "note body is required" in err.lower()
+
+    # Success with unknown run warning
+    ret_ok = main(["--note", "run-test-note", "Check formatting"])
+    assert ret_ok == 0
+    captured = capsys.readouterr()
+    assert "Note sent to run run-test-note" in captured.out
+    assert "Warning: no run 'run-test-note' found" in captured.err
+
+    msgs = get_pending_messages("run-test-note")
+    assert len(msgs) == 1
+    assert msgs[0]["body"] == "Check formatting"
+    assert msgs[0]["kind"] == "note"
+
+
+def test_cli_stop_flag(capsys):
+    from agentflow.database import has_stop_signal
+
+    ret = main(["--stop", "run-test-stop"])
+    assert ret == 0
+    captured = capsys.readouterr()
+    assert "Stop signal sent to run run-test-stop" in captured.out
+    assert "Warning: no run 'run-test-stop' found" in captured.err
+
+    assert has_stop_signal("run-test-stop") is True
+
+
+def test_cli_handles_run_in_progress_error(capsys):
+    from agentflow.orchestrator import RunInProgressError
+
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    with patch("agentflow.cli.load_config", return_value=mock_config):
+        with patch("agentflow.cli.run_workflow", side_effect=RunInProgressError("/path/to/repo")):
+            ret = main(["another task"])
+
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "Error: a run is already in progress for /path/to/repo" in captured.err
+
+

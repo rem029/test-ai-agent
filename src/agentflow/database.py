@@ -78,11 +78,40 @@ def _connection(path: Path) -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            body TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            consumed INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS queued_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cwd TEXT NOT NULL,
+            session_id TEXT,
+            goal TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            started INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+        )
+        """
+    )
     connection.execute("CREATE INDEX IF NOT EXISTS runs_cwd_updated ON runs (cwd, updated_at DESC)")
     connection.execute("CREATE INDEX IF NOT EXISTS runs_session_id ON runs (session_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS sessions_cwd ON sessions (cwd, updated_at DESC)")
     connection.execute("CREATE INDEX IF NOT EXISTS tool_calls_run_id ON tool_calls(run_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS events_run_id_seq ON events (run_id, seq)")
+    connection.execute("CREATE INDEX IF NOT EXISTS pending_messages_run_id_consumed ON pending_messages (run_id, consumed)")
+    connection.execute("CREATE INDEX IF NOT EXISTS queued_runs_cwd_started ON queued_runs (cwd, started)")
     return connection
 
 
@@ -258,6 +287,8 @@ def reconstruct_run(
         "tool_calls": [],
         "finished_at": None,
         "pushed": None,
+        "stopped": False,
+        "blockers": [],
     }
 
     for ev in events:
@@ -285,9 +316,15 @@ def reconstruct_run(
             step = payload.get("step")
             if step:
                 state["steps"].append(step)
+        elif etype == "run_stopped":
+            state["stopped"] = True
+        elif etype == "blocker":
+            state.setdefault("blockers", []).append(payload)
         elif etype == "run_finished":
             state["finished_at"] = payload.get("finished_at", ev["ts"])
             state["pushed"] = payload.get("pushed")
+            if payload.get("stopped"):
+                state["stopped"] = True
 
     return state
 
@@ -355,16 +392,36 @@ def save_run(
     return db_path
 
 
-def list_runs(cwd: str, path: Path | None = None) -> list[dict]:
+def list_runs(
+    cwd: str,
+    path: Path | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
     """Return saved runs for one target repository, newest first."""
     db_path = path or DEFAULT_DATABASE_PATH
     if not db_path.exists():
         return []
+    query = "SELECT state_json FROM runs WHERE cwd = ? ORDER BY updated_at DESC"
+    params: list = [cwd]
+    if limit is not None:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     with _connection(db_path) as connection:
-        rows = connection.execute(
-            "SELECT state_json FROM runs WHERE cwd = ? ORDER BY updated_at DESC", (cwd,)
-        ).fetchall()
+        rows = connection.execute(query, tuple(params)).fetchall()
     return [json.loads(row[0]) for row in rows]
+
+
+def count_runs(cwd: str, path: Path | None = None) -> int:
+    """Return total count of saved runs for one target repository."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    if not db_path.exists():
+        return 0
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM runs WHERE cwd = ?", (cwd,)
+        ).fetchone()
+    return row[0] if row else 0
 
 
 def load_run(run_id: str, cwd: str, path: Path | None = None) -> dict | None:
@@ -382,7 +439,7 @@ def load_run(run_id: str, cwd: str, path: Path | None = None) -> dict | None:
 def get_tool_calls(
     run_id: str, cwd: str, path: Path | None = None
 ) -> list[dict]:
-    """Return tool calls for a saved run, newest first."""
+    """Return tool calls for a saved run, chronological order."""
     db_path = path or DEFAULT_DATABASE_PATH
     if not db_path.exists():
         return []
@@ -393,7 +450,7 @@ def get_tool_calls(
                    execution_time_ms, error
             FROM tool_calls
             WHERE run_id = ?
-            ORDER BY id DESC
+            ORDER BY id ASC
             """,
             (run_id,),
         ).fetchall()
@@ -409,3 +466,216 @@ def get_tool_calls(
         }
         for r in rows
     ]
+
+
+def add_pending_message(
+    run_id: str,
+    body: str,
+    kind: str = "steer",
+    path: Path | None = None,
+) -> int:
+    """Insert a pending message for a run. Returns message ID."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    now = time.time()
+    with _connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO pending_messages (run_id, body, kind, consumed, created_at)
+            VALUES (?, ?, ?, 0, ?)
+            """,
+            (run_id, body, kind, now),
+        )
+        return cursor.lastrowid
+
+
+def get_pending_messages(
+    run_id: str,
+    kind: str | None = None,
+    include_consumed: bool = False,
+    path: Path | None = None,
+) -> list[dict]:
+    """Retrieve pending messages for a run."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    if not db_path.exists():
+        return []
+    query = "SELECT id, run_id, body, kind, consumed, created_at FROM pending_messages WHERE run_id = ?"
+    params: list = [run_id]
+    if not include_consumed:
+        query += " AND consumed = 0"
+    if kind is not None:
+        query += " AND kind = ?"
+        params.append(kind)
+    query += " ORDER BY id ASC"
+
+    with _connection(db_path) as connection:
+        rows = connection.execute(query, tuple(params)).fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "run_id": r[1],
+            "body": r[2],
+            "kind": r[3],
+            "consumed": bool(r[4]),
+            "created_at": r[5],
+        }
+        for r in rows
+    ]
+
+
+def mark_messages_consumed(
+    message_ids: list[int],
+    path: Path | None = None,
+) -> None:
+    """Mark the given message IDs as consumed."""
+    if not message_ids:
+        return
+    db_path = path or DEFAULT_DATABASE_PATH
+    placeholders = ",".join("?" * len(message_ids))
+    with _connection(db_path) as connection:
+        connection.execute(
+            f"UPDATE pending_messages SET consumed = 1 WHERE id IN ({placeholders})",
+            tuple(message_ids),
+        )
+
+
+def drain_pending_messages(
+    run_id: str,
+    kinds: tuple[str, ...],
+    path: Path | None = None,
+) -> list[dict]:
+    """Atomically SELECT unconsumed matching rows, mark them consumed, and return them."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    if not db_path.exists():
+        return []
+    if not kinds:
+        return []
+    placeholders = ",".join("?" * len(kinds))
+    query = (
+        f"SELECT id, run_id, body, kind, consumed, created_at "
+        f"FROM pending_messages "
+        f"WHERE run_id = ? AND consumed = 0 AND kind IN ({placeholders}) "
+        f"ORDER BY id ASC"
+    )
+    with _connection(db_path) as connection:
+        rows = connection.execute(query, (run_id, *kinds)).fetchall()
+        if not rows:
+            return []
+        ids = [r[0] for r in rows]
+        id_placeholders = ",".join("?" * len(ids))
+        connection.execute(
+            f"UPDATE pending_messages SET consumed = 1 WHERE id IN ({id_placeholders})",
+            tuple(ids),
+        )
+    return [
+        {
+            "id": r[0],
+            "run_id": r[1],
+            "body": r[2],
+            "kind": r[3],
+            "consumed": True,
+            "created_at": r[5],
+        }
+        for r in rows
+    ]
+
+
+def add_control_signal(
+    run_id: str,
+    signal: str,
+    path: Path | None = None,
+) -> int:
+    """Insert a control signal ('stop' | 'abort') for a run."""
+    return add_pending_message(run_id, signal, kind="control", path=path)
+
+
+def has_stop_signal(
+    run_id: str,
+    path: Path | None = None,
+) -> bool:
+    """Return True if an unconsumed stop or abort signal exists for run_id."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    if not db_path.exists():
+        return False
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1 FROM pending_messages
+            WHERE run_id = ? AND consumed = 0 AND kind = 'control' AND body IN ('stop', 'abort')
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+    return row is not None
+
+
+def add_queued_run(
+    cwd: str,
+    goal: str,
+    session_id: str | None = None,
+    config: dict | None = None,
+    path: Path | None = None,
+) -> int:
+    """Add a run to the queue for a repository."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    now = time.time()
+    with _connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO queued_runs (cwd, session_id, goal, config_json, created_at, started)
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (cwd, session_id, goal, json.dumps(config or {}), now),
+        )
+        return cursor.lastrowid
+
+
+def pop_next_queued_run(
+    cwd: str,
+    path: Path | None = None,
+) -> dict | None:
+    """Atomically retrieve and mark as started the oldest unstarted queued run for cwd."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    if not db_path.exists():
+        return None
+    with _connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id, cwd, session_id, goal, config_json, created_at
+            FROM queued_runs
+            WHERE cwd = ? AND started = 0
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (cwd,),
+        ).fetchone()
+        if not row:
+            return None
+        queue_id = row[0]
+        connection.execute(
+            "UPDATE queued_runs SET started = 1 WHERE id = ?",
+            (queue_id,),
+        )
+    return {
+        "id": row[0],
+        "cwd": row[1],
+        "session_id": row[2],
+        "goal": row[3],
+        "config": json.loads(row[4]),
+        "created_at": row[5],
+    }
+
+
+def requeue_run(
+    queue_id: int,
+    path: Path | None = None,
+) -> None:
+    """Reset started=0 for a queued run that failed to start due to lock contention."""
+    db_path = path or DEFAULT_DATABASE_PATH
+    with _connection(db_path) as connection:
+        connection.execute(
+            "UPDATE queued_runs SET started = 0 WHERE id = ?",
+            (queue_id,),
+        )
+
+

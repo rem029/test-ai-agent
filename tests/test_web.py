@@ -248,10 +248,13 @@ def test_api_create_run_preserves_permissions_and_max_cost(tmp_path):
 
 
 def test_api_events_and_sessions_endpoints(tmp_path):
-    from agentflow.database import append_event, create_session
+    from agentflow.database import append_event, create_session, save_run
+    from agentflow.orchestrator import RunState
 
     db = tmp_path / "agentflow.db"
     create_session("sess-web-1", str(tmp_path), title="Web Session 1", path=db)
+    state = RunState(run_id="run-web-1", session_id="sess-web-1", goal="Test Web 1", started_at=1.0, config={})
+    save_run(state, str(tmp_path), db)
     append_event("run-web-1", 1, "step_started", {"role": "review"}, path=db)
 
     client = _make_client(tmp_path)
@@ -275,3 +278,260 @@ def test_api_events_and_sessions_endpoints(tmp_path):
     assert events_resp.status_code == 200
     assert len(events_resp.json()["events"]) == 1
     assert events_resp.json()["events"][0]["type"] == "step_started"
+
+
+def test_static_assets_contain_tool_req_support(tmp_path):
+    client = _make_client(tmp_path)
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "splitToolBlocks" in js_resp.text
+    assert "renderToolReq" in js_resp.text
+    assert "tool-req-name" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".tool-req" in css_resp.text
+    assert ".tool-req-name" in css_resp.text
+
+
+def test_js_split_tool_blocks_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    // 1. Symmetric DSML tool call
+    const t1 = '\\n\\n<｜DSML｜tool_call>\\n{"name": "ListDirectory", "args": {"path": ".", "recursive": true}}\\n</｜DSML｜tool_call>';
+    const r1 = app.splitToolBlocks(t1);
+    if (r1.requests.length !== 1 || r1.requests[0].name !== 'ListDirectory' || r1.prose !== '') {
+        process.exit(1);
+    }
+
+    // 2. Asymmetric plain-open, DSML-close
+    const t2 = '<tool_call>\\n{"name": "ReadFile", "args": {"path": "foo.py"}}\\n</｜DSML｜tool_call>';
+    const r2 = app.splitToolBlocks(t2);
+    if (r2.requests.length !== 1 || r2.requests[0].name !== 'ReadFile' || r2.prose !== '') {
+        process.exit(2);
+    }
+
+    // 3. Bare JSON line
+    const t3 = 'Intro text\\n{"name": "Shell", "args": {"command": "ls"}}\\nOutro text';
+    const r3 = app.splitToolBlocks(t3);
+    if (r3.requests.length !== 1 || r3.requests[0].name !== 'Shell' || !r3.prose.includes('Intro text') || !r3.prose.includes('Outro text')) {
+        process.exit(3);
+    }
+
+    // 4. Chip formatting
+    const chip = app.renderToolReq(r1.requests[0]);
+    if (!chip.includes('tool-req-name') || !chip.includes('ListDirectory') || !chip.includes('path=&quot;.&quot;')) {
+        process.exit(4);
+    }
+
+    // 5. renderStep output
+    const stepHtml = app.renderStep({ role: 'build', text: t1, success: true }, 0);
+    if (!stepHtml.includes('tool-req-name') || stepHtml.includes('<｜DSML｜tool_call>')) {
+        process.exit(5);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+
+
+def test_api_runs_pagination(tmp_path):
+    from agentflow.database import save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    # Seed 30 runs
+    for i in range(30):
+        state = RunState(
+            run_id=f"run-page-{i:02d}",
+            goal=f"Goal {i}",
+            started_at=float(i),
+            config={},
+        )
+        save_run(state, str(tmp_path), db)
+
+    client = _make_client(tmp_path)
+
+    # 1. limit=10, offset=0 -> 10 runs, total=30
+    resp1 = client.get("/api/runs?limit=10&offset=0")
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert len(data1["runs"]) == 10
+    assert data1["total"] == 30
+    assert data1["limit"] == 10
+    assert data1["offset"] == 0
+
+    # 2. limit=10, offset=25 -> 5 runs, total=30
+    resp2 = client.get("/api/runs?limit=10&offset=25")
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert len(data2["runs"]) == 5
+    assert data2["total"] == 30
+    assert data2["limit"] == 10
+    assert data2["offset"] == 25
+
+    # 3. No params -> limit=25, 25 runs, total=30
+    resp3 = client.get("/api/runs")
+    assert resp3.status_code == 200
+    data3 = resp3.json()
+    assert len(data3["runs"]) == 25
+    assert data3["total"] == 30
+    assert data3["limit"] == 25
+    assert data3["offset"] == 0
+
+
+def test_spa_catch_all_and_404(tmp_path):
+    client = _make_client(tmp_path)
+
+    # Valid SPA client-side routes should return 200 HTML with run-form / nav-logo
+    for path in ["/runs", "/runs/abc", "/config", "/health", "/run", "/runs/20260101-000000-aaaaaaaa"]:
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert 'id="run-form"' in resp.text or 'class="nav-logo"' in resp.text
+
+    # Unknown /api routes must return 404 JSON, NOT html
+    api_404 = client.get("/api/nonesuch")
+    assert api_404.status_code == 404
+    assert "text/html" not in api_404.headers.get("content-type", "")
+    assert api_404.json()["detail"] == "Not found"
+
+    api_root_404 = client.get("/api")
+    assert api_root_404.status_code == 404
+    assert "text/html" not in api_root_404.headers.get("content-type", "")
+
+
+def test_api_run_detail_returns_blockers(tmp_path):
+    run = {
+        "run_id": "20260101-000000-cccccccc",
+        "goal": "test blockers api",
+        "started_at": 1.0,
+        "config": {},
+        "steps": [],
+        "tool_calls": [],
+        "finished_at": 2.0,
+        "pushed": None,
+        "blockers": [
+            {
+                "reason": "budget",
+                "detail": "x",
+                "fatal": True,
+                "step_index": None,
+                "ts": 1.0,
+            }
+        ],
+    }
+    save_run(RunState(**run), str(tmp_path), tmp_path / "agentflow.db")
+
+    client = _make_client(tmp_path)
+    resp = client.get(f"/api/runs/{run['run_id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "blockers" in data
+    assert len(data["blockers"]) == 1
+    assert data["blockers"][0]["reason"] == "budget"
+    assert data["blockers"][0]["fatal"] is True
+    assert data["blockers"][0]["detail"] == "x"
+
+
+def test_js_router_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    // Test exported functions exist
+    if (typeof app.currentRoute !== 'function' || typeof app.navigate !== 'function' || typeof app.renderRoute !== 'function') {
+        process.exit(1);
+    }
+
+    // currentRoute default in node (no window)
+    const route = app.currentRoute();
+    if (route.view !== 'run') {
+        process.exit(2);
+    }
+
+    // runStatus tests: Blocked when finished_at is set, not pushed, fatal blocker present
+    const blockedRun = {
+        finished_at: 100,
+        pushed: null,
+        blockers: [{ reason: 'budget', detail: 'exceeded', fatal: true }]
+    };
+    const status1 = app.runStatus(blockedRun);
+    if (status1.label !== 'Blocked' || status1.cls !== 'danger') {
+        process.exit(3);
+    }
+
+    // Non-fatal blocker should still be Completed if finished_at is set
+    const nonFatalRun = {
+        finished_at: 100,
+        pushed: null,
+        blockers: [{ reason: 'permission', detail: 'denied', fatal: false }]
+    };
+    const status2 = app.runStatus(nonFatalRun);
+    if (status2.label !== 'Completed') {
+        process.exit(4);
+    }
+
+    // Pushed run takes precedence
+    const pushedRun = {
+        finished_at: 100,
+        pushed: { pushed: true },
+        blockers: [{ reason: 'budget', detail: 'exceeded', fatal: true }]
+    };
+    const status3 = app.runStatus(pushedRun);
+    if (status3.label !== 'Pushed') {
+        process.exit(5);
+    }
+
+    // renderStep with no_response: true
+    const noRespStep = {
+        role: 'verify',
+        text: '_The verify backend returned no written response._',
+        success: true,
+        no_response: true
+    };
+    const stepHtml = app.renderStep(noRespStep, 0);
+    if (!stepHtml.includes('step-noresponse') || !stepHtml.includes('The verify backend returned no written response.')) {
+        process.exit(6);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+
+
+def test_static_assets_contain_notify_and_blockers(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="notify-toggle"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "toggleNotify" in js_resp.text
+    assert "maybeNotify" in js_resp.text
+    assert "blocker" in js_resp.text
+    assert "step-noresponse" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".blockers" in css_resp.text
+    assert ".blocker" in css_resp.text
+    assert ".step-noresponse" in css_resp.text
+

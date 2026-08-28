@@ -14,7 +14,7 @@ import sys
 from .backends import BACKENDS
 from .config import DEFAULT_CONFIG_PATH, load_config
 from .models import get_all_models
-from .orchestrator import run_workflow
+from .orchestrator import RunInProgressError, run_workflow
 from .tools import list_tools
 
 
@@ -92,6 +92,21 @@ def main(argv: list[str] | None = None) -> int:
         "--list-sessions",
         action="store_true",
         help="List active sessions for the current repository",
+    )
+    parser.add_argument(
+        "--say",
+        metavar="RUN_ID",
+        help="Send a steer message to an active or pending run (message body in positional goal)",
+    )
+    parser.add_argument(
+        "--note",
+        metavar="RUN_ID",
+        help="Attach a note to an active or pending run (note body in positional goal)",
+    )
+    parser.add_argument(
+        "--stop",
+        metavar="RUN_ID",
+        help="Send a stop signal to halt an active run",
     )
     parser.add_argument(
         "--resume",
@@ -190,6 +205,48 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  • {s['session_id']}: {s.get('title', '')} (updated {time.ctime(s['updated_at'])})")
         return 0
 
+    if args.say:
+        if not args.goal:
+            print("Error: message body is required when using --say", file=sys.stderr)
+            return 1
+        from .database import add_pending_message, load_run
+
+        if load_run(args.say, os.getcwd()) is None:
+            print(
+                f"Warning: no run '{args.say}' found for this repo; message stored anyway",
+                file=sys.stderr,
+            )
+        add_pending_message(args.say, args.goal, kind="steer")
+        print(f"Message sent to run {args.say}")
+        return 0
+
+    if args.note:
+        if not args.goal:
+            print("Error: note body is required when using --note", file=sys.stderr)
+            return 1
+        from .database import add_pending_message, load_run
+
+        if load_run(args.note, os.getcwd()) is None:
+            print(
+                f"Warning: no run '{args.note}' found for this repo; message stored anyway",
+                file=sys.stderr,
+            )
+        add_pending_message(args.note, args.goal, kind="note")
+        print(f"Note sent to run {args.note}")
+        return 0
+
+    if args.stop:
+        from .database import add_control_signal, load_run
+
+        if load_run(args.stop, os.getcwd()) is None:
+            print(
+                f"Warning: no run '{args.stop}' found for this repo; message stored anyway",
+                file=sys.stderr,
+            )
+        add_control_signal(args.stop, "stop")
+        print(f"Stop signal sent to run {args.stop}")
+        return 0
+
     if args.serve:
         from .web.app import create_app
         import uvicorn
@@ -229,7 +286,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify_model is not None:
         config.verify.model = args.verify_model or None
 
-    state = run_workflow(args.goal, config, cwd=os.getcwd(), session_id=args.resume)
+    try:
+        state = run_workflow(args.goal, config, cwd=os.getcwd(), session_id=args.resume)
+    except RunInProgressError as err:
+        print(f"Error: a run is already in progress for {err.cwd}", file=sys.stderr)
+        return 1
+
     return 0 if state.pushed and state.pushed.get("pushed") else 1
 
 

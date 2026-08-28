@@ -1,0 +1,137 @@
+// ------------------------------------------------------------------
+// Minimal, dependency-free Markdown -> HTML renderer.
+// Scope: what agent responses actually contain — headings, bold/italic,
+// inline code, fenced code blocks, ordered/unordered lists, blockquotes,
+// links, horizontal rules, paragraphs. Everything is escaped first, so the
+// output is safe to inject.
+// ------------------------------------------------------------------
+
+function mdEscape(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function mdInline(text) {
+    let out = mdEscape(text);
+    // Pull inline code out first so its contents are not re-parsed. Use a
+    // placeholder that cannot appear in the escaped text (angle brackets and
+    // ampersands are already entities).
+    const codeSpans = [];
+    out = out.replace(/`([^`]+)`/g, (_, c) => {
+        codeSpans.push(c);
+        return `<<CODE${codeSpans.length - 1}>>`;
+    });
+    // links [label](url)
+    out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        (_, label, url) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+    // bold, then italic
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(/(^|[^\w])_([^_]+)_(?![\w])/g, '$1<em>$2</em>');
+    out = out.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
+    // restore code spans
+    out = out.replace(/<<CODE(\d+)>>/g, (_, i) => `<code>${mdEscape(codeSpans[+i])}</code>`);
+    return out;
+}
+
+function renderMarkdown(src) {
+    if (src === null || src === undefined || src === '') return '';
+    const lines = String(src).replace(/\r\n/g, '\n').split('\n');
+    const html = [];
+    let i = 0;
+    let listType = null; // 'ul' | 'ol'
+
+    const closeList = () => {
+        if (listType) { html.push(`</${listType}>`); listType = null; }
+    };
+
+    while (i < lines.length) {
+        const line = lines[i];
+
+        // fenced code block
+        const fence = line.match(/^```(.*)$/);
+        if (fence) {
+            closeList();
+            const lang = fence[1].trim();
+            const buf = [];
+            i++;
+            while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+            i++; // skip closing fence
+            const cls = lang ? ` class="lang-${mdEscape(lang)}"` : '';
+            html.push(`<pre class="md-code"><code${cls}>${mdEscape(buf.join('\n'))}</code></pre>`);
+            continue;
+        }
+
+        // blank line
+        if (/^\s*$/.test(line)) { closeList(); i++; continue; }
+
+        // horizontal rule
+        if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) {
+            closeList();
+            html.push('<hr>');
+            i++;
+            continue;
+        }
+
+        // heading
+        const h = line.match(/^(#{1,6})\s+(.*)$/);
+        if (h) {
+            closeList();
+            const level = h[1].length;
+            html.push(`<h${level}>${mdInline(h[2].trim())}</h${level}>`);
+            i++;
+            continue;
+        }
+
+        // blockquote
+        if (/^\s*>\s?/.test(line)) {
+            closeList();
+            const buf = [];
+            while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+                buf.push(lines[i].replace(/^\s*>\s?/, ''));
+                i++;
+            }
+            html.push(`<blockquote>${renderMarkdown(buf.join('\n'))}</blockquote>`);
+            continue;
+        }
+
+        // list item
+        const ol = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/);
+        const ul = line.match(/^(\s*)[-*+]\s+(.*)$/);
+        if (ol || ul) {
+            const want = ol ? 'ol' : 'ul';
+            if (listType && listType !== want) closeList();
+            if (!listType) { listType = want; html.push(`<${want}>`); }
+            const content = ol ? ol[3] : ul[2];
+            html.push(`<li>${mdInline(content.trim())}</li>`);
+            i++;
+            continue;
+        }
+
+        // paragraph (consume consecutive non-structural lines)
+        closeList();
+        const buf = [line];
+        i++;
+        while (i < lines.length
+            && !/^\s*$/.test(lines[i])
+            && !/^```/.test(lines[i])
+            && !/^(#{1,6})\s+/.test(lines[i])
+            && !/^\s*>\s?/.test(lines[i])
+            && !/^(\s*)(\d+)[.)]\s+/.test(lines[i])
+            && !/^(\s*)[-*+]\s+/.test(lines[i])) {
+            buf.push(lines[i]);
+            i++;
+        }
+        html.push(`<p>${mdInline(buf.join(' '))}</p>`);
+    }
+
+    closeList();
+    return html.join('\n');
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { renderMarkdown, mdEscape, mdInline };
+}

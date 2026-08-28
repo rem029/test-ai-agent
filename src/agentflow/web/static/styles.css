@@ -57,6 +57,7 @@ body {
     font-weight: 700;
     font-size: 1.5rem;
     color: var(--primary);
+    text-decoration: none;
 }
 
 .nav-links {
@@ -327,6 +328,46 @@ h2 {
     border-radius: var(--radius);
 }
 
+/* Pagination */
+.pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.pager button,
+.pager .btn {
+    display: inline-block;
+    padding: 6px 14px;
+    border: none;
+    border-radius: var(--radius);
+    background-color: var(--secondary);
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.pager button:hover:not(:disabled),
+.pager .btn:hover:not(:disabled) {
+    background-color: #475569;
+}
+
+.pager button:disabled,
+.pager .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.pager .page-label {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
 /* Badges */
 .badge {
     display: inline-block;
@@ -384,6 +425,36 @@ h2 {
     background: #fef2f2;
     color: var(--danger);
     border-radius: var(--radius);
+}
+
+.blockers {
+    margin-top: 12px;
+}
+
+.blocker {
+    display: flex;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    font-size: 0.875rem;
+    margin-bottom: 8px;
+}
+
+.blocker.fatal {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: var(--danger);
+}
+
+.blocker-reason {
+    font-weight: 600;
+}
+
+.step-noresponse {
+    color: var(--text-muted);
+    font-size: 0.875rem;
 }
 
 /* Steps */
@@ -573,6 +644,214 @@ h2 {
     color: #991b1b;
 }
 
+/* Step meta (backend / model / cost) */
+.step-header {
+    flex-wrap: wrap;
+}
+
+.step-iter {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.step-meta {
+    margin-left: auto;
+    display: flex;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Verify verdict pill */
+.verdict {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+}
+
+.verdict.pass {
+    color: var(--success);
+    background: #ecfdf5;
+}
+
+.verdict.fail {
+    color: var(--danger);
+    background: #fef2f2;
+}
+
+/* Rendered markdown from agent responses */
+.md {
+    color: var(--text);
+    font-size: 0.925rem;
+    line-height: 1.6;
+    max-width: 74ch;
+    overflow-wrap: anywhere;
+}
+
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+
+.md h1, .md h2, .md h3, .md h4 {
+    margin: 1.4em 0 0.5em;
+    line-height: 1.3;
+    border: none;
+    padding: 0;
+}
+
+.md h1 { font-size: 1.2rem; }
+.md h2 { font-size: 1.1rem; }
+.md h3 { font-size: 1rem; }
+.md h4 { font-size: 0.925rem; color: var(--text-muted); }
+
+.md p { margin: 0 0 0.75em; }
+
+.md ul, .md ol {
+    margin: 0 0 0.75em;
+    padding-left: 1.4em;
+}
+
+.md li { margin: 0.2em 0; }
+
+.md code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.85em;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+}
+
+.md pre.md-code {
+    margin: 0 0 0.9em;
+    padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-x: auto;
+}
+
+.md pre.md-code code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+
+.md blockquote {
+    margin: 0 0 0.75em;
+    padding: 0.2em 0 0.2em 1em;
+    border-left: 2px solid var(--border);
+    color: var(--text-muted);
+}
+
+.md hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1.2em 0;
+}
+
+.md a { color: var(--primary); }
+
+.empty-note {
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 8px 0;
+}
+
+.run-note {
+    margin-top: 10px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+/* Step tool request chips */
+.tool-reqs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.tool-reqs:last-child {
+    margin-bottom: 0;
+}
+
+.tool-req {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.tool-req-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-weight: 600;
+    color: var(--primary);
+    white-space: nowrap;
+}
+
+.tool-req-args {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* Tool call detail */
+.tool-args,
+.tool-output {
+    margin: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    max-height: 340px;
+    overflow: auto;
+}
+
+.tool-args .arg-key {
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.tool-output.tool-error {
+    color: #991b1b;
+    background: #fef2f2;
+    border-color: #fecaca;
+}
+
+.tool-call-time { margin-left: auto; }
+
+/* Dark mode additions */
+html.dark .verdict.pass { color: #6ee7b7; background: #064e3b; }
+html.dark .verdict.fail { color: #fca5a5; background: #450a0a; }
+html.dark .md code,
+html.dark .md pre.md-code,
+html.dark .tool-req,
+html.dark .tool-args,
+html.dark .tool-output { background: #0b1220; }
+html.dark .tool-req { border-color: #334155; }
+html.dark .tool-output.tool-error { color: #fca5a5; background: #2a0f0f; border-color: #7f1d1d; }
+
 /* Responsive */
 @media (max-width: 768px) {
     .nav-links {
@@ -645,6 +924,16 @@ html.dark .tool-section pre {
 
 html.dark .detail-error {
     background: #450a0a;
+}
+
+html.dark .blocker {
+    background: #0f172a;
+}
+
+html.dark .blocker.fatal {
+    background: #450a0a;
+    border-color: #7f1d1d;
+    color: #fca5a5;
 }
 
 html.dark .diff-add {

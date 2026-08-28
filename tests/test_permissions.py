@@ -124,6 +124,13 @@ def test_workflow_execution_blocks_mutating_tool_on_deny(tmp_path):
     assert (repo / "src" / "test.py").read_text() == "initial = 1\n"
     # Tool call should be logged with failure / permission error
     assert any("Permission denied" in str(c.get("result", {}).get("error", "")) for c in state.tool_calls)
+    # Blocker should be recorded with reason=="permission" and fatal is False, run completed
+    perm_blockers = [b for b in state.blockers if b["reason"] == "permission"]
+    assert len(perm_blockers) == 1
+    assert perm_blockers[0]["fatal"] is False
+    assert "Permission denied" in perm_blockers[0]["detail"]
+    assert state.finished_at is not None
+    assert state.pushed == {"pushed": True}
 
 
 def test_cli_permissions_flag(tmp_path):

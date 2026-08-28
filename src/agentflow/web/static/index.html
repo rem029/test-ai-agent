@@ -9,13 +9,14 @@
 <body>
     <nav class="navbar">
         <div class="container nav-container">
-            <div class="nav-logo">AgentFlow</div>
+            <a href="/" class="nav-logo">AgentFlow</a>
             <div class="nav-links">
-                <a href="#" data-tab="run" class="nav-link active">Run</a>
-                <a href="#" data-tab="config" class="nav-link">Config</a>
-                <a href="#" data-tab="health" class="nav-link">Health</a>
-                <a href="#" data-tab="runs" class="nav-link">Runs</a>
+                <a href="/run" data-tab="run" class="nav-link active">Run</a>
+                <a href="/config" data-tab="config" class="nav-link">Config</a>
+                <a href="/health" data-tab="health" class="nav-link">Health</a>
+                <a href="/runs" data-tab="runs" class="nav-link">Runs</a>
             </div>
+            <button id="notify-toggle" class="btn-theme" title="Desktop notifications">🔕</button>
             <button id="theme-toggle" class="btn-theme">🌙</button>
         </div>
     </nav>
@@ -177,6 +178,7 @@
         </section>
     </main>
 
+    <script src="/static/md.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

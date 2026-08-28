@@ -53,7 +53,7 @@ def test_write_file_rejects_symlink_escape(tmp_path):
 
 
 def test_parser_rejects_unclosed_tool_call():
-    text = "<tool_call>{\"name\": \"ReadFile\"}"
+    text = "<tool_call>{\"name\": \"ReadFile\""
     requests = parse_tool_requests(text)
     assert len(requests) == 0
 

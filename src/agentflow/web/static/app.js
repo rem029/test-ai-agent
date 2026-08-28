@@ -2,36 +2,46 @@
 // AgentFlow Web UI - Enhanced Frontend
 // ------------------------------------------------------------------
 
-document.addEventListener('DOMContentLoaded', () => {
-    // Initialize theme
-    loadThemeFromStorage();
+const RUNS_PAGE_SIZE = 25;
+let currentRunsPage = 1;
 
-    // Set up tab switching
-    setupTabs();
+if (typeof document !== 'undefined') {
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initialize theme
+        loadThemeFromStorage();
 
-    // Load initial data
-    loadConfig();
-    loadHealth();
-    loadRuns();
+        // Set up tab switching
+        setupTabs();
 
-    // Form submission handlers
-    document.getElementById('config-form').addEventListener('submit', submitConfig);
-    document.getElementById('run-form').addEventListener('submit', submitRun);
-    document.getElementById('back-to-runs').addEventListener('click', (e) => {
-        e.preventDefault();
-        showTab('runs');
-        stopDetailPolling();
+        // Form submission handlers
+        document.getElementById('config-form').addEventListener('submit', submitConfig);
+        document.getElementById('run-form').addEventListener('submit', submitRun);
+        document.getElementById('back-to-runs').addEventListener('click', (e) => {
+            e.preventDefault();
+            navigate('/runs');
+        });
+
+        // Theme toggle
+        document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+        // Notify toggle
+        const notifyBtn = document.getElementById('notify-toggle');
+        if (notifyBtn) {
+            notifyBtn.addEventListener('click', toggleNotify);
+        }
+        updateNotifyIcon();
+
+        // Load backend dropdowns with models
+        populateModelOptions();
+
+        // Router setup & initial render
+        window.addEventListener('popstate', renderRoute);
+        renderRoute();
+
+        // Poll runs list while on the runs tab
+        startRunsPolling();
     });
-
-    // Theme toggle
-    document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
-
-    // Load backend dropdowns with models
-    populateModelOptions();
-
-    // Poll runs list while on the runs tab
-    startRunsPolling();
-});
+}
 
 // ------------------------------------------------------------------
 // Theme Toggle
@@ -64,30 +74,138 @@ function updateThemeIcon() {
 }
 
 // ------------------------------------------------------------------
-// Tabs
+// Desktop Notifications
 // ------------------------------------------------------------------
+const NOTIFY_KEY = 'af_notify';
+
+function notifyEnabled() {
+    try {
+        return localStorage.getItem(NOTIFY_KEY) === 'on';
+    } catch (e) {
+        return false;
+    }
+}
+
+function updateNotifyIcon() {
+    const b = document.getElementById('notify-toggle');
+    if (b) b.textContent = notifyEnabled() ? '🔔' : '🔕';
+}
+
+function toggleNotify() {
+    if (!notifyEnabled()) {
+        if (!('Notification' in window)) {
+            console.warn('Notifications unsupported');
+            return;
+        }
+        Notification.requestPermission().then(p => {
+            if (p === 'granted') {
+                try {
+                    localStorage.setItem(NOTIFY_KEY, 'on');
+                } catch (e) {}
+                updateNotifyIcon();
+            }
+        });
+    } else {
+        try {
+            localStorage.setItem(NOTIFY_KEY, 'off');
+        } catch (e) {}
+        updateNotifyIcon();
+    }
+}
+
+function maybeNotify(title, body) {
+    if ('Notification' in window && Notification.permission === 'granted' && notifyEnabled()) {
+        try {
+            new Notification(title, { body });
+        } catch (e) {}
+    }
+}
+
+// ------------------------------------------------------------------
+// Router & Tabs
+// ------------------------------------------------------------------
+function currentRoute() {
+    if (typeof window === 'undefined' || typeof location === 'undefined') {
+        return { view: 'run' };
+    }
+    const pathname = window.location.pathname;
+    if (pathname === '/' || pathname === '/run') {
+        return { view: 'run' };
+    }
+    if (pathname === '/runs') {
+        const params = new URLSearchParams(window.location.search);
+        const pageNum = parseInt(params.get('page'), 10);
+        const page = (Number.isInteger(pageNum) && pageNum >= 1) ? pageNum : 1;
+        return { view: 'runs', page };
+    }
+    const matchRunDetail = pathname.match(/^\/runs\/(.+)$/);
+    if (matchRunDetail) {
+        return { view: 'run-detail', runId: decodeURIComponent(matchRunDetail[1]) };
+    }
+    if (pathname === '/config') {
+        return { view: 'config' };
+    }
+    if (pathname === '/health') {
+        return { view: 'health' };
+    }
+    return { view: 'run' };
+}
+
+function navigate(path, { replace = false } = {}) {
+    if (typeof window !== 'undefined' && window.history) {
+        window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+    }
+    renderRoute();
+}
+
+function renderRoute() {
+    if (typeof document === 'undefined') return;
+    const route = currentRoute();
+    if (route.view === 'run') {
+        stopDetailPolling();
+        showTab('run');
+    } else if (route.view === 'config') {
+        stopDetailPolling();
+        showTab('config');
+        loadConfig();
+    } else if (route.view === 'health') {
+        stopDetailPolling();
+        showTab('health');
+        loadHealth();
+    } else if (route.view === 'runs') {
+        stopDetailPolling();
+        showTab('runs');
+        loadRuns(route.page);
+    } else if (route.view === 'run-detail') {
+        showRunDetail(route.runId);
+    }
+}
+
 function setupTabs() {
     const navLinks = document.querySelectorAll('.nav-link');
-    const tabContents = document.querySelectorAll('.tab-content');
-
     navLinks.forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            const targetTab = link.dataset.tab;
-
-            // Deactivate all links
-            navLinks.forEach(nav => nav.classList.remove('active'));
-            link.classList.add('active');
-
-            // Show corresponding content
-            tabContents.forEach(tab => {
-                if (tab.id === `tab-${targetTab}`) {
-                    tab.classList.add('active');
-                } else {
-                    tab.classList.remove('active');
-                }
-            });
+            const href = link.getAttribute('href') || '/run';
+            navigate(href);
         });
+    });
+
+    const logo = document.querySelector('.nav-logo');
+    if (logo) {
+        logo.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigate('/');
+        });
+    }
+}
+
+function showTab(tabName) {
+    document.querySelectorAll('.nav-link').forEach(nav => {
+        nav.classList.toggle('active', nav.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.toggle('active', tab.id === `tab-${tabName}`);
     });
 }
 
@@ -183,15 +301,30 @@ async function loadHealth() {
 // ------------------------------------------------------------------
 // Runs loading
 // ------------------------------------------------------------------
-async function loadRuns() {
+async function loadRuns(page = 1) {
+    const pageNum = parseInt(page, 10);
+    const validPage = (Number.isInteger(pageNum) && pageNum >= 1) ? pageNum : 1;
+    currentRunsPage = validPage;
+
     const container = document.getElementById('runs-list');
+    if (!container) return;
     container.innerHTML = '<p>Loading runs...</p>';
+
+    const offset = (validPage - 1) * RUNS_PAGE_SIZE;
     try {
-        const response = await fetch('/api/runs');
+        const response = await fetch(`/api/runs?limit=${RUNS_PAGE_SIZE}&offset=${offset}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Failed to load runs');
 
         const runs = data.runs || [];
+        const total = typeof data.total === 'number' ? data.total : runs.length;
+
+        // If a page ends up empty because runs were removed, clamp to prev page
+        if (validPage > 1 && runs.length === 0) {
+            navigate('/runs?page=' + (validPage - 1), { replace: true });
+            return;
+        }
+
         if (runs.length === 0) {
             container.innerHTML = '<p>No runs found. Start a new one to see it here.</p>';
             return;
@@ -204,22 +337,60 @@ async function loadRuns() {
             div.style.cursor = 'pointer';
 
             // Determine status label
-            const status = run.pushed && run.pushed.pushed ? 'Pushed' : (run.finished_at ? 'Completed' : 'Running');
-            const statusClass = run.pushed && run.pushed.pushed ? 'success' : (run.finished_at ? 'info' : 'warning');
+            const { label: status, cls: statusClass } = runStatus(run);
 
             div.innerHTML = `
-                <h3>${escapeHtml(run.goal).substring(0, 60)}...</h3>
                 <div class="run-meta">
                     <span class="badge ${statusClass}">${status}</span>
-                    <span>Run ID: ${run.run_id}</span>
-                    <span>Started: ${formatTime(run.started_at)}</span>
-                    ${run.finished_at ? `<span>Finished: ${formatTime(run.finished_at)}</span>` : ''}
+                    <span class="mono">${escapeHtml(run.run_id)}</span>
+                    <span>Started ${formatTime(run.started_at)}</span>
+                    ${run.finished_at ? `<span>· ${fmtDuration(run.started_at, run.finished_at)}</span>` : ''}
                 </div>
                 <div class="run-goal">${escapeHtml(run.goal)}</div>
             `;
-            div.addEventListener('click', () => showRunDetail(run.run_id));
+            div.addEventListener('click', () => navigate('/runs/' + encodeURIComponent(run.run_id)));
             container.appendChild(div);
         });
+
+        // Pagination pager
+        if (total > RUNS_PAGE_SIZE) {
+            const totalPages = Math.max(1, Math.ceil(total / RUNS_PAGE_SIZE));
+            const pager = document.createElement('div');
+            pager.className = 'pager';
+
+            const prevBtn = document.createElement('button');
+            prevBtn.type = 'button';
+            prevBtn.className = 'btn btn-secondary';
+            prevBtn.textContent = '« Prev';
+            prevBtn.disabled = (validPage <= 1);
+            prevBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (validPage > 1) {
+                    navigate('/runs?page=' + (validPage - 1));
+                }
+            });
+
+            const pageLabel = document.createElement('span');
+            pageLabel.className = 'page-label';
+            pageLabel.textContent = `Page ${validPage} of ${totalPages}`;
+
+            const nextBtn = document.createElement('button');
+            nextBtn.type = 'button';
+            nextBtn.className = 'btn btn-secondary';
+            nextBtn.textContent = 'Next »';
+            nextBtn.disabled = (validPage >= totalPages);
+            nextBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (validPage < totalPages) {
+                    navigate('/runs?page=' + (validPage + 1));
+                }
+            });
+
+            pager.appendChild(prevBtn);
+            pager.appendChild(pageLabel);
+            pager.appendChild(nextBtn);
+            container.appendChild(pager);
+        }
     } catch (error) {
         container.innerHTML = `<p>Failed to load runs: ${error.message}</p>`;
     }
@@ -257,8 +428,13 @@ async function submitRun(e) {
         if (response.ok) {
             showStatus('run-status', `Run started with ID: ${data.run_id}`, 'success');
             form.reset();
-            // Refresh runs after a short delay to show the new run
-            setTimeout(() => loadRuns(), 2000);
+            // Refresh runs after a short delay if on runs tab
+            setTimeout(() => {
+                const runsTab = document.getElementById('tab-runs');
+                if (runsTab && runsTab.classList.contains('active')) {
+                    loadRuns(currentRunsPage);
+                }
+            }, 2000);
         } else {
             showStatus('run-status', `Error starting run: ${data.detail}`, 'error');
         }
@@ -320,21 +496,13 @@ async function populateModelOptions() {
 // ------------------------------------------------------------------
 let detailPollingId = null;
 let currentRunId = null;
+let _lastDetailState = null;
 
 function showRunDetail(runId) {
     currentRunId = runId;
     showTab('run-detail');
     loadRunDetail(runId);
     startDetailPolling(runId);
-}
-
-function showTab(tabName) {
-    document.querySelectorAll('.nav-link').forEach(nav => {
-        nav.classList.toggle('active', nav.dataset.tab === tabName);
-    });
-    document.querySelectorAll('.tab-content').forEach(tab => {
-        tab.classList.toggle('active', tab.id === `tab-${tabName}`);
-    });
 }
 
 async function loadRunDetail(runId) {
@@ -348,26 +516,55 @@ async function loadRunDetail(runId) {
         const run = await runResp.json();
         const callsData = callsResp.ok ? await callsResp.json() : { tool_calls: [] };
 
+        if (_lastDetailState && _lastDetailState.runId === runId) {
+            if (!_lastDetailState.finished_at && run.finished_at) {
+                maybeNotify('agentflow — run ' + runStatus(run).label, (run.goal || '').slice(0, 120));
+            }
+            if ((run.blockers || []).some(b => b.fatal) && _lastDetailState.fatalBlockers === 0) {
+                maybeNotify('agentflow — run blocked', (run.blockers.find(b => b.fatal) || {}).detail || '');
+            }
+        }
+        _lastDetailState = {
+            runId: runId,
+            finished_at: run.finished_at,
+            fatalBlockers: (run.blockers || []).filter(b => b.fatal).length
+        };
+
         document.getElementById('detail-goal').textContent = run.goal || 'Run Detail';
 
-        const status = run.pushed && run.pushed.pushed
-            ? 'Pushed'
-            : (run.finished_at ? 'Completed' : 'Running');
-        const statusClass = run.pushed && run.pushed.pushed
-            ? 'success'
-            : (run.finished_at ? 'info' : 'warning');
+        const { label: status, cls: statusClass } = runStatus(run);
+
+        const totalCost = (run.steps || []).reduce(
+            (sum, s) => sum + (Number(s.usage && s.usage.cost_usd) || 0), 0);
 
         let html = `
             <div class="card run-summary">
                 <div class="run-meta">
                     <span class="badge ${statusClass}">${status}</span>
-                    <span>Run ID: ${run.run_id}</span>
-                    <span>Started: ${formatTime(run.started_at)}</span>
-                    ${run.finished_at ? `<span>Finished: ${formatTime(run.finished_at)}</span>` : ''}
+                    <span class="mono">${escapeHtml(run.run_id)}</span>
+                    <span>Started ${formatTime(run.started_at)}</span>
+                    ${run.finished_at ? `<span>· ran ${fmtDuration(run.started_at, run.finished_at)}</span>` : ''}
+                    ${totalCost > 0 ? `<span class="mono">· $${totalCost.toFixed(totalCost < 0.01 ? 6 : 4)}</span>` : ''}
                 </div>
-                ${run.error ? `<div class="detail-error">Error: ${escapeHtml(run.error)}</div>` : ''}
+                ${run.pushed && run.pushed.commit ? `<div class="run-note">Committed <span class="mono">${escapeHtml(String(run.pushed.commit).slice(0, 8))}</span>${run.pushed.branch ? ` to <span class="mono">${escapeHtml(run.pushed.branch)}</span>` : ''}${run.pushed.pushed ? ' and pushed' : ' (push failed)'}.</div>` : ''}
+                ${run.error ? `<div class="detail-error">${escapeHtml(run.error)}</div>` : ''}
             </div>
         `;
+
+        if (Array.isArray(run.blockers) && run.blockers.length) {
+            function blockerLabel(reason) {
+                if (reason === 'budget') return 'Budget limit reached';
+                if (reason === 'permission') return 'Permission denied';
+                if (reason === 'backend_error') return 'Backend error';
+                return reason || '';
+            }
+            html += '<div class="blockers">';
+            run.blockers.forEach(b => {
+                const fatalClass = b.fatal ? 'fatal' : '';
+                html += `<div class="blocker ${fatalClass}"><span class="blocker-reason">${escapeHtml(blockerLabel(b.reason))}</span> <span class="blocker-detail">${escapeHtml(b.detail || '')}</span></div>`;
+            });
+            html += '</div>';
+        }
 
         html += '<h3>Steps</h3>';
         if (run.steps && run.steps.length) {
@@ -375,19 +572,16 @@ async function loadRunDetail(runId) {
                 html += renderStep(step, index);
             });
         } else {
-            html += '<p>No steps yet.</p>';
+            html += '<p class="empty-note">Waiting for the first step to report back…</p>';
         }
 
-        html += '<h3>Tool Calls</h3>';
         const calls = callsData.tool_calls || [];
         if (calls.length) {
-            html += '<div class="tool-timeline">';
+            html += '<h3>Tool Calls</h3><div class="tool-timeline">';
             calls.forEach((call, index) => {
                 html += renderToolCall(call, index);
             });
             html += '</div>';
-        } else {
-            html += '<p>No tool calls recorded.</p>';
         }
 
         container.innerHTML = html;
@@ -397,63 +591,224 @@ async function loadRunDetail(runId) {
     }
 }
 
+function fmtCost(usage) {
+    if (!usage) return '';
+    const c = usage.cost_usd;
+    if (c === null || c === undefined) return '';
+    const n = Number(c);
+    if (Number.isNaN(n)) return '';
+    return '$' + n.toFixed(n > 0 && n < 0.01 ? 6 : 4);
+}
+
+function verifyVerdict(text) {
+    const m = String(text || '').match(/VERIFY_RESULT:\s*(PASS|FAIL)/i);
+    return m ? m[1].toUpperCase() : null;
+}
+
+function fmtArgs(args) {
+    const entries = Object.entries(args || {});
+    if (!entries.length) return '';
+    return entries
+        .map(([k, v]) => {
+            let val = typeof v === 'string' ? v : JSON.stringify(v);
+            if (val.length > 300) val = val.slice(0, 300) + '…';
+            return `<span class="arg-key">${escapeHtml(k)}</span> ${escapeHtml(val)}`;
+        })
+        .join('\n');
+}
+
+function formatToolReqArgs(args) {
+    if (!args || typeof args !== 'object') return '';
+    const entries = Object.entries(args);
+    if (!entries.length) return '';
+    return entries
+        .map(([k, v]) => {
+            let valStr = v === undefined ? 'undefined' : JSON.stringify(v);
+            if (typeof valStr !== 'string') valStr = String(v);
+            if (valStr.length > 120) {
+                valStr = valStr.slice(0, 120) + '…';
+            }
+            return `${escapeHtml(k)}=${escapeHtml(valStr)}`;
+        })
+        .join(' ');
+}
+
+function renderToolReq(req) {
+    const name = escapeHtml(req.name || '');
+    const argsFormatted = formatToolReqArgs(req.args);
+    const argsHtml = argsFormatted ? ` <span class="tool-req-args mono">${argsFormatted}</span>` : '';
+    return `<div class="tool-req"><span class="tool-req-name">${name}</span>${argsHtml}</div>`;
+}
+
+function splitToolBlocks(text) {
+    if (!text) return { prose: '', requests: [] };
+
+    let str = String(text);
+    const requests = [];
+
+    function tryPushRequest(raw) {
+        if (!raw) return;
+        const trimmed = String(raw).trim();
+        let parsed = null;
+        try {
+            parsed = JSON.parse(trimmed);
+        } catch (e) {
+            const m = trimmed.match(/\{[\s\S]*\}/);
+            if (m) {
+                try {
+                    parsed = JSON.parse(m[0]);
+                } catch (e2) {}
+            }
+        }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string') {
+            const args = (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args))
+                ? parsed.args
+                : {};
+            requests.push({ name: parsed.name, args });
+        }
+    }
+
+    // 1. Strip closed tool_call blocks
+    const toolCallBlockRe = /<[^\n>]*?tool_call\s*>([\s\S]*?)<\s*\/[^\n>]*?tool_call\s*>/gi;
+    str = str.replace(toolCallBlockRe, (_, inner) => {
+        tryPushRequest(inner);
+        return '';
+    });
+
+    // Strip unclosed trailing tool_call block
+    const unclosedBlockRe = /<[^\n>]*?tool_call\s*>([\s\S]*)$/i;
+    str = str.replace(unclosedBlockRe, (_, inner) => {
+        tryPushRequest(inner);
+        return '';
+    });
+
+    // 2. Strip bare lines containing JSON object with name
+    const lines = str.split('\n');
+    const keptLines = [];
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string') {
+                    const args = (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args))
+                        ? parsed.args
+                        : {};
+                    requests.push({ name: parsed.name, args });
+                    continue;
+                }
+            } catch (e) {}
+        }
+        keptLines.push(line);
+    }
+
+    const prose = keptLines.join('\n').trim();
+    return { prose, requests };
+}
+
 function renderStep(step, index) {
-    const statusClass = step.success ? 'success' : 'danger';
-    const statusText = step.success ? 'OK' : 'FAIL';
+    const ok = step.success;
+    const statusClass = ok ? 'success' : 'danger';
+    const statusText = ok ? 'OK' : 'FAIL';
+
+    let verdictHtml = '';
+    if (step.role === 'verify') {
+        const v = verifyVerdict(step.text);
+        if (v) verdictHtml = `<span class="verdict ${v === 'PASS' ? 'pass' : 'fail'}">${v}</span>`;
+    }
+
+    const usage = step.usage || {};
+    const model = usage.model ? `${usage.backend} · ${usage.model}` : (usage.backend || '');
+    const cost = fmtCost(usage);
+    const iter = step.iteration ? `#${step.iteration}` : '';
+
+    const { prose, requests } = splitToolBlocks(step.text);
+
+    let body = '';
+    if (step.no_response || (!prose && !requests.length)) {
+        body = `<div class="md step-noresponse">${renderMarkdown(step.text || 'No response recorded for this step.')}</div>`;
+    } else {
+        if (requests.length) {
+            body += `<div class="tool-reqs">${requests.map(renderToolReq).join('')}</div>`;
+        }
+        if (prose) {
+            body += `<div class="md">${renderMarkdown(prose)}</div>`;
+        }
+    }
+
     return `
         <div class="step-item">
             <div class="step-header">
                 <span class="step-number">${index + 1}</span>
                 <span class="step-role">${escapeHtml(step.role)}</span>
-                <span class="badge ${statusClass}">${statusText}</span>
+                ${iter ? `<span class="step-iter mono">${iter}</span>` : ''}
                 <span class="step-mode">${escapeHtml(step.mode || '')}</span>
+                ${verdictHtml}
+                <span class="badge ${statusClass}">${statusText}</span>
+                <span class="step-meta mono">
+                    ${model ? `<span>${escapeHtml(model)}</span>` : ''}
+                    ${cost ? `<span>${cost}</span>` : ''}
+                </span>
             </div>
-            <div class="step-body">
-                <pre>${escapeHtml(step.text || '')}</pre>
-            </div>
+            <div class="step-body">${body}</div>
         </div>
     `;
 }
 
 function renderToolCall(call, index) {
-    const isSuccess = call.status === 'success' || call.status === 'OK' || (call.result && call.result.success === true) || call.success === true;
+    const result = (call.result && typeof call.result === 'object') ? call.result : {};
+    const isSuccess = call.status === 'success' || call.status === 'OK' || result.success === true;
     const statusClass = isSuccess ? 'success' : 'danger';
     const statusText = isSuccess ? 'OK' : 'FAIL';
-    const args = JSON.stringify(call.args || {}, null, 2);
-    const result = call.result || '(no output)';
-    const resultObj = typeof result === 'object' ? result : {};
-    const hasDiff = resultObj.structured && resultObj.structured.previous !== undefined;
-    const timeText = call.execution_time_ms !== undefined && call.execution_time_ms !== null ? `${call.execution_time_ms}ms` : (call.timestamp ? formatTime(call.timestamp) : '-');
 
-    let diffHtml = '';
+    const ms = call.execution_time_ms;
+    const timeText = (ms !== undefined && ms !== null) ? `${ms} ms` : '';
+
+    const structured = result.structured || {};
+    const hasDiff = structured.current !== undefined;
+    const argsText = fmtArgs(call.args);
+    const output = (result.output || '').trim();
+    const error = (call.error || result.error || '').trim();
+
+    let resultSection = '';
     if (hasDiff) {
-        diffHtml = renderDiff(resultObj.structured.previous, resultObj.structured.current);
+        resultSection = `
+            <div class="tool-section">
+                <h4>${structured.previous !== undefined ? 'Diff' : 'New file'} — <span class="mono">${escapeHtml(structured.path || '')}</span></h4>
+                <div class="diff-view">${renderDiff(structured.previous || '', structured.current || '')}</div>
+            </div>`;
+    } else if (output) {
+        resultSection = `
+            <div class="tool-section">
+                <h4>Output</h4>
+                <pre class="tool-output">${escapeHtml(output)}</pre>
+            </div>`;
     }
+
+    const errorSection = error
+        ? `<div class="tool-section">
+               <h4>Error</h4>
+               <pre class="tool-output tool-error">${escapeHtml(error)}</pre>
+           </div>`
+        : '';
 
     return `
         <div class="tool-call-item">
             <div class="tool-call-header" data-index="${index}">
                 <span class="tool-call-name">${escapeHtml(call.tool_name)}</span>
                 <span class="badge ${statusClass}">${statusText}</span>
-                <span class="tool-call-time">${timeText}</span>
-                <span class="tool-toggle">+</span>
+                ${timeText ? `<span class="tool-call-time mono">${timeText}</span>` : ''}
+                <span class="tool-toggle" aria-hidden="true">+</span>
             </div>
-            <div class="tool-call-body" id="tool-body-${index}" style="display: none;">
+            <div class="tool-call-body" id="tool-body-${index}" hidden>
+                ${argsText ? `
                 <div class="tool-section">
                     <h4>Arguments</h4>
-                    <pre>${escapeHtml(args)}</pre>
-                </div>
-                ${hasDiff ? `
-                <div class="tool-section">
-                    <h4>Diff</h4>
-                    <div class="diff-view">${diffHtml}</div>
-                </div>
-                ` : `
-                <div class="tool-section">
-                    <h4>Result</h4>
-                    <pre>${escapeHtml(typeof result === 'object' ? JSON.stringify(result, null, 2) : result)}</pre>
-                </div>
-                `}
+                    <pre class="tool-args">${argsText}</pre>
+                </div>` : ''}
+                ${resultSection}
+                ${errorSection}
+                ${(!resultSection && !errorSection && !argsText) ? '<p class="empty-note">No details recorded.</p>' : ''}
             </div>
         </div>
     `;
@@ -491,13 +846,8 @@ function attachToolToggleListeners() {
             const index = header.dataset.index;
             const body = document.getElementById(`tool-body-${index}`);
             const toggle = header.querySelector('.tool-toggle');
-            if (body.style.display === 'none') {
-                body.style.display = 'block';
-                toggle.textContent = '-';
-            } else {
-                body.style.display = 'none';
-                toggle.textContent = '+';
-            }
+            body.hidden = !body.hidden;
+            toggle.textContent = body.hidden ? '+' : '−';
         });
     });
 }
@@ -513,13 +863,14 @@ function stopDetailPolling() {
         detailPollingId = null;
     }
     currentRunId = null;
+    _lastDetailState = null;
 }
 
 function startRunsPolling() {
     setInterval(() => {
         const runsTab = document.getElementById('tab-runs');
         if (runsTab && runsTab.classList.contains('active')) {
-            loadRuns();
+            loadRuns(currentRunsPage);
         }
     }, 5000);
 }
@@ -527,6 +878,25 @@ function startRunsPolling() {
 function formatTime(ts) {
     if (!ts) return '-';
     return new Date(ts * 1000).toLocaleString();
+}
+
+function fmtDuration(start, end) {
+    if (!start || !end) return '';
+    const s = Math.max(0, Math.round(end - start));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function runStatus(run) {
+    if (run.pushed && run.pushed.pushed) return { label: 'Pushed', cls: 'success' };
+    if (run.pushed && run.pushed.pushed === false) return { label: 'Push failed', cls: 'danger' };
+    if (run.stopped) return { label: 'Stopped', cls: 'warning' };
+    if (run.error) return { label: 'Error', cls: 'danger' };
+    if (run.finished_at && !(run.pushed && run.pushed.pushed) && Array.isArray(run.blockers) && run.blockers.some(b => b.fatal)) return { label: 'Blocked', cls: 'danger' };
+    if (run.finished_at) return { label: 'Completed', cls: 'info' };
+    return { label: 'Running', cls: 'warning' };
 }
 
 function escapeHtml(text) {
@@ -551,4 +921,25 @@ function showStatus(containerId, message, type) {
         container.textContent = '';
         container.className = 'status-message';
     }, 4000);
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        splitToolBlocks,
+        formatToolReqArgs,
+        renderToolReq,
+        renderStep,
+        escapeHtml,
+        currentRoute,
+        navigate,
+        renderRoute,
+        showTab,
+        loadRuns,
+        runStatus,
+        NOTIFY_KEY,
+        notifyEnabled,
+        toggleNotify,
+        maybeNotify,
+        updateNotifyIcon,
+    };
 }
