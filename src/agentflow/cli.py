@@ -94,6 +94,16 @@ def main(argv: list[str] | None = None) -> int:
         help="List active sessions for the current repository",
     )
     parser.add_argument(
+        "--show-memory",
+        action="store_true",
+        help="Print composed memory (global and project) for current repository",
+    )
+    parser.add_argument(
+        "--edit-memory",
+        choices=["global", "project"],
+        help="Open editor on global or project memory file",
+    )
+    parser.add_argument(
         "--say",
         metavar="RUN_ID",
         help="Send a steer message to an active or pending run (message body in positional goal)",
@@ -140,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Save an OpenRouter API key to the selected agentflow config and exit",
     )
     parser.add_argument(
+        "--project",
+        action="append",
+        metavar="PATH",
+        help="Project root the web UI can target (repeatable; default: current directory)",
+    )
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Start the local admin web UI",
@@ -154,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=8420,
         help="Port to bind the web UI to when using --serve (default: 8420)",
+    )
+    parser.add_argument(
+        "--test-email",
+        action="store_true",
+        help="Send a test email using configured notifications settings and exit",
     )
     args = parser.parse_args(argv)
 
@@ -183,6 +204,14 @@ def main(argv: list[str] | None = None) -> int:
         print(importlib.metadata.version("agentflow"))
         return 0
 
+    if args.test_email:
+        from . import notify
+
+        config = load_config(config_path)
+        res = notify.send_test_email(config)
+        print(f"Test email: {res}")
+        return 0 if res == "sent" else 1
+
     if args.list_models is not None:
         backend_filter = None if args.list_models == "all" else args.list_models
         return print_models(backend_filter)
@@ -203,6 +232,46 @@ def main(argv: list[str] | None = None) -> int:
             print("  (no sessions found)")
         for s in sessions:
             print(f"  • {s['session_id']}: {s.get('title', '')} (updated {time.ctime(s['updated_at'])})")
+        return 0
+
+    if args.show_memory:
+        from .memory import compose_memory
+
+        mem = compose_memory(os.getcwd())
+        if mem:
+            print(mem)
+        else:
+            print("(no memory configured)")
+        return 0
+
+    if args.edit_memory:
+        import shutil
+        import subprocess
+        from .memory import global_memory_path, project_memory_path
+
+        path = (
+            global_memory_path()
+            if args.edit_memory == "global"
+            else project_memory_path(os.getcwd())
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+
+        editor = os.environ.get("EDITOR")
+        if not editor:
+            if shutil.which("nano"):
+                editor = "nano"
+            elif shutil.which("vi"):
+                editor = "vi"
+
+        if not editor:
+            print(
+                f"Error: no editor found ($EDITOR unset, nano/vi not on PATH). Memory file: {path}",
+                file=sys.stderr,
+            )
+            return 1
+
+        subprocess.call([editor, str(path)])
         return 0
 
     if args.say:
@@ -248,10 +317,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.serve:
+        if args.project:
+            for p in args.project:
+                if not os.path.isdir(p):
+                    print(f"Error: project path not found: {p}", file=sys.stderr)
+                    return 1
+        projects = [os.path.abspath(p) for p in (args.project or [])] or [os.getcwd()]
         from .web.app import create_app
         import uvicorn
 
-        uvicorn.run(create_app(cwd=os.getcwd(), config_path=config_path), host=args.host, port=args.port)
+        uvicorn.run(
+            create_app(cwd=projects[0], config_path=config_path, projects=projects),
+            host=args.host,
+            port=args.port,
+        )
         return 0
 
     if args.check or (not args.goal and not args.resume):

@@ -5,13 +5,71 @@
 const RUNS_PAGE_SIZE = 25;
 let currentRunsPage = 1;
 
+const PROJECT_KEY = 'af_project';
+let projectsList = [];
+let currentProject = null;
+
+function projectQuery() {
+    return currentProject ? ('project=' + encodeURIComponent(currentProject)) : '';
+}
+
+async function loadProjects() {
+    try {
+        const response = await fetch('/api/projects');
+        if (response.ok) {
+            projectsList = await response.json();
+        }
+    } catch (e) {
+        projectsList = [];
+    }
+
+    let stored = null;
+    try {
+        stored = localStorage.getItem(PROJECT_KEY);
+    } catch (e) {}
+
+    if (stored && projectsList.some(p => p.path === stored)) {
+        currentProject = stored;
+    } else {
+        currentProject = (projectsList[0] && projectsList[0].path) || null;
+    }
+
+    const select = document.getElementById('project-select');
+    if (select) {
+        select.innerHTML = '';
+        projectsList.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.path;
+            opt.textContent = p.name;
+            select.appendChild(opt);
+        });
+        if (currentProject) {
+            select.value = currentProject;
+        }
+        select.hidden = projectsList.length <= 1;
+    }
+}
+
 if (typeof document !== 'undefined') {
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
         // Initialize theme
         loadThemeFromStorage();
 
         // Set up tab switching
         setupTabs();
+
+        // Project selector change handler
+        const projSelect = document.getElementById('project-select');
+        if (projSelect) {
+            projSelect.addEventListener('change', (e) => {
+                currentProject = e.target.value;
+                try {
+                    localStorage.setItem(PROJECT_KEY, currentProject);
+                } catch (err) {}
+                renderRoute();
+                loadMemory();
+            });
+        }
 
         // Form submission handlers
         document.getElementById('config-form').addEventListener('submit', submitConfig);
@@ -24,6 +82,35 @@ if (typeof document !== 'undefined') {
         // Theme toggle
         document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
+        // Test email button
+        const testEmailBtn = document.getElementById('send-test-email');
+        if (testEmailBtn) {
+            testEmailBtn.addEventListener('click', async () => {
+                const statusSpan = document.getElementById('test-email-status');
+                if (statusSpan) {
+                    statusSpan.textContent = 'Sending...';
+                    statusSpan.className = 'test-email-status';
+                }
+                try {
+                    const res = await fetch('/api/notifications/test', { method: 'POST' });
+                    const data = await res.json();
+                    if (statusSpan) {
+                        statusSpan.textContent = data.result || 'No response';
+                        if (data.result && data.result.startsWith('sent')) {
+                            statusSpan.className = 'test-email-status success';
+                        } else {
+                            statusSpan.className = 'test-email-status error';
+                        }
+                    }
+                } catch (err) {
+                    if (statusSpan) {
+                        statusSpan.textContent = `error: ${err.message}`;
+                        statusSpan.className = 'test-email-status error';
+                    }
+                }
+            });
+        }
+
         // Notify toggle
         const notifyBtn = document.getElementById('notify-toggle');
         if (notifyBtn) {
@@ -33,6 +120,12 @@ if (typeof document !== 'undefined') {
 
         // Load backend dropdowns with models
         populateModelOptions();
+
+        // Load projects first so currentProject is set before first renderRoute/loadMemory
+        await loadProjects();
+
+        // Load memory
+        loadMemory();
 
         // Router setup & initial render
         window.addEventListener('popstate', renderRoute);
@@ -168,6 +261,7 @@ function renderRoute() {
         stopDetailPolling();
         showTab('config');
         loadConfig();
+        loadMemory();
     } else if (route.view === 'health') {
         stopDetailPolling();
         showTab('health');
@@ -217,30 +311,162 @@ function loadConfig() {
         .then(response => response.json())
         .then(config => {
             // Set role selections
-            document.getElementById('config-review_backend').value = config.review.backend;
-            document.getElementById('config-review_model').value = config.review.model || '';
-            document.getElementById('config-build_backend').value = config.build.backend;
-            document.getElementById('config-build_model').value = config.build.model || '';
-            document.getElementById('config-verify_backend').value = config.verify.backend;
-            document.getElementById('config-verify_model').value = config.verify.model || '';
-            document.getElementById('config-max_iterations').value = config.max_iterations;
+            const revB = document.getElementById('config-review_backend');
+            if (revB && config.review) revB.value = config.review.backend;
+            const revM = document.getElementById('config-review_model');
+            if (revM && config.review) revM.value = config.review.model || '';
+            const bldB = document.getElementById('config-build_backend');
+            if (bldB && config.build) bldB.value = config.build.backend;
+            const bldM = document.getElementById('config-build_model');
+            if (bldM && config.build) bldM.value = config.build.model || '';
+            const verB = document.getElementById('config-verify_backend');
+            if (verB && config.verify) verB.value = config.verify.backend;
+            const verM = document.getElementById('config-verify_model');
+            if (verM && config.verify) verM.value = config.verify.model || '';
+            const maxI = document.getElementById('config-max_iterations');
+            if (maxI && config.max_iterations !== undefined) maxI.value = config.max_iterations;
+
+            const statusEl = document.getElementById('config-openrouter-status');
+            if (statusEl) {
+                if (config.openrouter_key) {
+                    if (config.openrouter_key.set) {
+                        const masked = escapeHtml(config.openrouter_key.masked || '');
+                        const source = config.openrouter_key.source === 'env' ? 'environment' : 'config file';
+                        statusEl.innerHTML = `<span class="badge success">Set</span> <span class="mono">${masked}</span> <span class="key-source">(from ${source})</span>`;
+                    } else {
+                        statusEl.innerHTML = '<span class="badge warning">Not set</span>';
+                    }
+                } else {
+                    statusEl.innerHTML = '';
+                }
+            }
+
+            // Notifications config
+            const n = config.notifications || {};
+            const notifyEnabledEl = document.getElementById('config-notify-enabled');
+            if (notifyEnabledEl) notifyEnabledEl.checked = !!n.enabled;
+
+            const notifyEmailToEl = document.getElementById('config-notify-email_to');
+            if (notifyEmailToEl) notifyEmailToEl.value = n.email_to || '';
+
+            const notifyEmailFromEl = document.getElementById('config-notify-email_from');
+            if (notifyEmailFromEl) notifyEmailFromEl.value = n.email_from || '';
+
+            const notifySmtpHostEl = document.getElementById('config-notify-smtp_host');
+            if (notifySmtpHostEl) notifySmtpHostEl.value = n.smtp_host || '';
+
+            const notifySmtpPortEl = document.getElementById('config-notify-smtp_port');
+            if (notifySmtpPortEl) notifySmtpPortEl.value = n.smtp_port !== undefined ? n.smtp_port : 587;
+
+            const notifySmtpUserEl = document.getElementById('config-notify-smtp_username');
+            if (notifySmtpUserEl) notifySmtpUserEl.value = n.smtp_username || '';
+
+            const notifyBaseUrlEl = document.getElementById('config-notify-base_url');
+            if (notifyBaseUrlEl) notifyBaseUrlEl.value = n.base_url || '';
+
+            const notifyTlsEl = document.getElementById('config-notify-tls');
+            if (notifyTlsEl) notifyTlsEl.checked = n.smtp_use_tls !== undefined ? !!n.smtp_use_tls : true;
+
+            const notifyOn = n.notify_on || ['finished'];
+            const notifyOnFinishedEl = document.getElementById('config-notify-on-finished');
+            if (notifyOnFinishedEl) notifyOnFinishedEl.checked = notifyOn.includes('finished');
+
+            const notifyOnBlockedEl = document.getElementById('config-notify-on-blocked');
+            if (notifyOnBlockedEl) notifyOnBlockedEl.checked = notifyOn.includes('blocked');
+
+            const smtpStatusEl = document.getElementById('config-smtp-status');
+            if (smtpStatusEl) {
+                if (config.smtp_password) {
+                    if (config.smtp_password.set) {
+                        const masked = escapeHtml(config.smtp_password.masked || '');
+                        const source = config.smtp_password.source === 'env' ? 'environment' : 'config file';
+                        smtpStatusEl.innerHTML = `<span class="badge success">Set</span> <span class="mono">${masked}</span> <span class="key-source">(from ${source})</span>`;
+                    } else {
+                        smtpStatusEl.innerHTML = '<span class="badge warning">Not set</span>';
+                    }
+                } else {
+                    smtpStatusEl.innerHTML = '';
+                }
+            }
         })
         .catch(error => {
             showStatus('config-status', `Failed to load config: ${error.message}`, 'error');
         });
 }
 
+async function loadMemory() {
+    try {
+        const pq = projectQuery();
+        const url = pq ? `/api/memory?${pq}` : '/api/memory';
+        const response = await fetch(url);
+        if (!response.ok) return;
+        const data = await response.json();
+        const globalEl = document.getElementById('config-memory-global');
+        if (globalEl) {
+            globalEl.value = data.global || '';
+        }
+        const projectEl = document.getElementById('config-memory-project');
+        if (projectEl) {
+            projectEl.value = data.project || '';
+        }
+    } catch (error) {
+        // Silently ignore network/parsing errors
+    }
+}
+
 async function submitConfig(e) {
     e.preventDefault();
     const form = e.target;
+    const keyVal = form.openrouter_api_key ? form.openrouter_api_key.value : '';
+
+    const notifyOn = [];
+    const onFinished = document.getElementById('config-notify-on-finished');
+    if (onFinished && onFinished.checked) notifyOn.push('finished');
+    const onBlocked = document.getElementById('config-notify-on-blocked');
+    if (onBlocked && onBlocked.checked) notifyOn.push('blocked');
+
+    const notifyEnabledEl = document.getElementById('config-notify-enabled');
+    const emailToEl = document.getElementById('config-notify-email_to');
+    const emailFromEl = document.getElementById('config-notify-email_from');
+    const smtpHostEl = document.getElementById('config-notify-smtp_host');
+    const smtpPortEl = document.getElementById('config-notify-smtp_port');
+    const smtpUserEl = document.getElementById('config-notify-smtp_username');
+    const baseUrlEl = document.getElementById('config-notify-base_url');
+    const tlsEl = document.getElementById('config-notify-tls');
+    const smtpPwEl = document.getElementById('config-smtp_password');
+
+    const notifPort = smtpPortEl && smtpPortEl.value ? parseInt(smtpPortEl.value, 10) : 587;
+    const notifications = {
+        enabled: notifyEnabledEl ? notifyEnabledEl.checked : false,
+        email_to: (emailToEl && emailToEl.value.trim()) || null,
+        email_from: (emailFromEl && emailFromEl.value.trim()) || null,
+        smtp_host: (smtpHostEl && smtpHostEl.value.trim()) || null,
+        smtp_port: isNaN(notifPort) ? 587 : notifPort,
+        smtp_username: (smtpUserEl && smtpUserEl.value.trim()) || null,
+        smtp_use_tls: tlsEl ? tlsEl.checked : true,
+        notify_on: notifyOn,
+        base_url: (baseUrlEl && baseUrlEl.value.trim()) || null,
+    };
+    const smtpPwVal = (smtpPwEl && smtpPwEl.value) || '';
+
     const payload = {
-        review_backend: form.review_backend.value,
-        review_model: form.review_model.value || null,
-        build_backend: form.build_backend.value,
-        build_model: form.build_model.value || null,
-        verify_backend: form.verify_backend.value,
-        verify_model: form.verify_model.value || null,
-        max_iterations: parseInt(form.max_iterations.value, 10)
+        review_backend: form.review_backend ? form.review_backend.value : '',
+        review_model: (form.review_model && form.review_model.value) || null,
+        build_backend: form.build_backend ? form.build_backend.value : '',
+        build_model: (form.build_model && form.build_model.value) || null,
+        verify_backend: form.verify_backend ? form.verify_backend.value : '',
+        verify_model: (form.verify_model && form.verify_model.value) || null,
+        max_iterations: form.max_iterations ? parseInt(form.max_iterations.value, 10) : 3,
+        openrouter_api_key: keyVal.trim() || null,
+        notifications: notifications,
+        smtp_password: smtpPwVal.trim() || null
+    };
+
+    const globalEl = document.getElementById('config-memory-global');
+    const projectEl = document.getElementById('config-memory-project');
+    const memoryPayload = {
+        global: globalEl ? globalEl.value : '',
+        project: projectEl ? projectEl.value : ''
     };
 
     try {
@@ -250,11 +476,33 @@ async function submitConfig(e) {
             body: JSON.stringify(payload)
         });
         const data = await response.json();
-        if (response.ok) {
-            showStatus('config-status', 'Configuration saved successfully!', 'success');
-        } else {
+        if (!response.ok) {
             showStatus('config-status', `Error saving config: ${data.detail}`, 'error');
+            return;
         }
+
+        const pq = projectQuery();
+        const memUrl = pq ? `/api/memory?${pq}` : '/api/memory';
+        const memResponse = await fetch(memUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(memoryPayload)
+        });
+        const memData = await memResponse.json();
+        if (!memResponse.ok) {
+            showStatus('config-status', `Config saved, but memory failed: ${memData.detail}`, 'error');
+            return;
+        }
+
+        showStatus('config-status', 'Configuration saved successfully!', 'success');
+        if (form.openrouter_api_key) {
+            form.openrouter_api_key.value = '';
+        }
+        if (smtpPwEl) {
+            smtpPwEl.value = '';
+        }
+        loadConfig();
+        loadMemory();
     } catch (error) {
         showStatus('config-status', `Network error: ${error.message}`, 'error');
     }
@@ -312,7 +560,9 @@ async function loadRuns(page = 1) {
 
     const offset = (validPage - 1) * RUNS_PAGE_SIZE;
     try {
-        const response = await fetch(`/api/runs?limit=${RUNS_PAGE_SIZE}&offset=${offset}`);
+        const pq = projectQuery();
+        const url = `/api/runs?limit=${RUNS_PAGE_SIZE}&offset=${offset}` + (pq ? `&${pq}` : '');
+        const response = await fetch(url);
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Failed to load runs');
 
@@ -404,6 +654,7 @@ async function submitRun(e) {
     const form = e.target;
     const payload = {
         goal: form.goal.value,
+        project: currentProject || null,
         review_backend: form.review_backend.value || null,
         review_model: form.review_model.value || null,
         build_backend: form.build_backend.value || null,
@@ -508,9 +759,11 @@ function showRunDetail(runId) {
 async function loadRunDetail(runId) {
     const container = document.getElementById('run-detail-content');
     try {
+        const pq = projectQuery();
+        const q = pq ? `?${pq}` : '';
         const [runResp, callsResp] = await Promise.all([
-            fetch(`/api/runs/${runId}`),
-            fetch(`/api/runs/${runId}/tool_calls`)
+            fetch(`/api/runs/${runId}${q}`),
+            fetch(`/api/runs/${runId}/tool_calls${q}`)
         ]);
         if (!runResp.ok) throw new Error('Failed to load run');
         const run = await runResp.json();
@@ -936,10 +1189,15 @@ if (typeof module !== 'undefined' && module.exports) {
         showTab,
         loadRuns,
         runStatus,
+        loadMemory,
+        submitConfig,
         NOTIFY_KEY,
         notifyEnabled,
         toggleNotify,
         maybeNotify,
         updateNotifyIcon,
+        PROJECT_KEY,
+        loadProjects,
+        projectQuery,
     };
 }

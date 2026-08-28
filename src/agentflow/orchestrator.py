@@ -42,6 +42,7 @@ from .database import (
     requeue_run,
     save_run,
 )
+from .memory import compose_memory, read_global_memory, read_project_memory
 from .tools import ToolContext, get_tool, list_tools, parse_tool_requests
 from .tools.base import ToolResult
 
@@ -803,6 +804,19 @@ def run_workflow(
 
     state: RunState | None = None
     exc_to_record: BaseException | None = None
+
+    def _notify(ev: str) -> None:
+        if state is not None:
+            try:
+                from . import notify
+
+                res = notify.maybe_notify(state, config, ev)
+                state.log_event(
+                    "notification", {"event": ev, "result": res}, database_path=database_path
+                )
+            except Exception:
+                pass
+
     try:
         # Ensure session exists in the database
         create_session(session_id=session_id, cwd=cwd, title=goal, path=database_path)
@@ -853,6 +867,7 @@ def run_workflow(
             started_at=time.time(),
             config=state_config,
         )
+
         # Save immediately and log run_started event
         state.save(cwd, database_path=database_path)
         state.log_event(
@@ -867,6 +882,18 @@ def run_workflow(
             },
             database_path=database_path,
         )
+
+        memory_block = compose_memory(cwd)
+        if memory_block:
+            state.log_event(
+                "memory_injected",
+                {
+                    "chars": len(memory_block),
+                    "has_global": bool(read_global_memory()),
+                    "has_project": bool(read_project_memory(cwd)),
+                },
+                database_path=database_path,
+            )
 
         if leftover_messages and most_recent_prior_id:
             now = time.time()
@@ -898,6 +925,8 @@ def run_workflow(
             review_prompt = f"{leftover_steer_text}\n\n{review_prompt}"
         if prior_summary:
             review_prompt = f"{prior_summary}\n\n{review_prompt}"
+        if memory_block:
+            review_prompt = f"{memory_block}\n\n{review_prompt}"
 
         review_result = _run_with_tools(
             review_backend,
@@ -930,6 +959,7 @@ def run_workflow(
         if not budget_ok:
             print(f"[budget] ABORTED: {budget_err}")
             state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
+            _notify("blocked")
             state.finished_at = time.time()
             state.log_event("error", {"error": budget_err}, database_path=database_path)
             state.log_event(
@@ -950,6 +980,7 @@ def run_workflow(
                 step_index=0,
                 database_path=database_path,
             )
+            _notify("blocked")
             state.finished_at = time.time()
             state.log_event(
                 "run_finished",
@@ -995,6 +1026,8 @@ def run_workflow(
             )
             if prior_summary:
                 build_prompt = f"{prior_summary}\n\n{build_prompt}"
+            if memory_block:
+                build_prompt = f"{memory_block}\n\n{build_prompt}"
 
             build_result = _run_with_tools(
                 build_backend,
@@ -1026,6 +1059,7 @@ def run_workflow(
             if not budget_ok:
                 print(f"[budget] ABORTED: {budget_err}")
                 state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
+                _notify("blocked")
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
@@ -1056,9 +1090,13 @@ def run_workflow(
                 database_path=database_path,
             )
 
+            verify_prompt = VERIFY_PROMPT.format(goal=goal, plan=plan)
+            if memory_block:
+                verify_prompt = f"{memory_block}\n\n{verify_prompt}"
+
             verify_result = _run_with_tools(
                 verify_backend,
-                VERIFY_PROMPT.format(goal=goal, plan=plan),
+                verify_prompt,
                 cwd=cwd,
                 mode="verify",
                 state=state,
@@ -1086,6 +1124,7 @@ def run_workflow(
             if not budget_ok:
                 print(f"[budget] ABORTED: {budget_err}")
                 state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
+                _notify("blocked")
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
@@ -1139,6 +1178,9 @@ def run_workflow(
                 database_path=database_path,
             )
             state.save(cwd, database_path=database_path)
+
+        if state is not None:
+            _notify("finished")
 
         if acquired_thread_lock:
             with _RUN_LOCKS_LOCK:

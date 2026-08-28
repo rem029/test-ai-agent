@@ -16,6 +16,7 @@
                 <a href="/health" data-tab="health" class="nav-link">Health</a>
                 <a href="/runs" data-tab="runs" class="nav-link">Runs</a>
             </div>
+            <select id="project-select" class="nav-project" title="Target project" hidden></select>
             <button id="notify-toggle" class="btn-theme" title="Desktop notifications">🔕</button>
             <button id="theme-toggle" class="btn-theme">🌙</button>
         </div>
@@ -139,6 +140,92 @@
                             <label for="config-verify_model">Model</label>
                             <input type="text" id="config-verify_model" name="verify_model">
                         </div>
+                    </div>
+
+                    <h3>OpenRouter API Key</h3>
+                    <div class="form-group">
+                        <div id="config-openrouter-status" class="key-status"></div>
+                        <label for="config-openrouter_api_key">Replace key</label>
+                        <input type="password" id="config-openrouter_api_key" name="openrouter_api_key" autocomplete="off" placeholder="Paste a new key to replace the current one">
+                        <p class="form-hint">Stored with owner-only permissions in <code>agentflow.config.yaml</code>. Never shown in full. Leave blank to keep the current key.</p>
+                    </div>
+
+                    <h3>Memory</h3>
+                    <p class="form-hint">Standing instructions prepended to every review / build / verify prompt. Stored under <code>~/.agentflow/</code>, never in the target repo.</p>
+                    <div class="form-group">
+                        <label for="config-memory-global">Global (all projects)</label>
+                        <textarea id="config-memory-global" name="memory_global" rows="4" placeholder="e.g. Always run `uv run pytest` before declaring done."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="config-memory-project">This project</label>
+                        <textarea id="config-memory-project" name="memory_project" rows="4" placeholder="Conventions specific to this repository."></textarea>
+                    </div>
+
+                    <h3>Email Notifications</h3>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="config-notify-enabled" name="notify_enabled">
+                            Enable email notifications
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="config-notify-email_to">Recipient Email (To)</label>
+                            <input type="email" id="config-notify-email_to" name="notify_email_to" placeholder="alerts@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-notify-email_from">Sender Email (From)</label>
+                            <input type="email" id="config-notify-email_from" name="notify_email_from" placeholder="agentflow@example.com">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="config-notify-smtp_host">SMTP Host</label>
+                            <input type="text" id="config-notify-smtp_host" name="notify_smtp_host" placeholder="smtp.example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-notify-smtp_port">SMTP Port</label>
+                            <input type="number" id="config-notify-smtp_port" name="notify_smtp_port" value="587">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="config-notify-smtp_username">SMTP Username</label>
+                            <input type="text" id="config-notify-smtp_username" name="notify_smtp_username" placeholder="user@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-notify-base_url">Base URL</label>
+                            <input type="text" id="config-notify-base_url" name="notify_base_url" placeholder="https://agentui.example.com">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="config-notify-tls" name="notify_smtp_use_tls" checked>
+                            Use TLS / STARTTLS
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>Notify on</label>
+                        <div class="checkbox-row">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-notify-on-finished" name="notify_on_finished" checked>
+                                Run finished
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-notify-on-blocked" name="notify_on_blocked">
+                                Fatal blocker
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <div id="config-smtp-status" class="key-status"></div>
+                        <label for="config-smtp_password">SMTP Password</label>
+                        <input type="password" id="config-smtp_password" name="smtp_password" autocomplete="off" placeholder="Paste to replace">
+                        <p class="form-hint">Stored securely in <code>agentflow.config.yaml</code>. Never shown in full. Leave blank to keep the current password.</p>
+                    </div>
+                    <div class="form-group form-inline-action">
+                        <button type="button" id="send-test-email" class="btn btn-secondary">Send test email</button>
+                        <span id="test-email-status" class="test-email-status"></span>
                     </div>
 
                     <div class="form-group">

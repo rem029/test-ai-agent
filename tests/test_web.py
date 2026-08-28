@@ -26,11 +26,16 @@ def _config() -> Config:
     )
 
 
-def _make_client(tmp_path: Path, config_path: str | None = None) -> TestClient:
+def _make_client(
+    tmp_path: Path,
+    config_path: str | None = None,
+    projects: list[str] | None = None,
+) -> TestClient:
     app = web_app.create_app(
         cwd=str(tmp_path),
         config_path=config_path or str(tmp_path / "agentflow.config.yaml"),
         database_path=tmp_path / "agentflow.db",
+        projects=projects,
     )
     return TestClient(app)
 
@@ -534,4 +539,454 @@ def test_static_assets_contain_notify_and_blockers(tmp_path):
     assert ".blockers" in css_resp.text
     assert ".blocker" in css_resp.text
     assert ".step-noresponse" in css_resp.text
+
+
+def test_api_config_get_returns_masked_openrouter_key_status(tmp_path, monkeypatch):
+    from agentflow.config import dump_config
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config_path = tmp_path / "agentflow.config.yaml"
+    real_key = "sk-or-v1-secret-key-1234567890"
+    dump_config(_config(), str(config_path), openrouter_api_key=real_key)
+
+    client = _make_client(tmp_path, config_path=str(config_path))
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "openrouter_key" in data
+    assert data["openrouter_key"]["set"] is True
+    assert data["openrouter_key"]["source"] == "config"
+    assert data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
+    assert real_key not in resp.text
+
+
+def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post(tmp_path, monkeypatch):
+    from agentflow.config import _from_file
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+    real_key = "sk-or-v1-testkey-1234567890"
+
+    # 1. POST with openrouter_api_key
+    resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "openrouter_api_key": real_key,
+        },
+    )
+    assert resp.status_code == 200
+    post_data = resp.json()
+    assert post_data["ok"] is True
+    assert post_data["openrouter_key"]["set"] is True
+    assert post_data["openrouter_key"]["masked"] != real_key
+    assert real_key not in resp.text
+
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+    assert _from_file(str(config_path)).get("openrouter_api_key") == real_key
+
+    # 2. GET /api/config verifies masked status and no raw key leak
+    get_resp = client.get("/api/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["openrouter_key"]["set"] is True
+    assert get_data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
+    assert real_key not in get_resp.text
+
+    # 3. POST /api/config without the field preserves the existing key
+    post2_resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "antigravity",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 4,
+        },
+    )
+    assert post2_resp.status_code == 200
+    assert _from_file(str(config_path)).get("openrouter_api_key") == real_key
+    assert real_key not in post2_resp.text
+
+
+def test_static_assets_contain_openrouter_key_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="config-openrouter-status"' in html_resp.text
+    assert 'id="config-openrouter_api_key"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "config-openrouter-status" in js_resp.text
+    assert "openrouter_api_key" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".key-status" in css_resp.text
+    assert ".key-source" in css_resp.text
+    assert ".form-hint" in css_resp.text
+
+
+def test_api_memory_get_and_put_endpoints(tmp_path):
+    client = _make_client(tmp_path)
+
+    # 1. Initial GET returns empty strings
+    get_resp = client.get("/api/memory")
+    assert get_resp.status_code == 200
+    data = get_resp.json()
+    assert data["global"] == ""
+    assert data["project"] == ""
+    assert data["cwd"] == str(tmp_path)
+
+    # 2. PUT with both fields
+    put_resp = client.put(
+        "/api/memory",
+        json={"global": "Global instruction G", "project": "Project convention P"},
+    )
+    assert put_resp.status_code == 200
+    put_data = put_resp.json()
+    assert put_data["global"] == "Global instruction G"
+    assert put_data["project"] == "Project convention P"
+    assert put_data["cwd"] == str(tmp_path)
+
+    # Follow-up GET confirms persistence
+    get_resp2 = client.get("/api/memory")
+    assert get_resp2.status_code == 200
+    assert get_resp2.json()["global"] == "Global instruction G"
+    assert get_resp2.json()["project"] == "Project convention P"
+
+    # 3. Partial PUT with only project leaves global untouched
+    put_proj = client.put("/api/memory", json={"project": "Project convention P2"})
+    assert put_proj.status_code == 200
+    assert put_proj.json()["global"] == "Global instruction G"
+    assert put_proj.json()["project"] == "Project convention P2"
+
+    # 4. Partial PUT with only global leaves project untouched
+    put_glob = client.put("/api/memory", json={"global": "Global instruction G2"})
+    assert put_glob.status_code == 200
+    assert put_glob.json()["global"] == "Global instruction G2"
+    assert put_glob.json()["project"] == "Project convention P2"
+
+
+def test_static_assets_contain_memory_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="config-memory-global"' in html_resp.text
+    assert 'id="config-memory-project"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "loadMemory" in js_resp.text
+    assert "config-memory-global" in js_resp.text
+    assert "config-memory-project" in js_resp.text
+
+
+def test_api_projects_endpoint(tmp_path):
+    # Single project by default
+    client = _make_client(tmp_path)
+    resp = client.get("/api/projects")
+    assert resp.status_code == 200
+    data = resp.json()
+    resolved_cwd = str(tmp_path.resolve())
+    assert data == [{"path": resolved_cwd, "name": Path(resolved_cwd).name}]
+
+    # Multiple projects configured
+    dir_a = tmp_path / "proj-a"
+    dir_b = tmp_path / "proj-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    client_multi = _make_client(tmp_path, projects=[str(dir_a), str(dir_b)])
+    resp_multi = client_multi.get("/api/projects")
+    assert resp_multi.status_code == 200
+    data_multi = resp_multi.json()
+    assert len(data_multi) == 2
+    assert data_multi[0] == {"path": str(dir_a.resolve()), "name": "proj-a"}
+    assert data_multi[1] == {"path": str(dir_b.resolve()), "name": "proj-b"}
+
+
+def test_api_runs_scoping_with_multiple_projects(tmp_path):
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    db_file = dir_a / "agentflow.db"
+
+    run_a = {
+        "run_id": "run-a-1",
+        "goal": "goal for repo A",
+        "started_at": time.time(),
+        "config": {},
+        "steps": [],
+        "tool_calls": [],
+        "finished_at": time.time(),
+    }
+    run_b = {
+        "run_id": "run-b-1",
+        "goal": "goal for repo B",
+        "started_at": time.time(),
+        "config": {},
+        "steps": [],
+        "tool_calls": [],
+        "finished_at": time.time(),
+    }
+    save_run(RunState(**run_a), str(dir_a.resolve()), db_file)
+    save_run(RunState(**run_b), str(dir_b.resolve()), db_file)
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # Default (no project param) -> project A (first project)
+    resp_def = client.get("/api/runs")
+    assert resp_def.status_code == 200
+    runs_def = resp_def.json()["runs"]
+    assert len(runs_def) == 1
+    assert runs_def[0]["run_id"] == "run-a-1"
+
+    # Explicit project A
+    resp_a = client.get(f"/api/runs?project={dir_a.resolve()}")
+    assert resp_a.status_code == 200
+    runs_a = resp_a.json()["runs"]
+    assert len(runs_a) == 1
+    assert runs_a[0]["run_id"] == "run-a-1"
+
+    # Explicit project B
+    resp_b = client.get(f"/api/runs?project={dir_b.resolve()}")
+    assert resp_b.status_code == 200
+    runs_b = resp_b.json()["runs"]
+    assert len(runs_b) == 1
+    assert runs_b[0]["run_id"] == "run-b-1"
+
+    # Detail view scoped to project
+    assert client.get(f"/api/runs/run-b-1?project={dir_b.resolve()}").status_code == 200
+    assert client.get(f"/api/runs/run-b-1?project={dir_a.resolve()}").status_code == 404
+
+
+def test_api_runs_unknown_project_returns_400(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs?project=/nope")
+    assert resp.status_code == 400
+    assert "Unknown project" in resp.json()["detail"]
+
+
+def test_api_create_run_with_project_scoping(tmp_path):
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    with patch("agentflow.web.app.load_config", return_value=_config()), patch(
+        "agentflow.web.app.run_workflow"
+    ) as mock_run:
+        client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+        resp = client.post("/api/runs", json={"goal": "scoped task", "project": str(dir_b.resolve())})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+
+        import threading
+        for thread in threading.enumerate():
+            if thread.name.startswith("agentflow-"):
+                thread.join(timeout=5)
+
+        mock_run.assert_called_once()
+        _, kwargs = mock_run.call_args
+        assert kwargs["goal"] == "scoped task"
+        assert kwargs["cwd"] == str(dir_b.resolve())
+
+
+def test_api_memory_scoping_with_multiple_projects(tmp_path):
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # Write memory to project B
+    put_resp = client.put(
+        f"/api/memory?project={dir_b.resolve()}",
+        json={"project": "Project B conventions", "global": "Global instruction"},
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.json()["cwd"] == str(dir_b.resolve())
+    assert put_resp.json()["project"] == "Project B conventions"
+
+    # Read project A memory (should be empty for project)
+    get_a = client.get(f"/api/memory?project={dir_a.resolve()}")
+    assert get_a.status_code == 200
+    assert get_a.json()["cwd"] == str(dir_a.resolve())
+    assert get_a.json()["project"] == ""
+    assert get_a.json()["global"] == "Global instruction"
+
+    # Read project B memory
+    get_b = client.get(f"/api/memory?project={dir_b.resolve()}")
+    assert get_b.status_code == 200
+    assert get_b.json()["cwd"] == str(dir_b.resolve())
+    assert get_b.json()["project"] == "Project B conventions"
+    assert get_b.json()["global"] == "Global instruction"
+
+
+def test_project_resolution_by_basename(tmp_path):
+    dir_a = tmp_path / "alpha-repo"
+    dir_b = tmp_path / "beta-repo"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # Resolves by unambiguous basename
+    resp_b = client.get("/api/runs?project=beta-repo")
+    assert resp_b.status_code == 200
+
+    # Ambiguous basename when two projects share name
+    dir_sub = tmp_path / "sub" / "alpha-repo"
+    dir_sub.mkdir(parents=True)
+    client_ambig = _make_client(dir_a, projects=[str(dir_a), str(dir_sub)])
+    resp_ambig = client_ambig.get("/api/runs?project=alpha-repo")
+    assert resp_ambig.status_code == 400
+    assert "Unknown project: alpha-repo" in resp_ambig.json()["detail"]
+
+
+def test_static_assets_contain_project_selector_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="project-select"' in html_resp.text
+    assert 'class="nav-project"' in html_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".nav-project" in css_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "loadProjects" in js_resp.text
+    assert "projectQuery" in js_resp.text
+    assert "project-select" in js_resp.text
+
+
+def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
+    from agentflow.config import _from_file
+    monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+    real_pw = "smtp-super-secret-123456"
+
+    # 1. Initial GET before any notifications config
+    init_get = client.get("/api/config")
+    assert init_get.status_code == 200
+    assert init_get.json()["notifications"] is None
+    assert init_get.json()["smtp_password"]["set"] is False
+
+    # 2. POST with notifications dict and smtp_password
+    post_resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "notifications": {
+                "enabled": True,
+                "email_to": "alerts@example.com",
+                "email_from": "bot@example.com",
+                "smtp_host": "smtp.example.com",
+                "smtp_port": 587,
+                "smtp_username": "bot@example.com",
+                "smtp_use_tls": True,
+                "notify_on": ["finished", "blocked"],
+                "base_url": "https://agentui.app.rem029.com",
+            },
+            "smtp_password": real_pw,
+        },
+    )
+    assert post_resp.status_code == 200
+    post_data = post_resp.json()
+    assert post_data["ok"] is True
+    assert post_data["notifications"]["enabled"] is True
+    assert post_data["notifications"]["email_to"] == "alerts@example.com"
+    assert post_data["smtp_password"]["set"] is True
+    assert post_data["smtp_password"]["masked"] != real_pw
+    assert real_pw not in post_resp.text
+
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+    assert _from_file(str(config_path)).get("smtp_password") == real_pw
+
+    # 3. GET /api/config verifies masked password and no raw secret leak
+    get_resp = client.get("/api/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["notifications"]["enabled"] is True
+    assert get_data["smtp_password"]["set"] is True
+    assert get_data["smtp_password"]["masked"] == f"{real_pw[:8]}…{real_pw[-4:]}"
+    assert real_pw not in get_resp.text
+
+    # 4. POST /api/config without smtp_password preserves existing password
+    post2_resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "notifications": {
+                "enabled": False,
+            },
+        },
+    )
+    assert post2_resp.status_code == 200
+    assert _from_file(str(config_path)).get("smtp_password") == real_pw
+    assert real_pw not in post2_resp.text
+
+
+def test_api_notifications_test_endpoint(tmp_path):
+    client = _make_client(tmp_path)
+
+    # 1. Disabled / unconfigured notifications
+    resp = client.post("/api/notifications/test")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["result"].startswith("skipped:")
+
+    # 2. Mocked send returns sent
+    with patch("agentflow.notify.send_test_email", return_value="sent"):
+        resp2 = client.post("/api/notifications/test")
+        assert resp2.status_code == 200
+        assert resp2.json()["result"] == "sent"
+
+
+def test_static_assets_contain_notifications_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="config-notify-enabled"' in html_resp.text
+    assert 'id="config-notify-email_to"' in html_resp.text
+    assert 'id="config-smtp-status"' in html_resp.text
+    assert 'id="config-smtp_password"' in html_resp.text
+    assert 'id="send-test-email"' in html_resp.text
+    assert 'id="test-email-status"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "send-test-email" in js_resp.text
+    assert "/api/notifications/test" in js_resp.text
+    assert "config-smtp-status" in js_resp.text
+
+
 
