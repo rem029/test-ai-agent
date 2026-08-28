@@ -150,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Save an OpenRouter API key to the selected agentflow config and exit",
     )
     parser.add_argument(
+        "--project",
+        action="append",
+        metavar="PATH",
+        help="Project root the web UI can target (repeatable; default: current directory)",
+    )
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Start the local admin web UI",
@@ -298,10 +304,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.serve:
+        if args.project:
+            for p in args.project:
+                if not os.path.isdir(p):
+                    print(f"Error: project path not found: {p}", file=sys.stderr)
+                    return 1
+        projects = [os.path.abspath(p) for p in (args.project or [])] or [os.getcwd()]
         from .web.app import create_app
         import uvicorn
 
-        uvicorn.run(create_app(cwd=os.getcwd(), config_path=config_path), host=args.host, port=args.port)
+        uvicorn.run(
+            create_app(cwd=projects[0], config_path=config_path, projects=projects),
+            host=args.host,
+            port=args.port,
+        )
         return 0
 
     if args.check or (not args.goal and not args.resume):

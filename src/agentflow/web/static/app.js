@@ -5,13 +5,71 @@
 const RUNS_PAGE_SIZE = 25;
 let currentRunsPage = 1;
 
+const PROJECT_KEY = 'af_project';
+let projectsList = [];
+let currentProject = null;
+
+function projectQuery() {
+    return currentProject ? ('project=' + encodeURIComponent(currentProject)) : '';
+}
+
+async function loadProjects() {
+    try {
+        const response = await fetch('/api/projects');
+        if (response.ok) {
+            projectsList = await response.json();
+        }
+    } catch (e) {
+        projectsList = [];
+    }
+
+    let stored = null;
+    try {
+        stored = localStorage.getItem(PROJECT_KEY);
+    } catch (e) {}
+
+    if (stored && projectsList.some(p => p.path === stored)) {
+        currentProject = stored;
+    } else {
+        currentProject = (projectsList[0] && projectsList[0].path) || null;
+    }
+
+    const select = document.getElementById('project-select');
+    if (select) {
+        select.innerHTML = '';
+        projectsList.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.path;
+            opt.textContent = p.name;
+            select.appendChild(opt);
+        });
+        if (currentProject) {
+            select.value = currentProject;
+        }
+        select.hidden = projectsList.length <= 1;
+    }
+}
+
 if (typeof document !== 'undefined') {
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
         // Initialize theme
         loadThemeFromStorage();
 
         // Set up tab switching
         setupTabs();
+
+        // Project selector change handler
+        const projSelect = document.getElementById('project-select');
+        if (projSelect) {
+            projSelect.addEventListener('change', (e) => {
+                currentProject = e.target.value;
+                try {
+                    localStorage.setItem(PROJECT_KEY, currentProject);
+                } catch (err) {}
+                renderRoute();
+                loadMemory();
+            });
+        }
 
         // Form submission handlers
         document.getElementById('config-form').addEventListener('submit', submitConfig);
@@ -33,6 +91,9 @@ if (typeof document !== 'undefined') {
 
         // Load backend dropdowns with models
         populateModelOptions();
+
+        // Load projects first so currentProject is set before first renderRoute/loadMemory
+        await loadProjects();
 
         // Load memory
         loadMemory();
@@ -258,7 +319,9 @@ function loadConfig() {
 
 async function loadMemory() {
     try {
-        const response = await fetch('/api/memory');
+        const pq = projectQuery();
+        const url = pq ? `/api/memory?${pq}` : '/api/memory';
+        const response = await fetch(url);
         if (!response.ok) return;
         const data = await response.json();
         const globalEl = document.getElementById('config-memory-global');
@@ -308,7 +371,9 @@ async function submitConfig(e) {
             return;
         }
 
-        const memResponse = await fetch('/api/memory', {
+        const pq = projectQuery();
+        const memUrl = pq ? `/api/memory?${pq}` : '/api/memory';
+        const memResponse = await fetch(memUrl, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(memoryPayload)
@@ -382,7 +447,9 @@ async function loadRuns(page = 1) {
 
     const offset = (validPage - 1) * RUNS_PAGE_SIZE;
     try {
-        const response = await fetch(`/api/runs?limit=${RUNS_PAGE_SIZE}&offset=${offset}`);
+        const pq = projectQuery();
+        const url = `/api/runs?limit=${RUNS_PAGE_SIZE}&offset=${offset}` + (pq ? `&${pq}` : '');
+        const response = await fetch(url);
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Failed to load runs');
 
@@ -474,6 +541,7 @@ async function submitRun(e) {
     const form = e.target;
     const payload = {
         goal: form.goal.value,
+        project: currentProject || null,
         review_backend: form.review_backend.value || null,
         review_model: form.review_model.value || null,
         build_backend: form.build_backend.value || null,
@@ -578,9 +646,11 @@ function showRunDetail(runId) {
 async function loadRunDetail(runId) {
     const container = document.getElementById('run-detail-content');
     try {
+        const pq = projectQuery();
+        const q = pq ? `?${pq}` : '';
         const [runResp, callsResp] = await Promise.all([
-            fetch(`/api/runs/${runId}`),
-            fetch(`/api/runs/${runId}/tool_calls`)
+            fetch(`/api/runs/${runId}${q}`),
+            fetch(`/api/runs/${runId}/tool_calls${q}`)
         ]);
         if (!runResp.ok) throw new Error('Failed to load run');
         const run = await runResp.json();
@@ -1013,5 +1083,8 @@ if (typeof module !== 'undefined' && module.exports) {
         toggleNotify,
         maybeNotify,
         updateNotifyIcon,
+        PROJECT_KEY,
+        loadProjects,
+        projectQuery,
     };
 }

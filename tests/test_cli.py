@@ -246,4 +246,28 @@ def test_cli_edit_memory_missing_editor_fails(capsys, monkeypatch):
         assert "memory.md" in captured.err
 
 
+def test_cli_serve_nonexistent_project_fails(capsys):
+    with patch("uvicorn.run"):
+        ret = main(["--serve", "--project", "/nonexistent"])
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "Error: project path not found: /nonexistent" in captured.err
+
+
+def test_cli_serve_with_valid_projects(tmp_path):
+    dir1 = tmp_path / "p1"
+    dir2 = tmp_path / "p2"
+    dir1.mkdir()
+    dir2.mkdir()
+
+    with patch("uvicorn.run") as mock_uvicorn, patch("agentflow.web.app.create_app") as mock_create_app:
+        ret = main(["--serve", "--project", str(dir1), "--project", str(dir2)])
+        assert ret == 0
+        mock_create_app.assert_called_once()
+        kwargs = mock_create_app.call_args.kwargs
+        assert kwargs["projects"] == [os.path.abspath(str(dir1)), os.path.abspath(str(dir2))]
+        assert kwargs["cwd"] == os.path.abspath(str(dir1))
+        mock_uvicorn.assert_called_once()
+
+
 

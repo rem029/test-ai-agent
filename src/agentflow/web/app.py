@@ -73,6 +73,7 @@ class MemoryUpdate(BaseModel):
 class RunCreate(BaseModel):
     goal: str = Field(..., min_length=1)
     session_id: Optional[str] = None
+    project: Optional[str] = None
     review_backend: Optional[str] = None
     review_model: Optional[str] = None
     build_backend: Optional[str] = None
@@ -146,9 +147,28 @@ def create_app(
     cwd: str,
     config_path: str = DEFAULT_CONFIG_PATH,
     database_path: Path | None = None,
+    projects: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="agentflow Web UI", version="0.1.0")
     db_path = database_path or DEFAULT_DATABASE_PATH
+
+    _projects: list[str] = []
+    for p in (projects or [cwd]):
+        rp = str(Path(p).resolve())
+        if rp not in _projects:
+            _projects.append(rp)
+
+    def _resolve_project(q: str | None) -> str:
+        if not q:
+            return _projects[0]
+        rp = str(Path(q).resolve())
+        if rp in _projects:
+            return rp
+        # also allow matching by basename when unambiguous
+        by_name = [p for p in _projects if Path(p).name == q]
+        if len(by_name) == 1:
+            return by_name[0]
+        raise HTTPException(status_code=400, detail=f"Unknown project: {q}")
 
     # Mount static files (CSS, JS, etc.)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -159,6 +179,10 @@ def create_app(
         return HTMLResponse(content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
     # ---------- API endpoints ----------
+    @app.get("/api/projects")
+    async def get_projects() -> list[dict]:
+        return [{"path": p, "name": Path(p).name} for p in _projects]
+
     @app.get("/api/config")
     async def get_config() -> dict:
         try:
@@ -204,23 +228,25 @@ def create_app(
         }
 
     @app.get("/api/memory")
-    async def get_memory() -> dict:
+    async def get_memory(project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
         return {
             "global": read_global_memory(),
-            "project": read_project_memory(cwd),
-            "cwd": cwd,
+            "project": read_project_memory(target_cwd),
+            "cwd": target_cwd,
         }
 
     @app.put("/api/memory")
-    async def update_memory(data: MemoryUpdate) -> dict:
+    async def update_memory(data: MemoryUpdate, project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
         if data.global_ is not None:
             write_global_memory(data.global_)
         if data.project is not None:
-            write_project_memory(cwd, data.project)
+            write_project_memory(target_cwd, data.project)
         return {
             "global": read_global_memory(),
-            "project": read_project_memory(cwd),
-            "cwd": cwd,
+            "project": read_project_memory(target_cwd),
+            "cwd": target_cwd,
         }
 
     @app.get("/api/health")
@@ -232,11 +258,12 @@ def create_app(
         return get_all_models()
 
     @app.get("/api/runs")
-    async def runs(limit: int = 25, offset: int = 0) -> dict:
+    async def runs(limit: int = 25, offset: int = 0, project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
         limit = max(1, min(100, limit))
         offset = max(0, offset)
-        run_list = list_runs(cwd, path=db_path, limit=limit, offset=offset)
-        total = count_runs(cwd, path=db_path)
+        run_list = list_runs(target_cwd, path=db_path, limit=limit, offset=offset)
+        total = count_runs(target_cwd, path=db_path)
         return {
             "runs": run_list,
             "total": total,
@@ -245,37 +272,41 @@ def create_app(
         }
 
     @app.get("/api/runs/{run_id}")
-    async def run_detail(run_id: str) -> dict:
-        run = load_run(run_id, cwd, path=db_path)
+    async def run_detail(run_id: str, project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return run
 
     @app.get("/api/runs/{run_id}/tool_calls")
-    async def run_tool_calls(run_id: str) -> dict:
+    async def run_tool_calls(run_id: str, project: Optional[str] = None) -> dict:
         """Return the tool call history for a run."""
-        run = load_run(run_id, cwd, path=db_path)
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
-        calls = get_tool_calls(run_id, cwd, path=db_path)
+        calls = get_tool_calls(run_id, target_cwd, path=db_path)
         return {"tool_calls": calls}
 
     @app.get("/api/runs/{run_id}/events")
-    async def run_events(run_id: str) -> dict:
+    async def run_events(run_id: str, project: Optional[str] = None) -> dict:
         """Return the streaming events history for a run."""
-        run = load_run(run_id, cwd, path=db_path)
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         events = list_events(run_id, path=db_path)
         return {"events": events}
 
     @app.get("/api/sessions")
-    async def sessions() -> dict:
-        sess_list = list_sessions(cwd, path=db_path)
+    async def sessions(project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        sess_list = list_sessions(target_cwd, path=db_path)
         return {"sessions": sess_list}
 
     @app.get("/api/sessions/{session_id}")
-    async def session_detail(session_id: str) -> dict:
+    async def session_detail(session_id: str, project: Optional[str] = None) -> dict:
         session = get_session(session_id, path=db_path)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -285,6 +316,7 @@ def create_app(
 
     @app.post("/api/runs")
     async def create_run(data: RunCreate) -> dict:
+        target_cwd = _resolve_project(data.project)
         # Build base config (from file or defaults)
         try:
             base_config = load_config(config_path)
@@ -296,10 +328,10 @@ def create_app(
             )
         config = _build_config_from_overrides(base_config, data)
 
-        active_run_id = get_active_run(cwd)
+        active_run_id = get_active_run(target_cwd)
         if active_run_id is not None:
             queue_id = add_queued_run(
-                cwd=cwd,
+                cwd=target_cwd,
                 goal=data.goal,
                 session_id=data.session_id,
                 config=config.model_dump(),
@@ -314,14 +346,14 @@ def create_app(
                 run_workflow(
                     goal=data.goal,
                     config=config,
-                    cwd=cwd,
+                    cwd=target_cwd,
                     run_id=run_id,
                     session_id=data.session_id,
                     database_path=db_path,
                 )
             except RunInProgressError:
                 add_queued_run(
-                    cwd=cwd,
+                    cwd=target_cwd,
                     goal=data.goal,
                     session_id=data.session_id,
                     config=config.model_dump(),
@@ -338,29 +370,32 @@ def create_app(
         return {"run_id": run_id, "status": "started"}
 
     @app.post("/api/runs/{run_id}/messages")
-    async def send_message(run_id: str, data: MessageCreate) -> dict:
-        run = load_run(run_id, cwd, path=db_path)
+    async def send_message(run_id: str, data: MessageCreate, project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         msg_id = add_pending_message(run_id, data.body, kind=data.kind, path=db_path)
         return {"ok": True, "id": msg_id}
 
     @app.get("/api/runs/{run_id}/messages")
-    async def run_messages(run_id: str) -> dict:
-        run = load_run(run_id, cwd, path=db_path)
+    async def run_messages(run_id: str, project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         msgs = get_pending_messages(run_id, include_consumed=True, path=db_path)
         return {"messages": msgs}
 
     @app.post("/api/runs/{run_id}/stop")
-    async def stop_run(run_id: str) -> dict:
-        run = load_run(run_id, cwd, path=db_path)
+    async def stop_run(run_id: str, project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         add_control_signal(run_id, "stop", path=db_path)
         return {"ok": True}
- 
+
     @app.get("/{full_path:path}", response_class=HTMLResponse)
     async def spa_catch_all(full_path: str) -> HTMLResponse:
         if full_path == "api" or full_path.startswith("api/") or full_path == "static" or full_path.startswith("static/"):

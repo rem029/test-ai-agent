@@ -84,6 +84,15 @@ body {
     color: #fff;
 }
 
+.nav-project {
+    font-size: .85rem;
+    padding: 4px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text);
+}
+
 .theme-toggle,
 .btn-theme {
     background: none;

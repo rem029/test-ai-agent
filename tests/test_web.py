@@ -26,11 +26,16 @@ def _config() -> Config:
     )
 
 
-def _make_client(tmp_path: Path, config_path: str | None = None) -> TestClient:
+def _make_client(
+    tmp_path: Path,
+    config_path: str | None = None,
+    projects: list[str] | None = None,
+) -> TestClient:
     app = web_app.create_app(
         cwd=str(tmp_path),
         config_path=config_path or str(tmp_path / "agentflow.config.yaml"),
         database_path=tmp_path / "agentflow.db",
+        projects=projects,
     )
     return TestClient(app)
 
@@ -684,5 +689,188 @@ def test_static_assets_contain_memory_ui(tmp_path):
     assert "loadMemory" in js_resp.text
     assert "config-memory-global" in js_resp.text
     assert "config-memory-project" in js_resp.text
+
+
+def test_api_projects_endpoint(tmp_path):
+    # Single project by default
+    client = _make_client(tmp_path)
+    resp = client.get("/api/projects")
+    assert resp.status_code == 200
+    data = resp.json()
+    resolved_cwd = str(tmp_path.resolve())
+    assert data == [{"path": resolved_cwd, "name": Path(resolved_cwd).name}]
+
+    # Multiple projects configured
+    dir_a = tmp_path / "proj-a"
+    dir_b = tmp_path / "proj-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    client_multi = _make_client(tmp_path, projects=[str(dir_a), str(dir_b)])
+    resp_multi = client_multi.get("/api/projects")
+    assert resp_multi.status_code == 200
+    data_multi = resp_multi.json()
+    assert len(data_multi) == 2
+    assert data_multi[0] == {"path": str(dir_a.resolve()), "name": "proj-a"}
+    assert data_multi[1] == {"path": str(dir_b.resolve()), "name": "proj-b"}
+
+
+def test_api_runs_scoping_with_multiple_projects(tmp_path):
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    db_file = dir_a / "agentflow.db"
+
+    run_a = {
+        "run_id": "run-a-1",
+        "goal": "goal for repo A",
+        "started_at": time.time(),
+        "config": {},
+        "steps": [],
+        "tool_calls": [],
+        "finished_at": time.time(),
+    }
+    run_b = {
+        "run_id": "run-b-1",
+        "goal": "goal for repo B",
+        "started_at": time.time(),
+        "config": {},
+        "steps": [],
+        "tool_calls": [],
+        "finished_at": time.time(),
+    }
+    save_run(RunState(**run_a), str(dir_a.resolve()), db_file)
+    save_run(RunState(**run_b), str(dir_b.resolve()), db_file)
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # Default (no project param) -> project A (first project)
+    resp_def = client.get("/api/runs")
+    assert resp_def.status_code == 200
+    runs_def = resp_def.json()["runs"]
+    assert len(runs_def) == 1
+    assert runs_def[0]["run_id"] == "run-a-1"
+
+    # Explicit project A
+    resp_a = client.get(f"/api/runs?project={dir_a.resolve()}")
+    assert resp_a.status_code == 200
+    runs_a = resp_a.json()["runs"]
+    assert len(runs_a) == 1
+    assert runs_a[0]["run_id"] == "run-a-1"
+
+    # Explicit project B
+    resp_b = client.get(f"/api/runs?project={dir_b.resolve()}")
+    assert resp_b.status_code == 200
+    runs_b = resp_b.json()["runs"]
+    assert len(runs_b) == 1
+    assert runs_b[0]["run_id"] == "run-b-1"
+
+    # Detail view scoped to project
+    assert client.get(f"/api/runs/run-b-1?project={dir_b.resolve()}").status_code == 200
+    assert client.get(f"/api/runs/run-b-1?project={dir_a.resolve()}").status_code == 404
+
+
+def test_api_runs_unknown_project_returns_400(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs?project=/nope")
+    assert resp.status_code == 400
+    assert "Unknown project" in resp.json()["detail"]
+
+
+def test_api_create_run_with_project_scoping(tmp_path):
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    with patch("agentflow.web.app.load_config", return_value=_config()), patch(
+        "agentflow.web.app.run_workflow"
+    ) as mock_run:
+        client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+        resp = client.post("/api/runs", json={"goal": "scoped task", "project": str(dir_b.resolve())})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+
+        import threading
+        for thread in threading.enumerate():
+            if thread.name.startswith("agentflow-"):
+                thread.join(timeout=5)
+
+        mock_run.assert_called_once()
+        _, kwargs = mock_run.call_args
+        assert kwargs["goal"] == "scoped task"
+        assert kwargs["cwd"] == str(dir_b.resolve())
+
+
+def test_api_memory_scoping_with_multiple_projects(tmp_path):
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # Write memory to project B
+    put_resp = client.put(
+        f"/api/memory?project={dir_b.resolve()}",
+        json={"project": "Project B conventions", "global": "Global instruction"},
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.json()["cwd"] == str(dir_b.resolve())
+    assert put_resp.json()["project"] == "Project B conventions"
+
+    # Read project A memory (should be empty for project)
+    get_a = client.get(f"/api/memory?project={dir_a.resolve()}")
+    assert get_a.status_code == 200
+    assert get_a.json()["cwd"] == str(dir_a.resolve())
+    assert get_a.json()["project"] == ""
+    assert get_a.json()["global"] == "Global instruction"
+
+    # Read project B memory
+    get_b = client.get(f"/api/memory?project={dir_b.resolve()}")
+    assert get_b.status_code == 200
+    assert get_b.json()["cwd"] == str(dir_b.resolve())
+    assert get_b.json()["project"] == "Project B conventions"
+    assert get_b.json()["global"] == "Global instruction"
+
+
+def test_project_resolution_by_basename(tmp_path):
+    dir_a = tmp_path / "alpha-repo"
+    dir_b = tmp_path / "beta-repo"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # Resolves by unambiguous basename
+    resp_b = client.get("/api/runs?project=beta-repo")
+    assert resp_b.status_code == 200
+
+    # Ambiguous basename when two projects share name
+    dir_sub = tmp_path / "sub" / "alpha-repo"
+    dir_sub.mkdir(parents=True)
+    client_ambig = _make_client(dir_a, projects=[str(dir_a), str(dir_sub)])
+    resp_ambig = client_ambig.get("/api/runs?project=alpha-repo")
+    assert resp_ambig.status_code == 400
+    assert "Unknown project: alpha-repo" in resp_ambig.json()["detail"]
+
+
+def test_static_assets_contain_project_selector_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="project-select"' in html_resp.text
+    assert 'class="nav-project"' in html_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".nav-project" in css_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "loadProjects" in js_resp.text
+    assert "projectQuery" in js_resp.text
+    assert "project-select" in js_resp.text
 
 
