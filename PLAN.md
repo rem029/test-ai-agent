@@ -818,6 +818,11 @@ Captured from the user during the Phase I.5 session. Several items overlap
 with Phase K (the web rewrite) and should land together; MCP and skills are
 new capability work on top of the Phase H tool layer.
 
+**Status (2026-08-29):** L1, L2, L3, L4, L5 implemented on branch `phase-l`
+(commits `64a4d41` L2, `a80536e` L4+L5, `2fee0c7` L3, `3b97be5` L1). 217
+tests pass. L6, L7, L8 not started — deferred to their own phases (L6 belongs
+with the Phase K rewrite).
+
 ### L1 - Email notifications
 
 - New config block (`notifications:` in `agentflow.config.yaml`, or a
