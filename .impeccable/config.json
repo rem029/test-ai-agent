@@ -1,0 +1,20 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-color",
+        "value": "#ecfdf5",
+        "createdAt": "2026-08-28T19:10:04.005Z",
+        "reason": "incumbent styles.css status-tint convention: value already used for .badge.success/.status-message.success/.health-status.ok; matches DESIGN.md ok-bg intent"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#fef2f2",
+        "createdAt": "2026-08-28T19:10:04.119Z",
+        "reason": "incumbent styles.css status-tint convention: value already used for .badge.danger/.status-message.error/.detail-error; matches DESIGN.md fail-bg intent"
+      }
+    ]
+  }
+}

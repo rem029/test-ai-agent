@@ -2,36 +2,38 @@
 // AgentFlow Web UI - Enhanced Frontend
 // ------------------------------------------------------------------
 
-document.addEventListener('DOMContentLoaded', () => {
-    // Initialize theme
-    loadThemeFromStorage();
+if (typeof document !== 'undefined') {
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initialize theme
+        loadThemeFromStorage();
 
-    // Set up tab switching
-    setupTabs();
+        // Set up tab switching
+        setupTabs();
 
-    // Load initial data
-    loadConfig();
-    loadHealth();
-    loadRuns();
+        // Load initial data
+        loadConfig();
+        loadHealth();
+        loadRuns();
 
-    // Form submission handlers
-    document.getElementById('config-form').addEventListener('submit', submitConfig);
-    document.getElementById('run-form').addEventListener('submit', submitRun);
-    document.getElementById('back-to-runs').addEventListener('click', (e) => {
-        e.preventDefault();
-        showTab('runs');
-        stopDetailPolling();
+        // Form submission handlers
+        document.getElementById('config-form').addEventListener('submit', submitConfig);
+        document.getElementById('run-form').addEventListener('submit', submitRun);
+        document.getElementById('back-to-runs').addEventListener('click', (e) => {
+            e.preventDefault();
+            showTab('runs');
+            stopDetailPolling();
+        });
+
+        // Theme toggle
+        document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+        // Load backend dropdowns with models
+        populateModelOptions();
+
+        // Poll runs list while on the runs tab
+        startRunsPolling();
     });
-
-    // Theme toggle
-    document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
-
-    // Load backend dropdowns with models
-    populateModelOptions();
-
-    // Poll runs list while on the runs tab
-    startRunsPolling();
-});
+}
 
 // ------------------------------------------------------------------
 // Theme Toggle
@@ -418,6 +420,95 @@ function fmtArgs(args) {
         .join('\n');
 }
 
+function formatToolReqArgs(args) {
+    if (!args || typeof args !== 'object') return '';
+    const entries = Object.entries(args);
+    if (!entries.length) return '';
+    return entries
+        .map(([k, v]) => {
+            let valStr = v === undefined ? 'undefined' : JSON.stringify(v);
+            if (typeof valStr !== 'string') valStr = String(v);
+            if (valStr.length > 120) {
+                valStr = valStr.slice(0, 120) + '…';
+            }
+            return `${escapeHtml(k)}=${escapeHtml(valStr)}`;
+        })
+        .join(' ');
+}
+
+function renderToolReq(req) {
+    const name = escapeHtml(req.name || '');
+    const argsFormatted = formatToolReqArgs(req.args);
+    const argsHtml = argsFormatted ? ` <span class="tool-req-args mono">${argsFormatted}</span>` : '';
+    return `<div class="tool-req"><span class="tool-req-name">${name}</span>${argsHtml}</div>`;
+}
+
+function splitToolBlocks(text) {
+    if (!text) return { prose: '', requests: [] };
+
+    let str = String(text);
+    const requests = [];
+
+    function tryPushRequest(raw) {
+        if (!raw) return;
+        const trimmed = String(raw).trim();
+        let parsed = null;
+        try {
+            parsed = JSON.parse(trimmed);
+        } catch (e) {
+            const m = trimmed.match(/\{[\s\S]*\}/);
+            if (m) {
+                try {
+                    parsed = JSON.parse(m[0]);
+                } catch (e2) {}
+            }
+        }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string') {
+            const args = (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args))
+                ? parsed.args
+                : {};
+            requests.push({ name: parsed.name, args });
+        }
+    }
+
+    // 1. Strip closed tool_call blocks
+    const toolCallBlockRe = /<[^\n>]*?tool_call\s*>([\s\S]*?)<\s*\/[^\n>]*?tool_call\s*>/gi;
+    str = str.replace(toolCallBlockRe, (_, inner) => {
+        tryPushRequest(inner);
+        return '';
+    });
+
+    // Strip unclosed trailing tool_call block
+    const unclosedBlockRe = /<[^\n>]*?tool_call\s*>([\s\S]*)$/i;
+    str = str.replace(unclosedBlockRe, (_, inner) => {
+        tryPushRequest(inner);
+        return '';
+    });
+
+    // 2. Strip bare lines containing JSON object with name
+    const lines = str.split('\n');
+    const keptLines = [];
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string') {
+                    const args = (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args))
+                        ? parsed.args
+                        : {};
+                    requests.push({ name: parsed.name, args });
+                    continue;
+                }
+            } catch (e) {}
+        }
+        keptLines.push(line);
+    }
+
+    const prose = keptLines.join('\n').trim();
+    return { prose, requests };
+}
+
 function renderStep(step, index) {
     const ok = step.success;
     const statusClass = ok ? 'success' : 'danger';
@@ -434,9 +525,18 @@ function renderStep(step, index) {
     const cost = fmtCost(usage);
     const iter = step.iteration ? `#${step.iteration}` : '';
 
-    const body = step.text
-        ? `<div class="md">${renderMarkdown(step.text)}</div>`
-        : `<p class="empty-note">No response text was recorded for this step.</p>`;
+    const { prose, requests } = splitToolBlocks(step.text);
+
+    let body = '';
+    if (requests.length) {
+        body += `<div class="tool-reqs">${requests.map(renderToolReq).join('')}</div>`;
+    }
+    if (prose) {
+        body += `<div class="md">${renderMarkdown(prose)}</div>`;
+    }
+    if (!requests.length && !prose) {
+        body = `<p class="empty-note">No response text was recorded for this step.</p>`;
+    }
 
     return `
         <div class="step-item">
@@ -621,4 +721,14 @@ function showStatus(containerId, message, type) {
         container.textContent = '';
         container.className = 'status-message';
     }, 4000);
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        splitToolBlocks,
+        formatToolReqArgs,
+        renderToolReq,
+        renderStep,
+        escapeHtml,
+    };
 }

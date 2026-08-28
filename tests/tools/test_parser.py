@@ -78,3 +78,80 @@ def test_invalid_xml_is_skipped():
     text = "<tool_call><ReadFile><args><path>foo.py</path><<bad>></args></ReadFile></tool_call>"
     calls = parse_tool_requests(text)
     assert len(calls) == 0
+
+
+def test_parse_dsml_tool_call_symmetric():
+    text = """
+<｜DSML｜tool_call>
+{"name": "ListDirectory", "args": {"path": ".", "recursive": true}}
+</｜DSML｜tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": ".", "recursive": True}
+
+
+def test_parse_dsml_tool_call_asymmetric_plain_open():
+    text = """
+<tool_call>
+{"name": "ListDirectory", "args": {"path": ".", "recursive": true}}
+</｜DSML｜tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": ".", "recursive": True}
+
+
+def test_parse_dsml_tool_call_asymmetric_dsml_open():
+    text = """
+<｜DSML｜tool_call>
+{"name": "ReadFile", "args": {"path": "src/app.py"}}
+</tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ReadFile"
+    assert calls[0].args == {"path": "src/app.py"}
+
+
+def test_parse_dsml_tool_call_unclosed_trailing():
+    text = """I will inspect the workspace now.
+<｜DSML｜tool_call>
+{"name": "ListDirectory", "args": {"path": "."}}"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": "."}
+
+
+def test_parse_dsml_multiple_tool_calls():
+    text = """
+<｜DSML｜tool_call>
+{"name": "ReadFile", "args": {"path": "a.txt"}}
+</｜DSML｜tool_call>
+Some text in between
+<｜DSML｜tool_call>
+{"name": "WriteFile", "args": {"path": "b.txt", "content": "hello"}}
+</｜DSML｜tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 2
+    assert calls[0].name == "ReadFile"
+    assert calls[0].args == {"path": "a.txt"}
+    assert calls[1].name == "WriteFile"
+    assert calls[1].args == {"path": "b.txt", "content": "hello"}
+
+
+def test_parse_dsml_ascii_pipe_delimiters():
+    text = """
+<|DSML|tool_call>
+{"name": "Shell", "args": {"command": "pytest"}}
+</|DSML|tool_call>
+"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "Shell"
+    assert calls[0].args == {"command": "pytest"}
+

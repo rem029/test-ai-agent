@@ -278,3 +278,67 @@ def test_api_events_and_sessions_endpoints(tmp_path):
     assert events_resp.status_code == 200
     assert len(events_resp.json()["events"]) == 1
     assert events_resp.json()["events"][0]["type"] == "step_started"
+
+
+def test_static_assets_contain_tool_req_support(tmp_path):
+    client = _make_client(tmp_path)
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "splitToolBlocks" in js_resp.text
+    assert "renderToolReq" in js_resp.text
+    assert "tool-req-name" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".tool-req" in css_resp.text
+    assert ".tool-req-name" in css_resp.text
+
+
+def test_js_split_tool_blocks_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    // 1. Symmetric DSML tool call
+    const t1 = '\\n\\n<｜DSML｜tool_call>\\n{"name": "ListDirectory", "args": {"path": ".", "recursive": true}}\\n</｜DSML｜tool_call>';
+    const r1 = app.splitToolBlocks(t1);
+    if (r1.requests.length !== 1 || r1.requests[0].name !== 'ListDirectory' || r1.prose !== '') {
+        process.exit(1);
+    }
+
+    // 2. Asymmetric plain-open, DSML-close
+    const t2 = '<tool_call>\\n{"name": "ReadFile", "args": {"path": "foo.py"}}\\n</｜DSML｜tool_call>';
+    const r2 = app.splitToolBlocks(t2);
+    if (r2.requests.length !== 1 || r2.requests[0].name !== 'ReadFile' || r2.prose !== '') {
+        process.exit(2);
+    }
+
+    // 3. Bare JSON line
+    const t3 = 'Intro text\\n{"name": "Shell", "args": {"command": "ls"}}\\nOutro text';
+    const r3 = app.splitToolBlocks(t3);
+    if (r3.requests.length !== 1 || r3.requests[0].name !== 'Shell' || !r3.prose.includes('Intro text') || !r3.prose.includes('Outro text')) {
+        process.exit(3);
+    }
+
+    // 4. Chip formatting
+    const chip = app.renderToolReq(r1.requests[0]);
+    if (!chip.includes('tool-req-name') || !chip.includes('ListDirectory') || !chip.includes('path=&quot;.&quot;')) {
+        process.exit(4);
+    }
+
+    // 5. renderStep output
+    const stepHtml = app.renderStep({ role: 'build', text: t1, success: true }, 0);
+    if (!stepHtml.includes('tool-req-name') || stepHtml.includes('<｜DSML｜tool_call>')) {
+        process.exit(5);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"

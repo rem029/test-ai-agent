@@ -704,6 +704,43 @@ h2 {
     color: var(--text-muted);
 }
 
+/* Step tool request chips */
+.tool-reqs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.tool-reqs:last-child {
+    margin-bottom: 0;
+}
+
+.tool-req {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.tool-req-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-weight: 600;
+    color: var(--primary);
+    white-space: nowrap;
+}
+
+.tool-req-args {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
 /* Tool call detail */
 .tool-args,
 .tool-output {
@@ -738,8 +775,10 @@ html.dark .verdict.pass { color: #6ee7b7; background: #064e3b; }
 html.dark .verdict.fail { color: #fca5a5; background: #450a0a; }
 html.dark .md code,
 html.dark .md pre.md-code,
+html.dark .tool-req,
 html.dark .tool-args,
 html.dark .tool-output { background: #0b1220; }
+html.dark .tool-req { border-color: #334155; }
 html.dark .tool-output.tool-error { color: #fca5a5; background: #2a0f0f; border-color: #7f1d1d; }
 
 /* Responsive */

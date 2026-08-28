@@ -18,3 +18,5 @@ agentflow.config.yaml
 .claude/settings.local.json
 
 .agentflow-test-todo/
+
+.temp
