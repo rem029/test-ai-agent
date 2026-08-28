@@ -13,8 +13,24 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..backends import BACKENDS
-from ..config import Config, RoleConfig, load_config, dump_config, DEFAULT_CONFIG_PATH
-from ..database import DEFAULT_DATABASE_PATH, get_tool_calls, list_runs, load_run
+from ..config import (
+    Config,
+    DEFAULT_CONFIG_PATH,
+    PermissionMode,
+    RoleConfig,
+    dump_config,
+    load_config,
+)
+from ..database import (
+    DEFAULT_DATABASE_PATH,
+    get_session,
+    get_session_runs,
+    get_tool_calls,
+    list_events,
+    list_runs,
+    list_sessions,
+    load_run,
+)
 from ..models import get_all_models
 from ..orchestrator import run_workflow, new_run_id
 
@@ -30,10 +46,13 @@ class ConfigUpdate(BaseModel):
     verify_backend: str = Field(..., description="Backend for verify role")
     verify_model: Optional[str] = None
     max_iterations: int = Field(3, ge=1, le=10)
+    permissions: Optional[PermissionMode] = None
+    max_cost_usd: Optional[float] = None
 
 
 class RunCreate(BaseModel):
     goal: str = Field(..., min_length=1)
+    session_id: Optional[str] = None
     review_backend: Optional[str] = None
     review_model: Optional[str] = None
     build_backend: Optional[str] = None
@@ -64,15 +83,17 @@ def _build_config_from_overrides(
         build=update_role("build", overrides.build_backend, overrides.build_model),
         verify=update_role("verify", overrides.verify_backend, overrides.verify_model),
         max_iterations=overrides.max_iterations if overrides.max_iterations else base_config.max_iterations,
+        permissions=base_config.permissions,
+        max_cost_usd=base_config.max_cost_usd,
     )
     return new_config
 
 
-def _health_check_all() -> dict[str, Any]:
+def _health_check_all(config_path: str = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     """Run health checks for all configured backend types (unique by name+model)."""
     results = {}
     try:
-        config = load_config()  # Use default config; adjustments come via query params
+        config = load_config(config_path)
     except Exception:
         config = Config(review=RoleConfig(backend="claude-code"),
                         build=RoleConfig(backend="antigravity"),
@@ -128,11 +149,18 @@ def create_app(
             if backend_name not in BACKENDS:
                 raise HTTPException(status_code=400, detail=f"Invalid backend for {role}: {backend_name}")
 
+        try:
+            current_config = load_config(config_path)
+        except Exception:
+            current_config = None
+
         config = Config(
             review=RoleConfig(backend=data.review_backend, model=data.review_model),
             build=RoleConfig(backend=data.build_backend, model=data.build_model),
             verify=RoleConfig(backend=data.verify_backend, model=data.verify_model),
             max_iterations=data.max_iterations,
+            permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
+            max_cost_usd=data.max_cost_usd if data.max_cost_usd is not None else (current_config.max_cost_usd if current_config else None),
         )
         try:
             dump_config(config, config_path)
@@ -142,7 +170,7 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> dict:
-        return _health_check_all()
+        return _health_check_all(config_path)
 
     @app.get("/api/models")
     async def models() -> dict:
@@ -169,6 +197,26 @@ def create_app(
         calls = get_tool_calls(run_id, cwd, path=db_path)
         return {"tool_calls": calls}
 
+    @app.get("/api/runs/{run_id}/events")
+    async def run_events(run_id: str) -> dict:
+        """Return the streaming events history for a run."""
+        events = list_events(run_id, path=db_path)
+        return {"events": events}
+
+    @app.get("/api/sessions")
+    async def sessions() -> dict:
+        sess_list = list_sessions(cwd, path=db_path)
+        return {"sessions": sess_list}
+
+    @app.get("/api/sessions/{session_id}")
+    async def session_detail(session_id: str) -> dict:
+        session = get_session(session_id, path=db_path)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        runs = get_session_runs(session_id, path=db_path)
+        session["runs"] = runs
+        return session
+
     @app.post("/api/runs")
     async def create_run(data: RunCreate) -> dict:
         # Build base config (from file or defaults)
@@ -189,6 +237,7 @@ def create_app(
                 "config": config,
                 "cwd": cwd,
                 "run_id": run_id,
+                "session_id": data.session_id,
                 "database_path": db_path,
             },
             daemon=True,

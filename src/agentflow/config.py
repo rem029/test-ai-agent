@@ -25,6 +25,9 @@ DEFAULT_CONFIG_PATH = "agentflow.config.yaml"
 DEFAULTS: dict[str, "RoleConfig"] = {}
 
 
+PermissionMode = Literal["auto", "prompt", "deny"]
+
+
 class RoleConfig(BaseModel):
     backend: BackendName
     model: str | None = None
@@ -35,6 +38,8 @@ class Config(BaseModel):
     build: RoleConfig
     verify: RoleConfig
     max_iterations: int = 3
+    permissions: PermissionMode = "auto"
+    max_cost_usd: float | None = None
 
     def roles(self) -> dict[str, RoleConfig]:
         return {"review": self.review, "build": self.build, "verify": self.verify}
@@ -85,6 +90,18 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     if max_iterations is not None:
         roles["max_iterations"] = max_iterations
 
+    permissions = file_data.get("permissions")
+    if os.environ.get("AGENTFLOW_PERMISSIONS"):
+        permissions = os.environ["AGENTFLOW_PERMISSIONS"]
+    if permissions is not None:
+        roles["permissions"] = permissions
+
+    max_cost_usd = file_data.get("max_cost_usd")
+    if os.environ.get("AGENTFLOW_MAX_COST_USD"):
+        max_cost_usd = float(os.environ["AGENTFLOW_MAX_COST_USD"])
+    if max_cost_usd is not None:
+        roles["max_cost_usd"] = max_cost_usd
+
     return Config(**roles)
 
 
@@ -96,12 +113,16 @@ def dump_config(
     Callers must construct `config` via the Config model first (e.g. from
     web-form input) so invalid data never reaches disk.
     """
-    data = {
+    data: dict = {
         "review": config.review.model_dump(exclude_none=True),
         "build": config.build.model_dump(exclude_none=True),
         "verify": config.verify.model_dump(exclude_none=True),
         "max_iterations": config.max_iterations,
+        "permissions": config.permissions,
     }
+    if config.max_cost_usd is not None:
+        data["max_cost_usd"] = config.max_cost_usd
+
     output = Path(path)
     existing = _from_file(path)
     key = openrouter_api_key if openrouter_api_key is not None else existing.get("openrouter_api_key")

@@ -123,6 +123,15 @@ The parser also supports fenced JSON blocks:
   substrings. This is **not a sandbox**; run agentflow only in environments
   where arbitrary shell execution is acceptable.
 
+## Permission Policy
+
+Tool execution is governed by the `permissions` setting (`auto | prompt | deny`):
+- **Read-only tools** (`ReadFile`, `ListDirectory`, `SearchFiles`, `CodeSearch`, `WebFetch`, `DocumentationSearch`, `Lint`, `TypeCheck`, `ImportAnalysis`, `GitStatus`, `GitDiff`, `GitCommitSimulation`) are always automatically allowed.
+- **Mutating tools** (`WriteFile`, `Shell`, git mutating commands) follow the configured policy:
+  - `auto` (default): automatically allowed.
+  - `prompt`: prompts interactively (`[y/N]`) before executing. In non-interactive runs, acts as `deny` with a logged reason.
+  - `deny`: immediately blocked with a permission error.
+
 ## Example Workflow
 
 When given the goal:

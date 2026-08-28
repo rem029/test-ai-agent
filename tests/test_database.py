@@ -57,3 +57,50 @@ def test_tool_calls_are_persisted_to_dedicated_table(tmp_path):
     assert len(calls) == 1
     assert calls[0]["tool_name"] == "ReadFile"
     assert calls[0]["status"] == "success"
+
+
+def test_real_database_untouched_during_workflow(tmp_path, monkeypatch):
+    """Regression test: run_workflow without explicit database_path uses isolated DEFAULT_DATABASE_PATH and does not touch real DB."""
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+    import agentflow.database
+    from agentflow.backends.base import RunResult, Usage
+    from agentflow.config import Config, RoleConfig
+    from agentflow.orchestrator import run_workflow
+
+    isolated_target_db = tmp_path / "isolated_target" / "agentflow.db"
+    monkeypatch.setattr(agentflow.database, "DEFAULT_DATABASE_PATH", isolated_target_db)
+
+    assert not isolated_target_db.exists()
+
+    config = Config(
+        review=RoleConfig(backend="openrouter"),
+        build=RoleConfig(backend="openrouter"),
+        verify=RoleConfig(backend="openrouter"),
+    )
+    backend = MagicMock()
+    backend.run.return_value = RunResult(
+        success=True,
+        text="Plan: simple. VERIFY_RESULT: PASS",
+        usage=Usage("mock", "m", 1, 1, 0.0),
+        raw={},
+    )
+
+    real_db = Path.home() / ".agentflow" / "agentflow.db"
+    mtime_before = real_db.stat().st_mtime if real_db.exists() else None
+    size_before = real_db.stat().st_size if real_db.exists() else None
+
+    with patch("agentflow.orchestrator.BACKENDS") as mock_backends:
+        mock_backends.__getitem__ = MagicMock(return_value=lambda model: backend)
+        with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
+            with patch("agentflow.orchestrator._repo_context", return_value=""):
+                # Call run_workflow without passing database_path
+                run_workflow("test goal without explicit db_path", config, str(tmp_path))
+
+    # Assert isolated_target_db was created and written to
+    assert isolated_target_db.exists()
+
+    # Assert real ~/.agentflow/agentflow.db was not modified
+    if real_db.exists():
+        assert real_db.stat().st_mtime == mtime_before
+        assert real_db.stat().st_size == size_before

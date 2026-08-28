@@ -33,6 +33,8 @@ verify:
   backend: openrouter
   model: deepseek/deepseek-chat
 max_iterations: 3
+permissions: auto  # auto | prompt | deny
+max_cost_usd: 1.00  # optional budget limit in USD
 ```
 
 For OpenRouter, prefer an environment variable rather than placing a key in a
@@ -64,12 +66,31 @@ uv run agentflow --list-tools
 Agentflow includes file, shell, code-analysis, search, and git tools. See
 [`TOOLS.md`](TOOLS.md) for the full list and developer guide.
 
+List saved sessions:
+
+```bash
+uv run agentflow --list-sessions
+```
+
 ## Run a workflow
 
 Run from the repository you want agentflow to work on:
 
 ```bash
 uv run agentflow "Add a README with setup and usage instructions"
+```
+
+Resume an existing session with a follow-up turn:
+
+```bash
+uv run agentflow --resume <session_id> "Refactor the authentication logic"
+```
+
+Set permissions or budget limits for a run:
+
+```bash
+uv run agentflow --permissions deny "Audit the codebase without file modifications"
+uv run agentflow --max-cost-usd 0.50 "Run a small bugfix"
 ```
 
 Override a role's backend or model for one invocation:

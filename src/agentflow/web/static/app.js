@@ -4,7 +4,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize theme
-    initTheme();
+    loadThemeFromStorage();
 
     // Set up tab switching
     setupTabs();
@@ -296,13 +296,19 @@ async function populateModelOptions() {
             document.body.appendChild(datalist);
         });
 
-        // Attach datalists to model inputs
-        const modelInputs = ['review_model', 'build_model', 'verify_model'];
-        modelInputs.forEach((inputId, index) => {
-            const input = document.getElementById(inputId);
-            if (input) {
-                input.setAttribute('list', ['review-model-dat', 'build-model-dat', 'verify-model-dat'][index]);
-            }
+        // Attach datalists to model inputs (both run form and config form)
+        const modelInputs = [
+            ['review_model', 'config-review_model'],
+            ['build_model', 'config-build_model'],
+            ['verify_model', 'config-verify_model']
+        ];
+        modelInputs.forEach((inputIds, index) => {
+            inputIds.forEach(inputId => {
+                const input = document.getElementById(inputId);
+                if (input) {
+                    input.setAttribute('list', datalistIds[index]);
+                }
+            });
         });
     } catch (error) {
         console.warn('Could not load model suggestions:', error);
@@ -410,12 +416,14 @@ function renderStep(step, index) {
 }
 
 function renderToolCall(call, index) {
-    const statusClass = call.success ? 'success' : 'danger';
-    const statusText = call.success ? 'OK' : 'FAIL';
+    const isSuccess = call.status === 'success' || call.status === 'OK' || (call.result && call.result.success === true) || call.success === true;
+    const statusClass = isSuccess ? 'success' : 'danger';
+    const statusText = isSuccess ? 'OK' : 'FAIL';
     const args = JSON.stringify(call.args || {}, null, 2);
     const result = call.result || '(no output)';
     const resultObj = typeof result === 'object' ? result : {};
     const hasDiff = resultObj.structured && resultObj.structured.previous !== undefined;
+    const timeText = call.execution_time_ms !== undefined && call.execution_time_ms !== null ? `${call.execution_time_ms}ms` : (call.timestamp ? formatTime(call.timestamp) : '-');
 
     let diffHtml = '';
     if (hasDiff) {
@@ -427,7 +435,7 @@ function renderToolCall(call, index) {
             <div class="tool-call-header" data-index="${index}">
                 <span class="tool-call-name">${escapeHtml(call.tool_name)}</span>
                 <span class="badge ${statusClass}">${statusText}</span>
-                <span class="tool-call-time">${formatTime(call.timestamp)}</span>
+                <span class="tool-call-time">${timeText}</span>
                 <span class="tool-toggle">+</span>
             </div>
             <div class="tool-call-body" id="tool-body-${index}" style="display: none;">

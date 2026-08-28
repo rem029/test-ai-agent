@@ -60,7 +60,7 @@ def test_tool_loop_executes_requested_tool(cwd):
 
         with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
             with patch("agentflow.orchestrator._repo_context", return_value=""):
-                state = run_workflow("test goal", config, cwd)
+                state = run_workflow("test goal", config, cwd, database_path=Path(cwd) / "test.db")
 
     assert state.steps[0]["role"] == "review"
     assert len(state.tool_calls) >= 1
@@ -91,7 +91,7 @@ def test_tool_loop_respects_max_calls(cwd):
         mock_backends.__getitem__ = MagicMock(return_value=lambda model: backend)
 
         with patch("agentflow.orchestrator._repo_context", return_value=""):
-            state = run_workflow("test goal", config, cwd)
+            state = run_workflow("test goal", config, cwd, database_path=Path(cwd) / "test.db")
 
     # The review step should fail after max tool calls.
     assert state.steps[0]["role"] == "review"
@@ -116,7 +116,7 @@ def test_no_tool_requests_skips_loop(cwd):
 
         with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
             with patch("agentflow.orchestrator._repo_context", return_value=""):
-                state = run_workflow("test goal", config, cwd)
+                state = run_workflow("test goal", config, cwd, database_path=Path(cwd) / "test.db")
 
     assert state.steps[0]["success"] is True
     assert len(state.tool_calls) == 0

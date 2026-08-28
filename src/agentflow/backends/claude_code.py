@@ -12,7 +12,19 @@ import json
 import shutil
 import subprocess
 
-from .base import MODE_ALLOWED_TOOLS, MODE_PERMISSION, HealthCheckResult, RunResult, Usage
+from typing import Iterator
+
+from .base import (
+    Event,
+    HealthCheckResult,
+    Message,
+    MODE_ALLOWED_TOOLS,
+    MODE_PERMISSION,
+    RunResult,
+    Usage,
+    format_messages_to_prompt,
+    run_sync,
+)
 
 
 class ClaudeCodeBackend:
@@ -69,48 +81,126 @@ class ClaudeCodeBackend:
 
     def run(
         self,
-        prompt: str,
+        prompt: str | list[Message],
         *,
         cwd: str,
         mode: str = "read",
         timeout: int = 900,
         tools: list[dict] | None = None,
-    ) -> RunResult:
-        """Run prompt via `claude -p`, scoped to cwd.
-
-        mode picks tool access per PLAN.md's role semantics: "read" (review),
-        "verify" (read + Bash, for running tests), "write" (build).
-        """
+    ) -> Iterator[Event]:
+        """Run prompt via `claude -p --output-format stream-json --verbose`, yielding events."""
         allowed_tools = MODE_ALLOWED_TOOLS[mode]
         permission_mode = MODE_PERMISSION[mode]
-        cmd = ["claude", "-p", prompt, "--output-format", "json", "--allowedTools", allowed_tools]
+        prompt_str = format_messages_to_prompt(prompt)
+
+        cmd = [
+            "claude",
+            "-p",
+            prompt_str,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--allowedTools",
+            allowed_tools,
+        ]
         if self.model:
             cmd += ["--model", self.model]
         if permission_mode:
             cmd += ["--permission-mode", permission_mode]
 
         try:
-            proc = subprocess.run(
-                cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
-        except subprocess.TimeoutExpired:
-            return RunResult(
-                False, f"claude -p timed out after {timeout}s", self._empty_usage(), {}
-            )
+        except OSError as exc:
+            yield Event.error(f"Failed to start claude CLI: {exc}")
+            yield Event.done(success=False)
+            return
+
+        done_emitted = False
+        text_yielded = False
+        last_payload: dict = {}
 
         try:
-            payload = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            return RunResult(
-                False,
-                f"non-JSON output (exit {proc.returncode}): "
-                f"{(proc.stdout or proc.stderr)[:500]!r}",
-                self._empty_usage(),
-                {},
-            )
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-        success = proc.returncode == 0 and not payload.get("is_error", False)
-        return RunResult(success, payload.get("result", ""), self._extract_usage(payload), payload)
+                last_payload = data
+                msg_type = data.get("type")
+
+                if msg_type == "assistant":
+                    msg = data.get("message", {})
+                    for item in msg.get("content", []):
+                        if item.get("type") == "text":
+                            txt = item.get("text", "")
+                            if txt:
+                                text_yielded = True
+                                yield Event.text_delta(txt)
+                        elif item.get("type") == "tool_use":
+                            yield Event.tool_call(item.get("name", ""), item.get("input", {}))
+                elif msg_type == "content_block_delta":
+                    delta = data.get("delta", {})
+                    txt = delta.get("text", "")
+                    if txt:
+                        text_yielded = True
+                        yield Event.text_delta(txt)
+                elif msg_type == "tool_result":
+                    yield Event.tool_result(
+                        data.get("tool_name", ""),
+                        data.get("output", {}),
+                        success=not data.get("is_error", False),
+                        error=data.get("error"),
+                    )
+                elif msg_type == "result":
+                    usage = self._extract_usage(data)
+                    yield Event.usage(usage)
+                    is_error = data.get("is_error", False)
+                    result_text = data.get("result", "")
+                    if not text_yielded and result_text:
+                        yield Event.text_delta(result_text)
+                    if is_error:
+                        yield Event.error(result_text or "Error from claude CLI")
+                    yield Event.done(success=not is_error, text=result_text, raw=data)
+                    done_emitted = True
+        finally:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+        if not done_emitted:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            success = proc.returncode == 0
+            if not success:
+                err_msg = f"claude exited {proc.returncode}: {stderr.strip()}"
+                yield Event.error(err_msg)
+            yield Event.done(success=success, raw=last_payload)
+
+    def run_sync(
+        self,
+        prompt: str | list[Message],
+        *,
+        cwd: str,
+        mode: str = "read",
+        timeout: int = 900,
+        tools: list[dict] | None = None,
+    ) -> RunResult:
+        return run_sync(self.run(prompt, cwd=cwd, mode=mode, timeout=timeout, tools=tools))
 
     def _empty_usage(self) -> Usage:
         return Usage(self.name, self.model, None, None, None)
