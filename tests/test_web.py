@@ -186,3 +186,92 @@ def test_api_run_tool_calls_missing_run_returns_404(tmp_path):
     client = _make_client(tmp_path)
     resp = client.get("/api/runs/does-not-exist/tool_calls")
     assert resp.status_code == 404
+
+
+def test_api_config_preserves_permissions_and_max_cost(tmp_path):
+    from agentflow.config import dump_config, load_config
+    config_path = tmp_path / "agentflow.config.yaml"
+    initial = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        permissions="deny",
+        max_cost_usd=1.75,
+    )
+    dump_config(initial, str(config_path), openrouter_api_key="sk-secret-key")
+
+    client = _make_client(tmp_path, config_path=str(config_path))
+    resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "openrouter",
+            "review_model": "deepseek/deepseek-v4-flash",
+            "build_backend": "antigravity",
+            "build_model": None,
+            "verify_backend": "claude-code",
+            "verify_model": None,
+            "max_iterations": 4,
+        },
+    )
+    assert resp.status_code == 200
+
+    reloaded = load_config(str(config_path))
+    assert reloaded.review.backend == "openrouter"
+    assert reloaded.permissions == "deny"
+    assert reloaded.max_cost_usd == 1.75
+    # Verify openrouter_api_key in file was also preserved
+    from agentflow.config import _from_file
+    assert _from_file(str(config_path)).get("openrouter_api_key") == "sk-secret-key"
+
+
+def test_api_create_run_preserves_permissions_and_max_cost(tmp_path):
+    custom_cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        permissions="prompt",
+        max_cost_usd=0.85,
+    )
+    with patch("agentflow.web.app.load_config", return_value=custom_cfg), patch(
+        "agentflow.web.app.run_workflow"
+    ) as mock_run:
+        client = _make_client(tmp_path)
+        resp = client.post("/api/runs", json={"goal": "test overrides", "build_backend": "antigravity"})
+        assert resp.status_code == 200
+
+        mock_run.assert_called_once()
+        _, kwargs = mock_run.call_args
+        passed_config = kwargs["config"]
+        assert passed_config.build.backend == "antigravity"
+        assert passed_config.permissions == "prompt"
+        assert passed_config.max_cost_usd == 0.85
+
+
+def test_api_events_and_sessions_endpoints(tmp_path):
+    from agentflow.database import append_event, create_session
+
+    db = tmp_path / "agentflow.db"
+    create_session("sess-web-1", str(tmp_path), title="Web Session 1", path=db)
+    append_event("run-web-1", 1, "step_started", {"role": "review"}, path=db)
+
+    client = _make_client(tmp_path)
+
+    # Sessions list
+    sess_resp = client.get("/api/sessions")
+    assert sess_resp.status_code == 200
+    assert len(sess_resp.json()["sessions"]) == 1
+    assert sess_resp.json()["sessions"][0]["session_id"] == "sess-web-1"
+
+    # Session detail
+    detail_resp = client.get("/api/sessions/sess-web-1")
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["title"] == "Web Session 1"
+
+    # Missing session
+    assert client.get("/api/sessions/sess-missing").status_code == 404
+
+    # Events
+    events_resp = client.get("/api/runs/run-web-1/events")
+    assert events_resp.status_code == 200
+    assert len(events_resp.json()["events"]) == 1
+    assert events_resp.json()["events"][0]["type"] == "step_started"

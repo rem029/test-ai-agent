@@ -86,7 +86,12 @@ def test_end_to_end_run_uses_real_tools(tmp_path):
 
         with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
             with patch("agentflow.orchestrator._repo_context", return_value=""):
-                state = run_workflow("add subtraction", config, str(repo))
+                state = run_workflow(
+                    "add subtraction",
+                    config,
+                    str(repo),
+                    database_path=tmp_path / "integration.db",
+                )
 
     assert state.steps[0]["role"] == "review"
     assert state.steps[1]["role"] == "build"
@@ -127,7 +132,12 @@ def test_validation_confirms_cost_tracking(tmp_path):
 
         with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
             with patch("agentflow.orchestrator._repo_context", return_value=""):
-                state = run_workflow("cheap task", config, str(repo))
+                state = run_workflow(
+                    "cheap task",
+                    config,
+                    str(repo),
+                    database_path=tmp_path / "integration.db",
+                )
 
     totals = state.total_usage()
     assert "mock:model" in totals

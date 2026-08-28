@@ -26,7 +26,19 @@ import os
 import shutil
 import subprocess
 
-from .base import FILE_BLOCK_INSTRUCTIONS, HealthCheckResult, RunResult, Usage, apply_file_blocks
+from typing import Iterator
+
+from .base import (
+    Event,
+    FILE_BLOCK_INSTRUCTIONS,
+    HealthCheckResult,
+    Message,
+    RunResult,
+    Usage,
+    apply_file_blocks,
+    format_messages_to_prompt,
+    run_sync,
+)
 
 
 class AntigravityBackend:
@@ -95,21 +107,36 @@ class AntigravityBackend:
 
     def run(
         self,
-        prompt: str,
+        prompt: str | list[Message],
+        *,
+        cwd: str,
+        mode: str = "read",
+        tools: list[dict] | None = None,
+    ) -> Iterator[Event]:
+        prompt_str = format_messages_to_prompt(prompt)
+        if shutil.which("antigravity"):
+            res = self._run_cli(prompt_str, cwd=cwd, mode=mode)
+        else:
+            res = self._run_sdk(prompt_str, cwd=cwd, mode=mode)
+
+        if res.text:
+            yield Event.text_delta(res.text)
+        yield Event.usage(res.usage)
+        if not res.success:
+            yield Event.error(res.text)
+        yield Event.done(success=res.success, text=res.text, raw=res.raw)
+
+    def run_sync(
+        self,
+        prompt: str | list[Message],
         *,
         cwd: str,
         mode: str = "read",
         tools: list[dict] | None = None,
     ) -> RunResult:
-        if shutil.which("antigravity"):
-            return self._run_cli(prompt, cwd=cwd, mode=mode)
-        return self._run_sdk(prompt, cwd=cwd, mode=mode)
+        return run_sync(self.run(prompt, cwd=cwd, mode=mode, tools=tools))
 
     def _run_cli(self, prompt: str, *, cwd: str, mode: str) -> RunResult:
-        # UNVERIFIED: the real antigravity CLI's flags for scoping tool
-        # access (read-only vs write) are not confirmed - see PLAN.md open
-        # items. This assumes cwd alone scopes file operations, matching
-        # claude -p's behavior, and does not pass a write/permission flag.
         try:
             proc = subprocess.run(
                 ["antigravity", "-p", prompt],
@@ -136,10 +163,6 @@ class AntigravityBackend:
                 {},
             )
 
-        # UNVERIFIED: this SDK path has not been exercised against a live
-        # Gemini key (see PLAN.md, Findings #2). It uses the FILE-block
-        # convention rather than a guessed built-in-tools API for writes,
-        # since that part of the SDK's surface was never confirmed either.
         write = mode == "write"
         full_prompt = f"{prompt}\n\n{FILE_BLOCK_INSTRUCTIONS}" if write else prompt
 
@@ -151,7 +174,7 @@ class AntigravityBackend:
 
         try:
             text = asyncio.run(_call())
-        except Exception as exc:  # noqa: BLE001 - surface any SDK failure as a failed run
+        except Exception as exc:  # noqa: BLE001
             return RunResult(False, f"SDK call failed: {exc}", self._empty_usage(), {})
 
         written: list[str] = []
@@ -162,7 +185,4 @@ class AntigravityBackend:
         return RunResult(True, summary, self._empty_usage(), {})
 
     def _empty_usage(self) -> Usage:
-        # Neither path above returns real token/cost numbers yet: the CLI's
-        # output format for usage is unconfirmed, and the SDK's UsageMetadata
-        # was never exercised live. See PLAN.md, "Cost & token tracking".
         return Usage(self.name, self.model, None, None, None)

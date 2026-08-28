@@ -16,3 +16,5 @@ agentflow.config.yaml
 
 # Claude Code local/personal settings (machine-specific, not shared)
 .claude/settings.local.json
+
+.agentflow-test-todo/

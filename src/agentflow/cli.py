@@ -88,6 +88,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="List available tools that agents can invoke",
     )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List active sessions for the current repository",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        help="Resume an existing session with a follow-up turn",
+    )
+    parser.add_argument(
+        "--permissions",
+        choices=["auto", "prompt", "deny"],
+        help="Tool permission policy for mutating operations (auto, prompt, deny)",
+    )
+    parser.add_argument(
+        "--max-cost-usd",
+        type=float,
+        help="Maximum cumulative budget in USD for this workflow run",
+    )
     parser.add_argument("--review-backend", choices=list(BACKENDS), help="Override review backend")
     parser.add_argument("--review-model", help="Override review model")
     parser.add_argument("--build-backend", choices=list(BACKENDS), help="Override build backend")
@@ -158,6 +178,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  • {name}")
         return 0
 
+    if args.list_sessions:
+        import time
+        from .database import list_sessions
+
+        sessions = list_sessions(os.getcwd())
+        print("=== Saved Sessions ===")
+        if not sessions:
+            print("  (no sessions found)")
+        for s in sessions:
+            print(f"  • {s['session_id']}: {s.get('title', '')} (updated {time.ctime(s['updated_at'])})")
+        return 0
+
     if args.serve:
         from .web.app import create_app
         import uvicorn
@@ -165,10 +197,25 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run(create_app(cwd=os.getcwd(), config_path=config_path), host=args.host, port=args.port)
         return 0
 
-    if args.check or not args.goal:
+    if args.check or (not args.goal and not args.resume):
         return run_checks(config_path)
 
+    if args.resume and not args.goal:
+        print("Error: goal is required when resuming a session", file=sys.stderr)
+        return 1
+
+    if args.resume:
+        from .database import get_session
+
+        if not get_session(args.resume):
+            print(f"Error: session not found: {args.resume}", file=sys.stderr)
+            return 1
+
     config = load_config(config_path)
+    if args.permissions:
+        config.permissions = args.permissions
+    if args.max_cost_usd is not None:
+        config.max_cost_usd = args.max_cost_usd
     if args.review_backend:
         config.review.backend = args.review_backend
     if args.review_model is not None:
@@ -182,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify_model is not None:
         config.verify.model = args.verify_model or None
 
-    state = run_workflow(args.goal, config, cwd=os.getcwd())
+    state = run_workflow(args.goal, config, cwd=os.getcwd(), session_id=args.resume)
     return 0 if state.pushed and state.pushed.get("pushed") else 1
 
 
