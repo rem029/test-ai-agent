@@ -410,6 +410,39 @@ def test_spa_catch_all_and_404(tmp_path):
     assert "text/html" not in api_root_404.headers.get("content-type", "")
 
 
+def test_api_run_detail_returns_blockers(tmp_path):
+    run = {
+        "run_id": "20260101-000000-cccccccc",
+        "goal": "test blockers api",
+        "started_at": 1.0,
+        "config": {},
+        "steps": [],
+        "tool_calls": [],
+        "finished_at": 2.0,
+        "pushed": None,
+        "blockers": [
+            {
+                "reason": "budget",
+                "detail": "x",
+                "fatal": True,
+                "step_index": None,
+                "ts": 1.0,
+            }
+        ],
+    }
+    save_run(RunState(**run), str(tmp_path), tmp_path / "agentflow.db")
+
+    client = _make_client(tmp_path)
+    resp = client.get(f"/api/runs/{run['run_id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "blockers" in data
+    assert len(data["blockers"]) == 1
+    assert data["blockers"][0]["reason"] == "budget"
+    assert data["blockers"][0]["fatal"] is True
+    assert data["blockers"][0]["detail"] == "x"
+
+
 def test_js_router_via_node():
     import shutil
     import subprocess
@@ -433,7 +466,72 @@ def test_js_router_via_node():
     if (route.view !== 'run') {
         process.exit(2);
     }
+
+    // runStatus tests: Blocked when finished_at is set, not pushed, fatal blocker present
+    const blockedRun = {
+        finished_at: 100,
+        pushed: null,
+        blockers: [{ reason: 'budget', detail: 'exceeded', fatal: true }]
+    };
+    const status1 = app.runStatus(blockedRun);
+    if (status1.label !== 'Blocked' || status1.cls !== 'danger') {
+        process.exit(3);
+    }
+
+    // Non-fatal blocker should still be Completed if finished_at is set
+    const nonFatalRun = {
+        finished_at: 100,
+        pushed: null,
+        blockers: [{ reason: 'permission', detail: 'denied', fatal: false }]
+    };
+    const status2 = app.runStatus(nonFatalRun);
+    if (status2.label !== 'Completed') {
+        process.exit(4);
+    }
+
+    // Pushed run takes precedence
+    const pushedRun = {
+        finished_at: 100,
+        pushed: { pushed: true },
+        blockers: [{ reason: 'budget', detail: 'exceeded', fatal: true }]
+    };
+    const status3 = app.runStatus(pushedRun);
+    if (status3.label !== 'Pushed') {
+        process.exit(5);
+    }
+
+    // renderStep with no_response: true
+    const noRespStep = {
+        role: 'verify',
+        text: '_The verify backend returned no written response._',
+        success: true,
+        no_response: true
+    };
+    const stepHtml = app.renderStep(noRespStep, 0);
+    if (!stepHtml.includes('step-noresponse') || !stepHtml.includes('The verify backend returned no written response.')) {
+        process.exit(6);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+
+
+def test_static_assets_contain_notify_and_blockers(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="notify-toggle"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "toggleNotify" in js_resp.text
+    assert "maybeNotify" in js_resp.text
+    assert "blocker" in js_resp.text
+    assert "step-noresponse" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".blockers" in css_resp.text
+    assert ".blocker" in css_resp.text
+    assert ".step-noresponse" in css_resp.text
 

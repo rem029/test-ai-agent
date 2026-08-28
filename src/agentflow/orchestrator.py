@@ -535,6 +535,7 @@ def _run_with_tools(
 
             allowed, reason = _check_tool_permission(req.name, req.args, policy)
             if not allowed:
+                state.add_blocker("permission", reason or "", fatal=False, step_index=step_index, database_path=database_path)
                 tool_result = ToolResult(success=False, error=reason)
             else:
                 tool_result = _execute_tool_call(req.name, req.args, cwd)
@@ -633,7 +634,27 @@ class RunState:
     finished_at: float | None = None
     pushed: dict | None = None
     stopped: bool = False
+    blockers: list = field(default_factory=list)
     event_seq: int = 0
+
+    def add_blocker(
+        self,
+        reason: str,
+        detail: str,
+        *,
+        fatal: bool,
+        step_index: int | None = None,
+        database_path: Path | None = None,
+    ) -> None:
+        blocker = {
+            "reason": reason,
+            "detail": (detail or "")[:500],
+            "fatal": fatal,
+            "step_index": step_index,
+            "ts": time.time(),
+        }
+        self.blockers.append(blocker)
+        self.log_event("blocker", blocker, database_path=database_path)
 
     def total_usage(self) -> dict[str, dict]:
         totals: dict[str, dict] = {}
@@ -696,8 +717,35 @@ class RunState:
         return save_run(self, cwd, path=database_path)
 
 
-def _record(role: str, mode: str, iteration: int, result: RunResult) -> dict:
-    return {
+def _step_tool_summary(state: RunState, step_index: int) -> tuple[int, str]:
+    step_calls = [c for c in state.tool_calls if c.get("step_index") == step_index]
+    count = len(step_calls)
+    if count == 0:
+        return 0, ""
+    seen = set()
+    names = []
+    for c in step_calls:
+        name = c.get("tool_name")
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    if len(names) > 6:
+        names_str = ", ".join(names[:6]) + ", …"
+    else:
+        names_str = ", ".join(names)
+    return count, names_str
+
+
+def _record(
+    role: str,
+    mode: str,
+    iteration: int,
+    result: RunResult,
+    *,
+    tool_count: int = 0,
+    tool_names: str = "",
+) -> dict:
+    d = {
         "role": role,
         "mode": mode,
         "iteration": iteration,
@@ -705,6 +753,15 @@ def _record(role: str, mode: str, iteration: int, result: RunResult) -> dict:
         "text": result.text[:6000],
         "usage": asdict(result.usage),
     }
+    if len(result.text.strip()) < 3:
+        msg = f"_The {role} backend returned no written response._"
+        if tool_count:
+            msg += f" It ran {tool_count} tool call(s) this step ({tool_names}) — see Tool Calls below."
+        d["text"] = msg
+        d["no_response"] = True
+    else:
+        d["no_response"] = False
+    return d
 
 
 def _parse_verify_result(text: str) -> bool:
@@ -852,7 +909,15 @@ def run_workflow(
             config=config,
             database_path=database_path,
         )
-        rec_review = _record("review", "read", 0, review_result)
+        tool_count, tool_names = _step_tool_summary(state, 0)
+        rec_review = _record(
+            "review",
+            "read",
+            0,
+            review_result,
+            tool_count=tool_count,
+            tool_names=tool_names,
+        )
         state.steps.append(rec_review)
         state.log_event("step_finished", {"step": rec_review}, database_path=database_path)
         state.save(cwd, database_path=database_path)
@@ -864,6 +929,7 @@ def run_workflow(
         budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
         if not budget_ok:
             print(f"[budget] ABORTED: {budget_err}")
+            state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
             state.finished_at = time.time()
             state.log_event("error", {"error": budget_err}, database_path=database_path)
             state.log_event(
@@ -877,6 +943,13 @@ def run_workflow(
 
         if not review_result.success:
             print(f"[review] FAILED: {review_result.text[:300]}")
+            state.add_blocker(
+                "backend_error",
+                review_result.text,
+                fatal=True,
+                step_index=0,
+                database_path=database_path,
+            )
             state.finished_at = time.time()
             state.log_event(
                 "run_finished",
@@ -933,7 +1006,15 @@ def run_workflow(
                 config=config,
                 database_path=database_path,
             )
-            rec_build = _record("build", "write", iteration, build_result)
+            tool_count, tool_names = _step_tool_summary(state, iteration)
+            rec_build = _record(
+                "build",
+                "write",
+                iteration,
+                build_result,
+                tool_count=tool_count,
+                tool_names=tool_names,
+            )
             state.steps.append(rec_build)
             state.log_event("step_finished", {"step": rec_build}, database_path=database_path)
             state.save(cwd, database_path=database_path)
@@ -944,6 +1025,7 @@ def run_workflow(
             budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
             if not budget_ok:
                 print(f"[budget] ABORTED: {budget_err}")
+                state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
@@ -957,6 +1039,13 @@ def run_workflow(
 
             if not build_result.success:
                 print(f"[build] FAILED: {build_result.text[:300]}")
+                state.add_blocker(
+                    "backend_error",
+                    build_result.text,
+                    fatal=False,
+                    step_index=iteration,
+                    database_path=database_path,
+                )
                 feedback = build_result.text
                 continue
 
@@ -977,7 +1066,15 @@ def run_workflow(
                 config=config,
                 database_path=database_path,
             )
-            rec_verify = _record("verify", "verify", iteration, verify_result)
+            tool_count, tool_names = _step_tool_summary(state, iteration)
+            rec_verify = _record(
+                "verify",
+                "verify",
+                iteration,
+                verify_result,
+                tool_count=tool_count,
+                tool_names=tool_names,
+            )
             state.steps.append(rec_verify)
             state.log_event("step_finished", {"step": rec_verify}, database_path=database_path)
             state.save(cwd, database_path=database_path)
@@ -988,6 +1085,7 @@ def run_workflow(
             budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
             if not budget_ok:
                 print(f"[budget] ABORTED: {budget_err}")
+                state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(

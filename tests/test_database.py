@@ -133,3 +133,21 @@ def test_list_runs_pagination_and_count_runs(tmp_path):
     # Offset at edge
     assert len(list_runs(cwd, database_path, limit=2, offset=5)) == 0
 
+
+def test_reconstruct_run_with_blockers(tmp_path):
+    from agentflow.database import append_event, reconstruct_run
+    db = tmp_path / "agentflow.db"
+    append_event("run-blk", 1, "run_started", {"run_id": "run-blk", "goal": "test"}, path=db)
+    append_event("run-blk", 2, "blocker", {"reason": "budget", "detail": "cost limit", "fatal": True, "step_index": None, "ts": 10.0}, path=db)
+    append_event("run-blk", 3, "blocker", {"reason": "permission", "detail": "denied", "fatal": False, "step_index": 1, "ts": 11.0}, path=db)
+    append_event("run-blk", 4, "run_finished", {"finished_at": 12.0, "pushed": None}, path=db)
+
+    reconstructed = reconstruct_run("run-blk", path=db)
+    assert reconstructed is not None
+    assert "blockers" in reconstructed
+    assert len(reconstructed["blockers"]) == 2
+    assert reconstructed["blockers"][0]["reason"] == "budget"
+    assert reconstructed["blockers"][0]["fatal"] is True
+    assert reconstructed["blockers"][1]["reason"] == "permission"
+    assert reconstructed["blockers"][1]["fatal"] is False
+

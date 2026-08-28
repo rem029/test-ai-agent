@@ -427,6 +427,36 @@ h2 {
     border-radius: var(--radius);
 }
 
+.blockers {
+    margin-top: 12px;
+}
+
+.blocker {
+    display: flex;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    font-size: 0.875rem;
+    margin-bottom: 8px;
+}
+
+.blocker.fatal {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: var(--danger);
+}
+
+.blocker-reason {
+    font-weight: 600;
+}
+
+.step-noresponse {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
 /* Steps */
 .step-item {
     background: var(--bg);
@@ -894,6 +924,16 @@ html.dark .tool-section pre {
 
 html.dark .detail-error {
     background: #450a0a;
+}
+
+html.dark .blocker {
+    background: #0f172a;
+}
+
+html.dark .blocker.fatal {
+    background: #450a0a;
+    border-color: #7f1d1d;
+    color: #fca5a5;
 }
 
 html.dark .diff-add {

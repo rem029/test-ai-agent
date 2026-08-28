@@ -24,6 +24,13 @@ if (typeof document !== 'undefined') {
         // Theme toggle
         document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
+        // Notify toggle
+        const notifyBtn = document.getElementById('notify-toggle');
+        if (notifyBtn) {
+            notifyBtn.addEventListener('click', toggleNotify);
+        }
+        updateNotifyIcon();
+
         // Load backend dropdowns with models
         populateModelOptions();
 
@@ -63,6 +70,54 @@ function updateThemeIcon() {
     if (icon) {
         const isDark = document.documentElement.classList.contains('dark');
         icon.textContent = isDark ? '☀️' : '🌙';
+    }
+}
+
+// ------------------------------------------------------------------
+// Desktop Notifications
+// ------------------------------------------------------------------
+const NOTIFY_KEY = 'af_notify';
+
+function notifyEnabled() {
+    try {
+        return localStorage.getItem(NOTIFY_KEY) === 'on';
+    } catch (e) {
+        return false;
+    }
+}
+
+function updateNotifyIcon() {
+    const b = document.getElementById('notify-toggle');
+    if (b) b.textContent = notifyEnabled() ? '🔔' : '🔕';
+}
+
+function toggleNotify() {
+    if (!notifyEnabled()) {
+        if (!('Notification' in window)) {
+            console.warn('Notifications unsupported');
+            return;
+        }
+        Notification.requestPermission().then(p => {
+            if (p === 'granted') {
+                try {
+                    localStorage.setItem(NOTIFY_KEY, 'on');
+                } catch (e) {}
+                updateNotifyIcon();
+            }
+        });
+    } else {
+        try {
+            localStorage.setItem(NOTIFY_KEY, 'off');
+        } catch (e) {}
+        updateNotifyIcon();
+    }
+}
+
+function maybeNotify(title, body) {
+    if ('Notification' in window && Notification.permission === 'granted' && notifyEnabled()) {
+        try {
+            new Notification(title, { body });
+        } catch (e) {}
     }
 }
 
@@ -441,6 +496,7 @@ async function populateModelOptions() {
 // ------------------------------------------------------------------
 let detailPollingId = null;
 let currentRunId = null;
+let _lastDetailState = null;
 
 function showRunDetail(runId) {
     currentRunId = runId;
@@ -459,6 +515,20 @@ async function loadRunDetail(runId) {
         if (!runResp.ok) throw new Error('Failed to load run');
         const run = await runResp.json();
         const callsData = callsResp.ok ? await callsResp.json() : { tool_calls: [] };
+
+        if (_lastDetailState && _lastDetailState.runId === runId) {
+            if (!_lastDetailState.finished_at && run.finished_at) {
+                maybeNotify('agentflow — run ' + runStatus(run).label, (run.goal || '').slice(0, 120));
+            }
+            if ((run.blockers || []).some(b => b.fatal) && _lastDetailState.fatalBlockers === 0) {
+                maybeNotify('agentflow — run blocked', (run.blockers.find(b => b.fatal) || {}).detail || '');
+            }
+        }
+        _lastDetailState = {
+            runId: runId,
+            finished_at: run.finished_at,
+            fatalBlockers: (run.blockers || []).filter(b => b.fatal).length
+        };
 
         document.getElementById('detail-goal').textContent = run.goal || 'Run Detail';
 
@@ -480,6 +550,21 @@ async function loadRunDetail(runId) {
                 ${run.error ? `<div class="detail-error">${escapeHtml(run.error)}</div>` : ''}
             </div>
         `;
+
+        if (Array.isArray(run.blockers) && run.blockers.length) {
+            function blockerLabel(reason) {
+                if (reason === 'budget') return 'Budget limit reached';
+                if (reason === 'permission') return 'Permission denied';
+                if (reason === 'backend_error') return 'Backend error';
+                return reason || '';
+            }
+            html += '<div class="blockers">';
+            run.blockers.forEach(b => {
+                const fatalClass = b.fatal ? 'fatal' : '';
+                html += `<div class="blocker ${fatalClass}"><span class="blocker-reason">${escapeHtml(blockerLabel(b.reason))}</span> <span class="blocker-detail">${escapeHtml(b.detail || '')}</span></div>`;
+            });
+            html += '</div>';
+        }
 
         html += '<h3>Steps</h3>';
         if (run.steps && run.steps.length) {
@@ -640,14 +725,15 @@ function renderStep(step, index) {
     const { prose, requests } = splitToolBlocks(step.text);
 
     let body = '';
-    if (requests.length) {
-        body += `<div class="tool-reqs">${requests.map(renderToolReq).join('')}</div>`;
-    }
-    if (prose) {
-        body += `<div class="md">${renderMarkdown(prose)}</div>`;
-    }
-    if (!requests.length && !prose) {
-        body = `<p class="empty-note">No response text was recorded for this step.</p>`;
+    if (step.no_response || (!prose && !requests.length)) {
+        body = `<div class="md step-noresponse">${renderMarkdown(step.text || 'No response recorded for this step.')}</div>`;
+    } else {
+        if (requests.length) {
+            body += `<div class="tool-reqs">${requests.map(renderToolReq).join('')}</div>`;
+        }
+        if (prose) {
+            body += `<div class="md">${renderMarkdown(prose)}</div>`;
+        }
     }
 
     return `
@@ -777,6 +863,7 @@ function stopDetailPolling() {
         detailPollingId = null;
     }
     currentRunId = null;
+    _lastDetailState = null;
 }
 
 function startRunsPolling() {
@@ -807,6 +894,7 @@ function runStatus(run) {
     if (run.pushed && run.pushed.pushed === false) return { label: 'Push failed', cls: 'danger' };
     if (run.stopped) return { label: 'Stopped', cls: 'warning' };
     if (run.error) return { label: 'Error', cls: 'danger' };
+    if (run.finished_at && !(run.pushed && run.pushed.pushed) && Array.isArray(run.blockers) && run.blockers.some(b => b.fatal)) return { label: 'Blocked', cls: 'danger' };
     if (run.finished_at) return { label: 'Completed', cls: 'info' };
     return { label: 'Running', cls: 'warning' };
 }
@@ -847,5 +935,11 @@ if (typeof module !== 'undefined' && module.exports) {
         renderRoute,
         showTab,
         loadRuns,
+        runStatus,
+        NOTIFY_KEY,
+        notifyEnabled,
+        toggleNotify,
+        maybeNotify,
+        updateNotifyIcon,
     };
 }

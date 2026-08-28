@@ -9,6 +9,7 @@ import pytest
 from agentflow.backends.base import RunResult, Usage
 from agentflow.cli import main as cli_main
 from agentflow.config import Config, RoleConfig
+from agentflow.database import list_events
 from agentflow.orchestrator import _check_budget, run_workflow, RunState
 
 
@@ -73,6 +74,16 @@ def test_workflow_aborts_when_cost_exceeds_budget(tmp_path):
     roles_executed = [s["role"] for s in state.steps]
     assert roles_executed == ["review"]
     assert state.total_cost() >= 0.10
+    assert len(state.blockers) == 1
+    assert state.blockers[0]["reason"] == "budget"
+    assert state.blockers[0]["fatal"] is True
+    assert "exceeded budget limit" in state.blockers[0]["detail"]
+
+    events = list_events(state.run_id, path=db_path)
+    blocker_events = [e for e in events if e["type"] == "blocker"]
+    assert len(blocker_events) == 1
+    assert blocker_events[0]["payload"]["reason"] == "budget"
+    assert blocker_events[0]["payload"]["fatal"] is True
 
 
 def test_workflow_runs_within_budget(tmp_path):

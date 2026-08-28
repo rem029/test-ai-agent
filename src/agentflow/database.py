@@ -288,6 +288,7 @@ def reconstruct_run(
         "finished_at": None,
         "pushed": None,
         "stopped": False,
+        "blockers": [],
     }
 
     for ev in events:
@@ -317,6 +318,8 @@ def reconstruct_run(
                 state["steps"].append(step)
         elif etype == "run_stopped":
             state["stopped"] = True
+        elif etype == "blocker":
+            state.setdefault("blockers", []).append(payload)
         elif etype == "run_finished":
             state["finished_at"] = payload.get("finished_at", ev["ts"])
             state["pushed"] = payload.get("pushed")
