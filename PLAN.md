@@ -634,15 +634,91 @@ progress is observed.
 
 **Success criteria**
 
-- `Backend.run()` streams events for all three backends (Antigravity may
+- ✅ `Backend.run()` streams events for all three backends (Antigravity may
   buffer); `run_sync()` preserves the old return shape.
-- `_run_with_tools` holds a real message list; tool schema sent once per step.
-- `events` and `sessions` tables exist; a run is fully reconstructable from its
+- ✅ `_run_with_tools` holds a real message list; tool schema sent once per step.
+- ✅ `events` and `sessions` tables exist; a run is fully reconstructable from its
   event log.
-- A follow-up turn can be issued against an existing session and is persisted.
-- Permission policy gates write/shell/git tools; read tools stay automatic.
-- `uv run pytest` passes; existing CLI and web behavior unchanged for callers
+- ✅ A follow-up turn can be issued against an existing session and is persisted.
+- ✅ Permission policy gates write/shell/git tools; read tools stay automatic.
+- ✅ `uv run pytest` passes; existing CLI and web behavior unchanged for callers
   that use `run_sync()` / the current endpoints.
+
+**Status (2026-08-28):** implemented on branch `phase-i`, not yet committed.
+All six items plus two follow-up fixes are in the working tree:
+- DB test isolation — an autouse `tests/conftest.py` fixture redirects
+  `DEFAULT_DATABASE_PATH` to a temp file so tests never touch
+  `~/.agentflow/agentflow.db`.
+- Session title is set once at creation and preserved across follow-up runs.
+A web-UI + CLI review pass also fixed: `POST /api/config` was wiping
+`permissions`/`max_cost_usd`; `_build_config_from_overrides` dropped them for
+web-started runs; `/api/health` ignored `--config`; the model-autocomplete
+datalist id mismatch; the tool-call timeline rendered every call as a red
+`FAIL` (checked `call.success` instead of `call.status`) with no timing; and
+`app.js` called an undefined `initTheme()` that broke the whole SPA. 117 tests
+pass. Still open for Phase K: `POST /api/runs` has no single-run lock (A4);
+the web UI does not consume `/api/sessions` or `/api/runs/{id}/events` (A7);
+Config form has no `permissions`/`max_cost_usd` inputs; interrupted old runs
+show "Running" forever; Review/Verify step boxes render empty.
+
+## Phase I.5 - Follow-up messages & run control (new session)
+
+**Goal:** let the user send a message, comment, or stop signal to a run that
+is *already executing*, without corrupting the git worktree. Builds directly
+on Phase I's `events` table and the checkpoint structure already in
+`run_workflow` (the points where `_check_budget` is called today).
+
+**Problem today:** `run_workflow` is a straight-through loop with no check for
+incoming input. A second `POST /api/runs` during an active run spawns another
+`run_workflow` thread on the same worktree — they collide on file writes and
+`git commit` (see Phase K "single-run lock", A4). `--resume` only seeds a
+*new* run after the first fully finishes; there is no way to inject into a
+running one.
+
+### Design
+
+1. **`pending_messages` table** (or a `user_message` event type), keyed by
+   `run_id`: `id, run_id, body, kind ('steer' | 'note'), consumed, ts`.
+   Writers: the web follow-up composer, a new `agentflow --say <run_id>
+   "<text>"`, and web run comments. Writing is non-blocking and returns
+   immediately.
+2. **Orchestrator drains the queue at each checkpoint** — between review→build
+   and between every build/verify iteration (next to the existing
+   `_check_budget` calls). Drained `steer` messages are folded into the next
+   step's feedback/context block ("User added while running: …"); `note`
+   messages are logged as events only, not fed to the agent. Every drain
+   emits a `user_message` event so the timeline shows it.
+3. **Control signals, checked more eagerly** (every tool call, not just
+   checkpoints): `stop` / `abort`. `stop` = finish the current tool, do not
+   start the next, mark the run `stopped`, no commit/push. Never hard-kill the
+   thread — a kill mid-`git commit` or mid-write corrupts the worktree.
+4. **Single active run per repo** (implements the lock Phase K also needs). A
+   follow-up submitted while a run is active is routed by `kind`:
+   - `steer` → appended to the active run's queue; UI shows "queued — picked
+     up at the next step".
+   - a genuinely new task → enqueued as the next run in the session (not a
+     hard `409`), so the `NOTES.md` "what's next" list falls out naturally.
+5. **Session hand-off:** if a run finishes with unconsumed queued messages,
+   they auto-seed the next `--resume` run in that session instead of being
+   lost.
+
+### Scope
+
+- Backend + orchestrator + one CLI flag + two web endpoints (`POST
+  /api/runs/{id}/messages`, `POST /api/runs/{id}/stop`). The composer UI and
+  the "queued" indicator are Phase K.
+- Tests: queue drain at each checkpoint, `stop` mid-iteration leaves a clean
+  worktree, concurrency lock, session hand-off of unconsumed messages.
+
+### Success criteria
+
+- A message sent to a running run is picked up at the next checkpoint and
+  visibly influences the next step.
+- `stop` halts a run within one tool call, leaves no partial commit, and the
+  worktree is clean.
+- Two runs can never execute against the same repo at once.
+- Unconsumed queued messages seed the next session run rather than vanishing.
+- `uv run pytest` passes; one-shot `agentflow "<goal>"` behavior unchanged.
 
 ## Phase J - Terminal UI (Claude Code-like)
 
@@ -664,7 +740,8 @@ interactive REPL (the one-shot `agentflow "<goal>"` form stays).
 
 - Delete the dead templates, `login.html`, `auth.css`, and the empty
   `htmx.min.js`; collapse to one stylesheet.
-- Single SPA: session sidebar + message thread + follow-up composer.
+- Single SPA: session sidebar + message thread + follow-up composer wired to
+  Phase I.5's `pending_messages` / stop endpoints, with a "queued" indicator.
 - Live updates via SSE off the Phase I event log (replaces 2s JS polling).
 - Inline collapsible tool calls with output and visual file diffs (reuse
   `ToolResult.structured`).
