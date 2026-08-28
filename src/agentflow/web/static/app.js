@@ -224,6 +224,21 @@ function loadConfig() {
             document.getElementById('config-verify_backend').value = config.verify.backend;
             document.getElementById('config-verify_model').value = config.verify.model || '';
             document.getElementById('config-max_iterations').value = config.max_iterations;
+
+            const statusEl = document.getElementById('config-openrouter-status');
+            if (statusEl) {
+                if (config.openrouter_key) {
+                    if (config.openrouter_key.set) {
+                        const masked = escapeHtml(config.openrouter_key.masked || '');
+                        const source = config.openrouter_key.source === 'env' ? 'environment' : 'config file';
+                        statusEl.innerHTML = `<span class="badge success">Set</span> <span class="mono">${masked}</span> <span class="key-source">(from ${source})</span>`;
+                    } else {
+                        statusEl.innerHTML = '<span class="badge warning">Not set</span>';
+                    }
+                } else {
+                    statusEl.innerHTML = '';
+                }
+            }
         })
         .catch(error => {
             showStatus('config-status', `Failed to load config: ${error.message}`, 'error');
@@ -233,6 +248,7 @@ function loadConfig() {
 async function submitConfig(e) {
     e.preventDefault();
     const form = e.target;
+    const keyVal = form.openrouter_api_key ? form.openrouter_api_key.value : '';
     const payload = {
         review_backend: form.review_backend.value,
         review_model: form.review_model.value || null,
@@ -240,7 +256,8 @@ async function submitConfig(e) {
         build_model: form.build_model.value || null,
         verify_backend: form.verify_backend.value,
         verify_model: form.verify_model.value || null,
-        max_iterations: parseInt(form.max_iterations.value, 10)
+        max_iterations: parseInt(form.max_iterations.value, 10),
+        openrouter_api_key: keyVal.trim() || null
     };
 
     try {
@@ -252,6 +269,10 @@ async function submitConfig(e) {
         const data = await response.json();
         if (response.ok) {
             showStatus('config-status', 'Configuration saved successfully!', 'success');
+            if (form.openrouter_api_key) {
+                form.openrouter_api_key.value = '';
+            }
+            loadConfig();
         } else {
             showStatus('config-status', `Error saving config: ${data.detail}`, 'error');
         }

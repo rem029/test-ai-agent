@@ -535,3 +535,98 @@ def test_static_assets_contain_notify_and_blockers(tmp_path):
     assert ".blocker" in css_resp.text
     assert ".step-noresponse" in css_resp.text
 
+
+def test_api_config_get_returns_masked_openrouter_key_status(tmp_path, monkeypatch):
+    from agentflow.config import dump_config
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config_path = tmp_path / "agentflow.config.yaml"
+    real_key = "sk-or-v1-secret-key-1234567890"
+    dump_config(_config(), str(config_path), openrouter_api_key=real_key)
+
+    client = _make_client(tmp_path, config_path=str(config_path))
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "openrouter_key" in data
+    assert data["openrouter_key"]["set"] is True
+    assert data["openrouter_key"]["source"] == "config"
+    assert data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
+    assert real_key not in resp.text
+
+
+def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post(tmp_path, monkeypatch):
+    from agentflow.config import _from_file
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+    real_key = "sk-or-v1-testkey-1234567890"
+
+    # 1. POST with openrouter_api_key
+    resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "openrouter_api_key": real_key,
+        },
+    )
+    assert resp.status_code == 200
+    post_data = resp.json()
+    assert post_data["ok"] is True
+    assert post_data["openrouter_key"]["set"] is True
+    assert post_data["openrouter_key"]["masked"] != real_key
+    assert real_key not in resp.text
+
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+    assert _from_file(str(config_path)).get("openrouter_api_key") == real_key
+
+    # 2. GET /api/config verifies masked status and no raw key leak
+    get_resp = client.get("/api/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["openrouter_key"]["set"] is True
+    assert get_data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
+    assert real_key not in get_resp.text
+
+    # 3. POST /api/config without the field preserves the existing key
+    post2_resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "antigravity",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 4,
+        },
+    )
+    assert post2_resp.status_code == 200
+    assert _from_file(str(config_path)).get("openrouter_api_key") == real_key
+    assert real_key not in post2_resp.text
+
+
+def test_static_assets_contain_openrouter_key_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="config-openrouter-status"' in html_resp.text
+    assert 'id="config-openrouter_api_key"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "config-openrouter-status" in js_resp.text
+    assert "openrouter_api_key" in js_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert ".key-status" in css_resp.text
+    assert ".key-source" in css_resp.text
+    assert ".form-hint" in css_resp.text
+

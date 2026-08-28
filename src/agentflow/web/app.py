@@ -21,6 +21,7 @@ from ..config import (
     dump_config,
     load_config,
 )
+from ..credentials import openrouter_api_key_info
 from ..database import (
     DEFAULT_DATABASE_PATH,
     add_control_signal,
@@ -53,6 +54,7 @@ class ConfigUpdate(BaseModel):
     max_iterations: int = Field(3, ge=1, le=10)
     permissions: Optional[PermissionMode] = None
     max_cost_usd: Optional[float] = None
+    openrouter_api_key: Optional[str] = None
 
 
 class RunCreate(BaseModel):
@@ -150,7 +152,9 @@ def create_app(
             config = load_config(config_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
-        return config.model_dump()
+        resp = config.model_dump()
+        resp["openrouter_key"] = openrouter_api_key_info(config_path)
+        return resp
 
     @app.post("/api/config")
     async def update_config(data: ConfigUpdate) -> dict:
@@ -173,11 +177,18 @@ def create_app(
             permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
             max_cost_usd=data.max_cost_usd if data.max_cost_usd is not None else (current_config.max_cost_usd if current_config else None),
         )
+        dump_kwargs = {}
+        if data.openrouter_api_key and data.openrouter_api_key.strip():
+            dump_kwargs["openrouter_api_key"] = data.openrouter_api_key.strip()
         try:
-            dump_config(config, config_path)
+            dump_config(config, config_path, **dump_kwargs)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
-        return {"ok": True, "config": config.model_dump()}
+        return {
+            "ok": True,
+            "config": config.model_dump(),
+            "openrouter_key": openrouter_api_key_info(config_path),
+        }
 
     @app.get("/api/health")
     async def health() -> dict:
