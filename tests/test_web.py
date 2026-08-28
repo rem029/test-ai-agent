@@ -248,10 +248,13 @@ def test_api_create_run_preserves_permissions_and_max_cost(tmp_path):
 
 
 def test_api_events_and_sessions_endpoints(tmp_path):
-    from agentflow.database import append_event, create_session
+    from agentflow.database import append_event, create_session, save_run
+    from agentflow.orchestrator import RunState
 
     db = tmp_path / "agentflow.db"
     create_session("sess-web-1", str(tmp_path), title="Web Session 1", path=db)
+    state = RunState(run_id="run-web-1", session_id="sess-web-1", goal="Test Web 1", started_at=1.0, config={})
+    save_run(state, str(tmp_path), db)
     append_event("run-web-1", 1, "step_started", {"role": "review"}, path=db)
 
     client = _make_client(tmp_path)

@@ -720,6 +720,37 @@ running one.
 - Unconsumed queued messages seed the next session run rather than vanishing.
 - `uv run pytest` passes; one-shot `agentflow "<goal>"` behavior unchanged.
 
+**Status (2026-08-28):** implemented on branch `phase-i.5`. All five design
+items plus adversarial-review hardening are in the working tree:
+- `pending_messages` table (`kind` in `steer|note|control`) + `queued_runs`
+  table, with `add_pending_message`/`get_pending_messages`/
+  `drain_pending_messages`/`mark_messages_consumed`/`add_control_signal`/
+  `has_stop_signal`/`add_queued_run`/`pop_next_queued_run`/`requeue_run`.
+- `run_workflow` wraps its body in `try/except BaseException/finally`: a
+  per-cwd `threading.Lock` **and** an `fcntl.flock` lock file under
+  `~/.agentflow/locks/` (cross-process), both released in `finally`; a
+  crashed/interrupted run is finalized (`finished_at` set, `run_finished`
+  logged with the error) instead of showing "Running" forever; the next
+  `queued_runs` entry is spawned on completion (re-queued on lock contention).
+- `_drain_steer` at every checkpoint (post-review, each build/verify
+  iteration); `has_stop_signal` checked per tool call **and** after every
+  step and immediately before `_commit_and_push`; `_finalize_stopped` marks
+  the run `stopped`, consumes the control rows, and never commits.
+- `RunResult.stopped` / `RunState.stopped` fields; `reconstruct_run` handles
+  `run_stopped`.
+- CLI: `agentflow --say/--note/--stop <RUN_ID> "<text>"` (warn on unknown
+  run), and `RunInProgressError` is caught with a clean stderr message.
+- Web: `POST /api/runs/{id}/messages`, `GET /api/runs/{id}/messages`,
+  `POST /api/runs/{id}/stop`; `POST /api/runs` routes a submission during an
+  active run to `queued_runs` (`{"status": "queued", ...}`), never silently
+  into steer; `GET /api/runs/{id}/events` now 404s for unknown runs.
+- `get_tool_calls` returns chronological (`id ASC`) order.
+- 137 tests pass (`+20`: `test_pending_messages.py`, `test_run_control.py`,
+  `test_web_control.py`, plus `test_cli.py`/`test_web.py` additions).
+- Deferred: SQLite WAL / DDL-per-connection perf pass; the narrow
+  concurrent-double-`POST /api/runs` 200-vs-404 race (acceptable for a
+  single-user tool). The web composer/queued-indicator UI stays Phase K.
+
 ## Phase J - Terminal UI (Claude Code-like)
 
 Built on Phase I's event stream. `agentflow` with no goal argument opens an

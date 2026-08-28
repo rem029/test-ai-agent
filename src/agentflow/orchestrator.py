@@ -8,11 +8,19 @@ tracking per task" and "Interface: CLI first, web later").
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    # Windows fallback: cross-process locking not supported via fcntl, rely on threading.Lock
+    fcntl = None
 
 from .backends import BACKENDS
 from .backends.base import (
@@ -23,17 +31,172 @@ from .backends.base import (
     format_messages_to_prompt,
     run_sync,
 )
-from .config import Config, RoleConfig
+from .config import AGENTFLOW_HOME, Config, RoleConfig
 from .database import (
     append_event,
     create_session,
+    drain_pending_messages,
     get_session_runs,
+    has_stop_signal,
+    pop_next_queued_run,
+    requeue_run,
     save_run,
 )
 from .tools import ToolContext, get_tool, list_tools, parse_tool_requests
 from .tools.base import ToolResult
 
 MAX_TOOL_CALLS_PER_STEP = 10
+
+
+class RunInProgressError(Exception):
+    """Raised when a workflow run is requested for a repository that is already running."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+        super().__init__(f"A run is already in progress for {cwd}")
+
+
+_RUN_LOCKS_LOCK = threading.Lock()
+_RUN_LOCKS: dict[str, threading.Lock] = {}
+_ACTIVE_RUNS: dict[str, str] = {}  # resolved cwd -> run_id
+
+
+def _get_run_lock(cwd: str) -> threading.Lock:
+    resolved = str(Path(cwd).resolve())
+    with _RUN_LOCKS_LOCK:
+        if resolved not in _RUN_LOCKS:
+            _RUN_LOCKS[resolved] = threading.Lock()
+        return _RUN_LOCKS[resolved]
+
+
+def get_active_run(cwd: str) -> str | None:
+    resolved = str(Path(cwd).resolve())
+    with _RUN_LOCKS_LOCK:
+        return _ACTIVE_RUNS.get(resolved)
+
+
+def _acquire_process_lock(resolved_cwd: str) -> object | None:
+    """Acquire a cross-process file lock on AGENTFLOW_HOME/locks/<hash>.lock.
+
+    Returns open file object or raises RunInProgressError.
+    """
+    if fcntl is None:
+        return None
+    locks_dir = AGENTFLOW_HOME / "locks"
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    cwd_hash = hashlib.sha256(resolved_cwd.encode("utf-8")).hexdigest()[:16]
+    lock_file = locks_dir / f"{cwd_hash}.lock"
+    f = open(lock_file, "a+")
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except (BlockingIOError, OSError):
+        f.close()
+        raise RunInProgressError(resolved_cwd)
+
+
+def _release_process_lock(lock_file_obj: object | None) -> None:
+    if lock_file_obj is None or fcntl is None:
+        return
+    try:
+        fcntl.flock(lock_file_obj.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        try:
+            lock_file_obj.close()
+        except OSError:
+            pass
+
+
+def _drain_steer(state: RunState, database_path: Path | None = None) -> str:
+    """Drain unconsumed steer and note messages for the current run, logging events and returning formatted steer text."""
+    messages = drain_pending_messages(state.run_id, kinds=("steer", "note"), path=database_path)
+    if not messages:
+        return ""
+
+    steer_bodies: list[str] = []
+    now = time.time()
+    for msg in messages:
+        state.log_event(
+            "user_message",
+            {"body": msg["body"], "kind": msg["kind"], "consumed_at": now},
+            database_path=database_path,
+        )
+        if msg["kind"] == "steer":
+            steer_bodies.append(msg["body"])
+
+    if not steer_bodies:
+        return ""
+
+    folded = "\n".join(f"- {b}" for b in steer_bodies)
+    return f"User added while running:\n{folded}"
+
+
+def _finalize_stopped(
+    state: RunState,
+    cwd: str,
+    database_path: Path | None = None,
+    log_stop_event: bool = True,
+) -> RunState:
+    """Mark a run stopped, consume control signals, log finish, and persist."""
+    drain_pending_messages(state.run_id, kinds=("control",), path=database_path)
+    state.finished_at = time.time()
+    state.stopped = True
+    if log_stop_event:
+        state.log_event(
+            "run_stopped",
+            {"reason": "user stop signal", "at": state.finished_at},
+            database_path=database_path,
+        )
+    state.log_event(
+        "run_finished",
+        {"finished_at": state.finished_at, "pushed": None, "stopped": True},
+        database_path=database_path,
+    )
+    state.save(cwd, database_path=database_path)
+    _print_summary(state)
+    return state
+
+
+def _spawn_next_queued_run(
+    cwd: str,
+    database_path: Path | None = None,
+) -> threading.Thread | None:
+    """Check queued_runs for the next unstarted item for cwd and spawn it in a thread."""
+    queued = pop_next_queued_run(cwd, path=database_path)
+    if not queued:
+        return None
+
+    try:
+        config = Config.model_validate(queued["config"])
+    except Exception:
+        from .config import load_config
+
+        config = load_config()
+
+    def _worker() -> None:
+        try:
+            run_workflow(
+                goal=queued["goal"],
+                config=config,
+                cwd=queued["cwd"],
+                session_id=queued["session_id"],
+                database_path=database_path,
+            )
+        except RunInProgressError:
+            requeue_run(queued["id"], path=database_path)
+        except Exception as exc:
+            import sys
+
+            print(f"Error executing queued run {queued['id']}: {exc}", file=sys.stderr)
+
+    thread = threading.Thread(
+        target=_worker,
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 TOOL_USE_INSTRUCTIONS = """\
 You may invoke tools by writing one or more blocks like this:
@@ -243,12 +406,19 @@ def _run_with_tools(
     policy = config.permissions if config else "auto"
     max_cost = config.max_cost_usd if config else None
 
+    b_name = getattr(backend, "name", "unknown")
+    if not isinstance(b_name, str):
+        b_name = "unknown"
+    b_model = getattr(backend, "model", None)
+    if not isinstance(b_model, (str, type(None))):
+        b_model = None
+
     result = RunResult(
         success=False,
         text="",
         usage=Usage(
-            getattr(backend, "name", "unknown"),
-            getattr(backend, "model", None),
+            b_name,
+            b_model,
             None,
             None,
             None,
@@ -257,6 +427,21 @@ def _run_with_tools(
     )
 
     for call_index in range(max_calls):
+        if has_stop_signal(state.run_id, database_path):
+            drain_pending_messages(state.run_id, kinds=("control",), path=database_path)
+            state.log_event(
+                "run_stopped",
+                {"reason": "user stop signal", "at": time.time()},
+                database_path=database_path,
+            )
+            return RunResult(
+                success=False,
+                text="Run stopped by user.",
+                usage=result.usage,
+                raw=result.raw,
+                stopped=True,
+            )
+
         budget_ok, budget_err = _check_budget(state, max_cost)
         if not budget_ok:
             state.log_event("error", {"error": budget_err}, database_path=database_path)
@@ -271,8 +456,8 @@ def _run_with_tools(
 
         accumulated_text: list[str] = []
         usage = Usage(
-            backend=getattr(backend, "name", "unknown"),
-            model=getattr(backend, "model", None),
+            backend=b_name,
+            model=b_model,
             input_tokens=None,
             output_tokens=None,
             cost_usd=None,
@@ -374,6 +559,22 @@ def _run_with_tools(
                 },
                 database_path=database_path,
             )
+
+            if has_stop_signal(state.run_id, database_path):
+                drain_pending_messages(state.run_id, kinds=("control",), path=database_path)
+                state.log_event(
+                    "run_stopped",
+                    {"reason": "user stop signal", "at": time.time()},
+                    database_path=database_path,
+                )
+                return RunResult(
+                    success=False,
+                    text="Run stopped by user.",
+                    usage=result.usage,
+                    raw=result.raw,
+                    stopped=True,
+                )
+
             results_parts.append(
                 f"[{status}] {req.name}({req.args}) -> {tool_result.output}"
             )
@@ -431,6 +632,7 @@ class RunState:
     tool_calls: list = field(default_factory=list)
     finished_at: float | None = None
     pushed: dict | None = None
+    stopped: bool = False
     event_seq: int = 0
 
     def total_usage(self) -> dict[str, dict]:
@@ -519,159 +721,146 @@ def run_workflow(
     run_id: str | None = None,
     session_id: str | None = None,
     database_path: Path | None = None,
+    require_lock: bool = True,
 ) -> RunState:
+    resolved_cwd = str(Path(cwd).resolve())
+    lock = _get_run_lock(resolved_cwd)
+    acquired_thread_lock = False
+    process_lock_file = None
+    if require_lock:
+        acquired_thread_lock = lock.acquire(blocking=False)
+        if not acquired_thread_lock:
+            raise RunInProgressError(resolved_cwd)
+        try:
+            process_lock_file = _acquire_process_lock(resolved_cwd)
+        except Exception:
+            lock.release()
+            raise
+
     run_id = run_id or new_run_id()
     session_id = session_id or new_session_id()
 
-    # Ensure session exists in the database
-    create_session(session_id=session_id, cwd=cwd, title=goal, path=database_path)
+    if acquired_thread_lock:
+        with _RUN_LOCKS_LOCK:
+            _ACTIVE_RUNS[resolved_cwd] = run_id
 
-    # Check for prior runs in this session to support follow-up turns
-    prior_runs = get_session_runs(session_id, path=database_path)
-    prior_summary = ""
-    if prior_runs:
-        summary_lines = [f"Prior runs in this session ({session_id}):"]
-        for idx, pr in enumerate(prior_runs, 1):
-            summary_lines.append(f"Run {idx} (ID: {pr.get('run_id')}):")
-            summary_lines.append(f"  Goal: {pr.get('goal')}")
-            pushed = pr.get("pushed")
-            summary_lines.append(
-                f"  Pushed: {'Yes' if pushed and pushed.get('pushed') else 'No'}"
-            )
-            for st in pr.get("steps", []):
+    state: RunState | None = None
+    exc_to_record: BaseException | None = None
+    try:
+        # Ensure session exists in the database
+        create_session(session_id=session_id, cwd=cwd, title=goal, path=database_path)
+
+        # Check for prior runs in this session to support follow-up turns
+        prior_runs = get_session_runs(session_id, path=database_path)
+        prior_summary = ""
+        leftover_steer_text = ""
+        leftover_messages: list[dict] = []
+        most_recent_prior_id = None
+        if prior_runs:
+            summary_lines = [f"Prior runs in this session ({session_id}):"]
+            for idx, pr in enumerate(prior_runs, 1):
+                summary_lines.append(f"Run {idx} (ID: {pr.get('run_id')}):")
+                summary_lines.append(f"  Goal: {pr.get('goal')}")
+                pushed = pr.get("pushed")
                 summary_lines.append(
-                    f"  - [{st.get('role')}]: {st.get('text', '')[:300].strip()}"
+                    f"  Pushed: {'Yes' if pushed and pushed.get('pushed') else 'No'}"
                 )
-        prior_summary = "\n".join(summary_lines)
+                for st in pr.get("steps", []):
+                    summary_lines.append(
+                        f"  - [{st.get('role')}]: {st.get('text', '')[:300].strip()}"
+                    )
+            prior_summary = "\n".join(summary_lines)
 
-    state_config = {role: cfg.model_dump() for role, cfg in config.roles().items()}
-    state_config["max_iterations"] = config.max_iterations
-    state_config["permissions"] = config.permissions
-    if config.max_cost_usd is not None:
-        state_config["max_cost_usd"] = config.max_cost_usd
+            # Drain leftover unconsumed messages from the most recent prior run in this session
+            most_recent_prior_id = prior_runs[-1].get("run_id")
+            if most_recent_prior_id:
+                leftover_messages = drain_pending_messages(
+                    most_recent_prior_id, kinds=("steer", "note"), path=database_path
+                )
+                if leftover_messages:
+                    steer_items = [m["body"] for m in leftover_messages if m["kind"] == "steer"]
+                    if steer_items:
+                        folded = "\n".join(f"- {b}" for b in steer_items)
+                        leftover_steer_text = f"User added while running:\n{folded}"
 
-    state = RunState(
-        run_id=run_id,
-        session_id=session_id,
-        goal=goal,
-        started_at=time.time(),
-        config=state_config,
-    )
-    # Save immediately and log run_started event
-    state.save(cwd, database_path=database_path)
-    state.log_event(
-        "run_started",
-        {
-            "run_id": run_id,
-            "session_id": session_id,
-            "goal": goal,
-            "cwd": cwd,
-            "config": state_config,
-            "started_at": state.started_at,
-        },
-        database_path=database_path,
-    )
+        state_config = {role: cfg.model_dump() for role, cfg in config.roles().items()}
+        state_config["max_iterations"] = config.max_iterations
+        state_config["permissions"] = config.permissions
+        if config.max_cost_usd is not None:
+            state_config["max_cost_usd"] = config.max_cost_usd
 
-    review_backend = _build_backend(config.review)
-    build_backend = _build_backend(config.build)
-    verify_backend = _build_backend(config.verify)
-
-    print(f"[review] planning for goal: {goal}")
-    state.log_event(
-        "step_started",
-        {"role": "review", "mode": "read", "iteration": 0},
-        database_path=database_path,
-    )
-
-    review_prompt = REVIEW_PROMPT.format(goal=goal)
-    if prior_summary:
-        review_prompt = f"{prior_summary}\n\n{review_prompt}"
-
-    review_result = _run_with_tools(
-        review_backend,
-        review_prompt,
-        cwd=cwd,
-        mode="read",
-        state=state,
-        step_index=0,
-        config=config,
-        database_path=database_path,
-    )
-    rec_review = _record("review", "read", 0, review_result)
-    state.steps.append(rec_review)
-    state.log_event("step_finished", {"step": rec_review}, database_path=database_path)
-    state.save(cwd, database_path=database_path)
-
-    # Check budget guardrail
-    budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
-    if not budget_ok:
-        print(f"[budget] ABORTED: {budget_err}")
-        state.finished_at = time.time()
-        state.log_event("error", {"error": budget_err}, database_path=database_path)
+        state = RunState(
+            run_id=run_id,
+            session_id=session_id,
+            goal=goal,
+            started_at=time.time(),
+            config=state_config,
+        )
+        # Save immediately and log run_started event
+        state.save(cwd, database_path=database_path)
         state.log_event(
-            "run_finished",
-            {"finished_at": state.finished_at, "pushed": None},
+            "run_started",
+            {
+                "run_id": run_id,
+                "session_id": session_id,
+                "goal": goal,
+                "cwd": cwd,
+                "config": state_config,
+                "started_at": state.started_at,
+            },
             database_path=database_path,
         )
-        state.save(cwd, database_path=database_path)
-        _print_summary(state)
-        return state
 
-    if not review_result.success:
-        print(f"[review] FAILED: {review_result.text[:300]}")
-        state.finished_at = time.time()
-        state.log_event(
-            "run_finished",
-            {"finished_at": state.finished_at, "pushed": None},
-            database_path=database_path,
-        )
-        state.save(cwd, database_path=database_path)
-        _print_summary(state)
-        return state
+        if leftover_messages and most_recent_prior_id:
+            now = time.time()
+            for msg in leftover_messages:
+                state.log_event(
+                    "user_message",
+                    {
+                        "body": msg["body"],
+                        "kind": msg["kind"],
+                        "consumed_at": now,
+                        "from_prior_run": most_recent_prior_id,
+                    },
+                    database_path=database_path,
+                )
 
-    plan = review_result.text
-    print(f"[review] plan:\n{plan}\n")
+        review_backend = _build_backend(config.review)
+        build_backend = _build_backend(config.build)
+        verify_backend = _build_backend(config.verify)
 
-    feedback = ""
-    verified = False
-    for iteration in range(1, config.max_iterations + 1):
-        print(f"[build] iteration {iteration}/{config.max_iterations}")
+        print(f"[review] planning for goal: {goal}")
         state.log_event(
             "step_started",
-            {"role": "build", "mode": "write", "iteration": iteration},
+            {"role": "review", "mode": "read", "iteration": 0},
             database_path=database_path,
         )
 
-        context_section = ""
-        if config.build.backend in NO_NATIVE_TOOLS_BACKENDS or prior_summary:
-            context = _repo_context(cwd)
-            if context:
-                context_section = f"\nCurrent contents of the repository's source files:\n{context}\n"
-
-        feedback_section = (
-            f"\nFeedback from the previous attempt:\n{feedback}\n" if feedback else ""
-        )
-        build_prompt = BUILD_PROMPT.format(
-            goal=goal, plan=plan, context_section=context_section, feedback_section=feedback_section
-        )
+        review_prompt = REVIEW_PROMPT.format(goal=goal)
+        if leftover_steer_text:
+            review_prompt = f"{leftover_steer_text}\n\n{review_prompt}"
         if prior_summary:
-            build_prompt = f"{prior_summary}\n\n{build_prompt}"
+            review_prompt = f"{prior_summary}\n\n{review_prompt}"
 
-        build_result = _run_with_tools(
-            build_backend,
-            build_prompt,
+        review_result = _run_with_tools(
+            review_backend,
+            review_prompt,
             cwd=cwd,
-            mode="write",
+            mode="read",
             state=state,
-            step_index=iteration,
+            step_index=0,
             config=config,
             database_path=database_path,
         )
-        rec_build = _record("build", "write", iteration, build_result)
-        state.steps.append(rec_build)
-        state.log_event("step_finished", {"step": rec_build}, database_path=database_path)
+        rec_review = _record("review", "read", 0, review_result)
+        state.steps.append(rec_review)
+        state.log_event("step_finished", {"step": rec_review}, database_path=database_path)
         state.save(cwd, database_path=database_path)
 
+        if review_result.stopped or has_stop_signal(state.run_id, database_path):
+            return _finalize_stopped(state, cwd, database_path, log_stop_event=not review_result.stopped)
+
+        # Check budget guardrail
         budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
         if not budget_ok:
             print(f"[budget] ABORTED: {budget_err}")
@@ -686,38 +875,9 @@ def run_workflow(
             _print_summary(state)
             return state
 
-        if not build_result.success:
-            print(f"[build] FAILED: {build_result.text[:300]}")
-            feedback = build_result.text
-            continue
-
-        print(f"[verify] iteration {iteration}/{config.max_iterations}")
-        state.log_event(
-            "step_started",
-            {"role": "verify", "mode": "verify", "iteration": iteration},
-            database_path=database_path,
-        )
-
-        verify_result = _run_with_tools(
-            verify_backend,
-            VERIFY_PROMPT.format(goal=goal, plan=plan),
-            cwd=cwd,
-            mode="verify",
-            state=state,
-            step_index=iteration,
-            config=config,
-            database_path=database_path,
-        )
-        rec_verify = _record("verify", "verify", iteration, verify_result)
-        state.steps.append(rec_verify)
-        state.log_event("step_finished", {"step": rec_verify}, database_path=database_path)
-        state.save(cwd, database_path=database_path)
-
-        budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
-        if not budget_ok:
-            print(f"[budget] ABORTED: {budget_err}")
+        if not review_result.success:
+            print(f"[review] FAILED: {review_result.text[:300]}")
             state.finished_at = time.time()
-            state.log_event("error", {"error": budget_err}, database_path=database_path)
             state.log_event(
                 "run_finished",
                 {"finished_at": state.finished_at, "pushed": None},
@@ -727,28 +887,167 @@ def run_workflow(
             _print_summary(state)
             return state
 
-        verified = verify_result.success and _parse_verify_result(verify_result.text)
-        print(f"[verify] {'PASS' if verified else 'FAIL'}: {verify_result.text[:300]}")
+        plan = review_result.text
+        print(f"[review] plan:\n{plan}\n")
+
+        feedback = leftover_steer_text if leftover_steer_text else ""
+        steer_text = _drain_steer(state, database_path=database_path)
+        if steer_text:
+            feedback = f"{feedback}\n\n{steer_text}".strip() if feedback else steer_text
+
+        verified = False
+        for iteration in range(1, config.max_iterations + 1):
+            print(f"[build] iteration {iteration}/{config.max_iterations}")
+            state.log_event(
+                "step_started",
+                {"role": "build", "mode": "write", "iteration": iteration},
+                database_path=database_path,
+            )
+
+            steer_text = _drain_steer(state, database_path=database_path)
+            if steer_text:
+                feedback = f"{feedback}\n\n{steer_text}".strip() if feedback else steer_text
+
+            context_section = ""
+            if config.build.backend in NO_NATIVE_TOOLS_BACKENDS or prior_summary:
+                context = _repo_context(cwd)
+                if context:
+                    context_section = f"\nCurrent contents of the repository's source files:\n{context}\n"
+
+            feedback_section = (
+                f"\nFeedback from the previous attempt:\n{feedback}\n" if feedback else ""
+            )
+            build_prompt = BUILD_PROMPT.format(
+                goal=goal, plan=plan, context_section=context_section, feedback_section=feedback_section
+            )
+            if prior_summary:
+                build_prompt = f"{prior_summary}\n\n{build_prompt}"
+
+            build_result = _run_with_tools(
+                build_backend,
+                build_prompt,
+                cwd=cwd,
+                mode="write",
+                state=state,
+                step_index=iteration,
+                config=config,
+                database_path=database_path,
+            )
+            rec_build = _record("build", "write", iteration, build_result)
+            state.steps.append(rec_build)
+            state.log_event("step_finished", {"step": rec_build}, database_path=database_path)
+            state.save(cwd, database_path=database_path)
+
+            if build_result.stopped or has_stop_signal(state.run_id, database_path):
+                return _finalize_stopped(state, cwd, database_path, log_stop_event=not build_result.stopped)
+
+            budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
+            if not budget_ok:
+                print(f"[budget] ABORTED: {budget_err}")
+                state.finished_at = time.time()
+                state.log_event("error", {"error": budget_err}, database_path=database_path)
+                state.log_event(
+                    "run_finished",
+                    {"finished_at": state.finished_at, "pushed": None},
+                    database_path=database_path,
+                )
+                state.save(cwd, database_path=database_path)
+                _print_summary(state)
+                return state
+
+            if not build_result.success:
+                print(f"[build] FAILED: {build_result.text[:300]}")
+                feedback = build_result.text
+                continue
+
+            print(f"[verify] iteration {iteration}/{config.max_iterations}")
+            state.log_event(
+                "step_started",
+                {"role": "verify", "mode": "verify", "iteration": iteration},
+                database_path=database_path,
+            )
+
+            verify_result = _run_with_tools(
+                verify_backend,
+                VERIFY_PROMPT.format(goal=goal, plan=plan),
+                cwd=cwd,
+                mode="verify",
+                state=state,
+                step_index=iteration,
+                config=config,
+                database_path=database_path,
+            )
+            rec_verify = _record("verify", "verify", iteration, verify_result)
+            state.steps.append(rec_verify)
+            state.log_event("step_finished", {"step": rec_verify}, database_path=database_path)
+            state.save(cwd, database_path=database_path)
+
+            if verify_result.stopped or has_stop_signal(state.run_id, database_path):
+                return _finalize_stopped(state, cwd, database_path, log_stop_event=not verify_result.stopped)
+
+            budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
+            if not budget_ok:
+                print(f"[budget] ABORTED: {budget_err}")
+                state.finished_at = time.time()
+                state.log_event("error", {"error": budget_err}, database_path=database_path)
+                state.log_event(
+                    "run_finished",
+                    {"finished_at": state.finished_at, "pushed": None},
+                    database_path=database_path,
+                )
+                state.save(cwd, database_path=database_path)
+                _print_summary(state)
+                return state
+
+            steer_text = _drain_steer(state, database_path=database_path)
+            if steer_text:
+                feedback = f"{feedback}\n\n{steer_text}".strip() if feedback else steer_text
+
+            verified = verify_result.success and _parse_verify_result(verify_result.text)
+            print(f"[verify] {'PASS' if verified else 'FAIL'}: {verify_result.text[:300]}")
+
+            if verified:
+                break
+            feedback = f"{verify_result.text}\n\n{feedback}".strip() if feedback else verify_result.text
+
+        state.finished_at = time.time()
+
+        if has_stop_signal(state.run_id, database_path):
+            return _finalize_stopped(state, cwd, database_path, log_stop_event=True)
 
         if verified:
-            break
-        feedback = verify_result.text
+            state.pushed = _commit_and_push(goal, plan, cwd)
+        else:
+            print(f"[iterate] gave up after {config.max_iterations} iteration(s) without passing verify")
 
-    state.finished_at = time.time()
+        state.log_event(
+            "run_finished",
+            {"finished_at": state.finished_at, "pushed": state.pushed},
+            database_path=database_path,
+        )
+        state.save(cwd, database_path=database_path)
+        _print_summary(state)
+        return state
+    except BaseException as exc:
+        exc_to_record = exc
+        raise
+    finally:
+        if state is not None and state.finished_at is None:
+            state.finished_at = time.time()
+            error_msg = str(exc_to_record) if exc_to_record is not None else "interrupted"
+            state.log_event(
+                "run_finished",
+                {"finished_at": state.finished_at, "pushed": None, "error": error_msg},
+                database_path=database_path,
+            )
+            state.save(cwd, database_path=database_path)
 
-    if verified:
-        state.pushed = _commit_and_push(goal, plan, cwd)
-    else:
-        print(f"[iterate] gave up after {config.max_iterations} iteration(s) without passing verify")
-
-    state.log_event(
-        "run_finished",
-        {"finished_at": state.finished_at, "pushed": state.pushed},
-        database_path=database_path,
-    )
-    state.save(cwd, database_path=database_path)
-    _print_summary(state)
-    return state
+        if acquired_thread_lock:
+            with _RUN_LOCKS_LOCK:
+                _ACTIVE_RUNS.pop(resolved_cwd, None)
+            _release_process_lock(process_lock_file)
+            lock.release()
+            _spawn_next_queued_run(resolved_cwd, database_path=database_path)
 
 
 def _commit_and_push(goal: str, plan: str, cwd: str) -> dict | None:
@@ -804,6 +1103,8 @@ def _print_summary(state: RunState) -> None:
     if state.session_id:
         print(f"session_id: {state.session_id}")
     print(f"goal: {state.goal}")
+    if getattr(state, "stopped", False):
+        print("status: stopped by user")
     totals = state.total_usage()
     grand_cost = 0.0
     for key, bucket in totals.items():
@@ -814,3 +1115,4 @@ def _print_summary(state: RunState) -> None:
         grand_cost += bucket["cost_usd"]
     print(f"total cost: ${grand_cost:.6f}")
     print(f"pushed: {state.pushed if state.pushed else 'no (not verified, or no changes)'}")
+

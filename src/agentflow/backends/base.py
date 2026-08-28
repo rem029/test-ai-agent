@@ -80,6 +80,7 @@ class RunResult:
     text: str
     usage: Usage
     raw: dict
+    stopped: bool = False
 
 
 @dataclass
