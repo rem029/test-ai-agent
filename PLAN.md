@@ -751,6 +751,30 @@ items plus adversarial-review hardening are in the working tree:
   concurrent-double-`POST /api/runs` 200-vs-404 race (acceptable for a
   single-user tool). The web composer/queued-indicator UI stays Phase K.
 
+**Web UI fixes shipped in the same session (commits `a039df9`, `5f5eaa9`,
+`e0b1696`), ahead of the Phase K rewrite:**
+- Run-detail steps now render the agent response as Markdown (vendored
+  `static/md.js`), show a PASS/FAIL verdict pill on verify steps, and a
+  per-step backend·model·cost header. Tool calls show real output / a diff
+  view / an errors block instead of a raw `JSON.stringify` dump.
+- **Root cause of the "unreadable runs":** `deepseek-v4-flash` emits tool
+  calls wrapped in DSML delimiter tags (`<｜DSML｜tool_call>…`, U+FF5C) that
+  the strict `<tool_call>` regex never matched — so `parse_tool_requests`
+  returned `[]`, the orchestrator treated the raw block as the final answer,
+  and the whole review→build→verify loop silently no-op'd.
+  `parser._extract_loose_tool_calls` now handles DSML / ASCII-pipe / bare /
+  asymmetric / unclosed forms; `splitToolBlocks` in the UI strips any
+  residual block into a "requested tool" chip.
+- Real URL routes (`/run`, `/runs`, `/runs/<id>`, `/config`, `/health`) via a
+  history-API router + a FastAPI catch-all serving `index.html`; the runs
+  list has Prev/Next pagination (`GET /api/runs?limit=&offset=` →
+  `{runs,total,limit,offset}`, `database.count_runs`).
+- 149 tests pass.
+- Still open for Phase K: `permissions`/`max_cost_usd` config-form inputs;
+  interrupted-old-runs "Running" display; SSE instead of polling; the
+  follow-up composer + queued indicator; a stylesheet reconciliation to
+  DESIGN.md (styles.css predates the token discipline).
+
 ## Phase J - Terminal UI (Claude Code-like)
 
 Built on Phase I's event stream. `agentflow` with no goal argument opens an
