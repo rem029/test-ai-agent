@@ -171,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
         default=8420,
         help="Port to bind the web UI to when using --serve (default: 8420)",
     )
+    parser.add_argument(
+        "--test-email",
+        action="store_true",
+        help="Send a test email using configured notifications settings and exit",
+    )
     args = parser.parse_args(argv)
 
     if args.openrouter_key:
@@ -198,6 +203,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(importlib.metadata.version("agentflow"))
         return 0
+
+    if args.test_email:
+        from . import notify
+
+        config = load_config(config_path)
+        res = notify.send_test_email(config)
+        print(f"Test email: {res}")
+        return 0 if res == "sent" else 1
 
     if args.list_models is not None:
         backend_filter = None if args.list_models == "all" else args.list_models

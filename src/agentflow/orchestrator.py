@@ -804,6 +804,19 @@ def run_workflow(
 
     state: RunState | None = None
     exc_to_record: BaseException | None = None
+
+    def _notify(ev: str) -> None:
+        if state is not None:
+            try:
+                from . import notify
+
+                res = notify.maybe_notify(state, config, ev)
+                state.log_event(
+                    "notification", {"event": ev, "result": res}, database_path=database_path
+                )
+            except Exception:
+                pass
+
     try:
         # Ensure session exists in the database
         create_session(session_id=session_id, cwd=cwd, title=goal, path=database_path)
@@ -854,6 +867,7 @@ def run_workflow(
             started_at=time.time(),
             config=state_config,
         )
+
         # Save immediately and log run_started event
         state.save(cwd, database_path=database_path)
         state.log_event(
@@ -945,6 +959,7 @@ def run_workflow(
         if not budget_ok:
             print(f"[budget] ABORTED: {budget_err}")
             state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
+            _notify("blocked")
             state.finished_at = time.time()
             state.log_event("error", {"error": budget_err}, database_path=database_path)
             state.log_event(
@@ -965,6 +980,7 @@ def run_workflow(
                 step_index=0,
                 database_path=database_path,
             )
+            _notify("blocked")
             state.finished_at = time.time()
             state.log_event(
                 "run_finished",
@@ -1043,6 +1059,7 @@ def run_workflow(
             if not budget_ok:
                 print(f"[budget] ABORTED: {budget_err}")
                 state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
+                _notify("blocked")
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
@@ -1107,6 +1124,7 @@ def run_workflow(
             if not budget_ok:
                 print(f"[budget] ABORTED: {budget_err}")
                 state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
+                _notify("blocked")
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
@@ -1160,6 +1178,9 @@ def run_workflow(
                 database_path=database_path,
             )
             state.save(cwd, database_path=database_path)
+
+        if state is not None:
+            _notify("finished")
 
         if acquired_thread_lock:
             with _RUN_LOCKS_LOCK:

@@ -874,3 +874,119 @@ def test_static_assets_contain_project_selector_ui(tmp_path):
     assert "project-select" in js_resp.text
 
 
+def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
+    from agentflow.config import _from_file
+    monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+    real_pw = "smtp-super-secret-123456"
+
+    # 1. Initial GET before any notifications config
+    init_get = client.get("/api/config")
+    assert init_get.status_code == 200
+    assert init_get.json()["notifications"] is None
+    assert init_get.json()["smtp_password"]["set"] is False
+
+    # 2. POST with notifications dict and smtp_password
+    post_resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "notifications": {
+                "enabled": True,
+                "email_to": "alerts@example.com",
+                "email_from": "bot@example.com",
+                "smtp_host": "smtp.example.com",
+                "smtp_port": 587,
+                "smtp_username": "bot@example.com",
+                "smtp_use_tls": True,
+                "notify_on": ["finished", "blocked"],
+                "base_url": "https://agentui.app.rem029.com",
+            },
+            "smtp_password": real_pw,
+        },
+    )
+    assert post_resp.status_code == 200
+    post_data = post_resp.json()
+    assert post_data["ok"] is True
+    assert post_data["notifications"]["enabled"] is True
+    assert post_data["notifications"]["email_to"] == "alerts@example.com"
+    assert post_data["smtp_password"]["set"] is True
+    assert post_data["smtp_password"]["masked"] != real_pw
+    assert real_pw not in post_resp.text
+
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+    assert _from_file(str(config_path)).get("smtp_password") == real_pw
+
+    # 3. GET /api/config verifies masked password and no raw secret leak
+    get_resp = client.get("/api/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["notifications"]["enabled"] is True
+    assert get_data["smtp_password"]["set"] is True
+    assert get_data["smtp_password"]["masked"] == f"{real_pw[:8]}…{real_pw[-4:]}"
+    assert real_pw not in get_resp.text
+
+    # 4. POST /api/config without smtp_password preserves existing password
+    post2_resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "claude-code",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "notifications": {
+                "enabled": False,
+            },
+        },
+    )
+    assert post2_resp.status_code == 200
+    assert _from_file(str(config_path)).get("smtp_password") == real_pw
+    assert real_pw not in post2_resp.text
+
+
+def test_api_notifications_test_endpoint(tmp_path):
+    client = _make_client(tmp_path)
+
+    # 1. Disabled / unconfigured notifications
+    resp = client.post("/api/notifications/test")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["result"].startswith("skipped:")
+
+    # 2. Mocked send returns sent
+    with patch("agentflow.notify.send_test_email", return_value="sent"):
+        resp2 = client.post("/api/notifications/test")
+        assert resp2.status_code == 200
+        assert resp2.json()["result"] == "sent"
+
+
+def test_static_assets_contain_notifications_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="config-notify-enabled"' in html_resp.text
+    assert 'id="config-notify-email_to"' in html_resp.text
+    assert 'id="config-smtp-status"' in html_resp.text
+    assert 'id="config-smtp_password"' in html_resp.text
+    assert 'id="send-test-email"' in html_resp.text
+    assert 'id="test-email-status"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "send-test-email" in js_resp.text
+    assert "/api/notifications/test" in js_resp.text
+    assert "config-smtp-status" in js_resp.text
+
+
+

@@ -76,3 +76,47 @@ def openrouter_credential_source(config_path: str = DEFAULT_CONFIG_PATH) -> str:
         )
     except CredentialConfigError as exc:
         return str(exc)
+
+
+def smtp_password(config_path: str = DEFAULT_CONFIG_PATH) -> str | None:
+    """Resolve an SMTP password from the environment or agentflow YAML config."""
+    if pwd := os.environ.get("AGENTFLOW_SMTP_PASSWORD"):
+        return pwd
+
+    from pathlib import Path
+
+    path = Path(config_path)
+    if not path.exists():
+        return None
+
+    try:
+        config = yaml.safe_load(path.read_text())
+    except OSError as exc:
+        raise CredentialConfigError(f"Could not read agentflow config at {path}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise CredentialConfigError(f"Invalid agentflow config at {path}: {exc}") from exc
+
+    if not isinstance(config, dict):
+        raise CredentialConfigError(f"Invalid agentflow config at {path}: expected a mapping")
+
+    pwd = config.get("smtp_password")
+    return pwd if isinstance(pwd, str) and pwd else None
+
+
+def smtp_password_info(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
+    """Return status and masked representation of the configured SMTP password."""
+    try:
+        pwd = smtp_password(config_path)
+    except CredentialConfigError:
+        pwd = None
+
+    if not pwd:
+        return {"set": False, "masked": None, "source": None}
+
+    source = "env" if os.environ.get("AGENTFLOW_SMTP_PASSWORD") else "config"
+    return {
+        "set": True,
+        "masked": _mask_key(pwd),
+        "source": source,
+    }
+

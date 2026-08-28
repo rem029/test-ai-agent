@@ -82,6 +82,35 @@ if (typeof document !== 'undefined') {
         // Theme toggle
         document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
+        // Test email button
+        const testEmailBtn = document.getElementById('send-test-email');
+        if (testEmailBtn) {
+            testEmailBtn.addEventListener('click', async () => {
+                const statusSpan = document.getElementById('test-email-status');
+                if (statusSpan) {
+                    statusSpan.textContent = 'Sending...';
+                    statusSpan.className = 'test-email-status';
+                }
+                try {
+                    const res = await fetch('/api/notifications/test', { method: 'POST' });
+                    const data = await res.json();
+                    if (statusSpan) {
+                        statusSpan.textContent = data.result || 'No response';
+                        if (data.result && data.result.startsWith('sent')) {
+                            statusSpan.className = 'test-email-status success';
+                        } else {
+                            statusSpan.className = 'test-email-status error';
+                        }
+                    }
+                } catch (err) {
+                    if (statusSpan) {
+                        statusSpan.textContent = `error: ${err.message}`;
+                        statusSpan.className = 'test-email-status error';
+                    }
+                }
+            });
+        }
+
         // Notify toggle
         const notifyBtn = document.getElementById('notify-toggle');
         if (notifyBtn) {
@@ -311,6 +340,54 @@ function loadConfig() {
                     statusEl.innerHTML = '';
                 }
             }
+
+            // Notifications config
+            const n = config.notifications || {};
+            const notifyEnabledEl = document.getElementById('config-notify-enabled');
+            if (notifyEnabledEl) notifyEnabledEl.checked = !!n.enabled;
+
+            const notifyEmailToEl = document.getElementById('config-notify-email_to');
+            if (notifyEmailToEl) notifyEmailToEl.value = n.email_to || '';
+
+            const notifyEmailFromEl = document.getElementById('config-notify-email_from');
+            if (notifyEmailFromEl) notifyEmailFromEl.value = n.email_from || '';
+
+            const notifySmtpHostEl = document.getElementById('config-notify-smtp_host');
+            if (notifySmtpHostEl) notifySmtpHostEl.value = n.smtp_host || '';
+
+            const notifySmtpPortEl = document.getElementById('config-notify-smtp_port');
+            if (notifySmtpPortEl) notifySmtpPortEl.value = n.smtp_port !== undefined ? n.smtp_port : 587;
+
+            const notifySmtpUserEl = document.getElementById('config-notify-smtp_username');
+            if (notifySmtpUserEl) notifySmtpUserEl.value = n.smtp_username || '';
+
+            const notifyBaseUrlEl = document.getElementById('config-notify-base_url');
+            if (notifyBaseUrlEl) notifyBaseUrlEl.value = n.base_url || '';
+
+            const notifyTlsEl = document.getElementById('config-notify-tls');
+            if (notifyTlsEl) notifyTlsEl.checked = n.smtp_use_tls !== undefined ? !!n.smtp_use_tls : true;
+
+            const notifyOn = n.notify_on || ['finished'];
+            const notifyOnFinishedEl = document.getElementById('config-notify-on-finished');
+            if (notifyOnFinishedEl) notifyOnFinishedEl.checked = notifyOn.includes('finished');
+
+            const notifyOnBlockedEl = document.getElementById('config-notify-on-blocked');
+            if (notifyOnBlockedEl) notifyOnBlockedEl.checked = notifyOn.includes('blocked');
+
+            const smtpStatusEl = document.getElementById('config-smtp-status');
+            if (smtpStatusEl) {
+                if (config.smtp_password) {
+                    if (config.smtp_password.set) {
+                        const masked = escapeHtml(config.smtp_password.masked || '');
+                        const source = config.smtp_password.source === 'env' ? 'environment' : 'config file';
+                        smtpStatusEl.innerHTML = `<span class="badge success">Set</span> <span class="mono">${masked}</span> <span class="key-source">(from ${source})</span>`;
+                    } else {
+                        smtpStatusEl.innerHTML = '<span class="badge warning">Not set</span>';
+                    }
+                } else {
+                    smtpStatusEl.innerHTML = '';
+                }
+            }
         })
         .catch(error => {
             showStatus('config-status', `Failed to load config: ${error.message}`, 'error');
@@ -341,6 +418,37 @@ async function submitConfig(e) {
     e.preventDefault();
     const form = e.target;
     const keyVal = form.openrouter_api_key ? form.openrouter_api_key.value : '';
+
+    const notifyOn = [];
+    const onFinished = document.getElementById('config-notify-on-finished');
+    if (onFinished && onFinished.checked) notifyOn.push('finished');
+    const onBlocked = document.getElementById('config-notify-on-blocked');
+    if (onBlocked && onBlocked.checked) notifyOn.push('blocked');
+
+    const notifyEnabledEl = document.getElementById('config-notify-enabled');
+    const emailToEl = document.getElementById('config-notify-email_to');
+    const emailFromEl = document.getElementById('config-notify-email_from');
+    const smtpHostEl = document.getElementById('config-notify-smtp_host');
+    const smtpPortEl = document.getElementById('config-notify-smtp_port');
+    const smtpUserEl = document.getElementById('config-notify-smtp_username');
+    const baseUrlEl = document.getElementById('config-notify-base_url');
+    const tlsEl = document.getElementById('config-notify-tls');
+    const smtpPwEl = document.getElementById('config-smtp_password');
+
+    const notifPort = smtpPortEl && smtpPortEl.value ? parseInt(smtpPortEl.value, 10) : 587;
+    const notifications = {
+        enabled: notifyEnabledEl ? notifyEnabledEl.checked : false,
+        email_to: (emailToEl && emailToEl.value.trim()) || null,
+        email_from: (emailFromEl && emailFromEl.value.trim()) || null,
+        smtp_host: (smtpHostEl && smtpHostEl.value.trim()) || null,
+        smtp_port: isNaN(notifPort) ? 587 : notifPort,
+        smtp_username: (smtpUserEl && smtpUserEl.value.trim()) || null,
+        smtp_use_tls: tlsEl ? tlsEl.checked : true,
+        notify_on: notifyOn,
+        base_url: (baseUrlEl && baseUrlEl.value.trim()) || null,
+    };
+    const smtpPwVal = (smtpPwEl && smtpPwEl.value) || '';
+
     const payload = {
         review_backend: form.review_backend ? form.review_backend.value : '',
         review_model: (form.review_model && form.review_model.value) || null,
@@ -349,7 +457,9 @@ async function submitConfig(e) {
         verify_backend: form.verify_backend ? form.verify_backend.value : '',
         verify_model: (form.verify_model && form.verify_model.value) || null,
         max_iterations: form.max_iterations ? parseInt(form.max_iterations.value, 10) : 3,
-        openrouter_api_key: keyVal.trim() || null
+        openrouter_api_key: keyVal.trim() || null,
+        notifications: notifications,
+        smtp_password: smtpPwVal.trim() || null
     };
 
     const globalEl = document.getElementById('config-memory-global');
@@ -387,6 +497,9 @@ async function submitConfig(e) {
         showStatus('config-status', 'Configuration saved successfully!', 'success');
         if (form.openrouter_api_key) {
             form.openrouter_api_key.value = '';
+        }
+        if (smtpPwEl) {
+            smtpPwEl.value = '';
         }
         loadConfig();
         loadMemory();

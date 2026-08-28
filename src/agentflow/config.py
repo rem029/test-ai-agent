@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 BackendName = Literal["claude-code", "antigravity", "openrouter"]
 
@@ -26,6 +26,18 @@ DEFAULTS: dict[str, "RoleConfig"] = {}
 
 
 PermissionMode = Literal["auto", "prompt", "deny"]
+
+
+class NotificationConfig(BaseModel):
+    enabled: bool = False
+    email_to: str | None = None
+    email_from: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_use_tls: bool = True
+    notify_on: list[Literal["finished", "blocked"]] = Field(default_factory=lambda: ["finished"])
+    base_url: str | None = None   # e.g. https://agentui.app.rem029.com — used to build a run link
 
 
 class RoleConfig(BaseModel):
@@ -40,6 +52,7 @@ class Config(BaseModel):
     max_iterations: int = 3
     permissions: PermissionMode = "auto"
     max_cost_usd: float | None = None
+    notifications: NotificationConfig | None = None
 
     def roles(self) -> dict[str, RoleConfig]:
         return {"review": self.review, "build": self.build, "verify": self.verify}
@@ -102,11 +115,32 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     if max_cost_usd is not None:
         roles["max_cost_usd"] = max_cost_usd
 
+    notifications_data = file_data.get("notifications")
+    if isinstance(notifications_data, dict):
+        notif = NotificationConfig(**notifications_data)
+    elif isinstance(notifications_data, NotificationConfig):
+        notif = notifications_data
+    else:
+        notif = None
+
+    if os.environ.get("AGENTFLOW_NOTIFICATIONS_ENABLED") in ("1", "true", "True"):
+        if notif is None:
+            notif = NotificationConfig(enabled=True)
+        else:
+            notif.enabled = True
+
+    if notif is not None:
+        roles["notifications"] = notif
+
     return Config(**roles)
 
 
 def dump_config(
-    config: Config, path: str, *, openrouter_api_key: str | None = None
+    config: Config,
+    path: str,
+    *,
+    openrouter_api_key: str | None = None,
+    smtp_password: str | None = None,
 ) -> None:
     """Write a validated Config back to the agentflow YAML config.
 
@@ -122,12 +156,17 @@ def dump_config(
     }
     if config.max_cost_usd is not None:
         data["max_cost_usd"] = config.max_cost_usd
+    if config.notifications is not None:
+        data["notifications"] = config.notifications.model_dump(exclude_none=True)
 
     output = Path(path)
     existing = _from_file(path)
     key = openrouter_api_key if openrouter_api_key is not None else existing.get("openrouter_api_key")
     if isinstance(key, str) and key:
         data["openrouter_api_key"] = key
+    pw = smtp_password if smtp_password is not None else existing.get("smtp_password")
+    if isinstance(pw, str) and pw:
+        data["smtp_password"] = pw
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(yaml.safe_dump(data, sort_keys=False))
     output.chmod(0o600)

@@ -16,12 +16,13 @@ from ..backends import BACKENDS
 from ..config import (
     Config,
     DEFAULT_CONFIG_PATH,
+    NotificationConfig,
     PermissionMode,
     RoleConfig,
     dump_config,
     load_config,
 )
-from ..credentials import openrouter_api_key_info
+from ..credentials import openrouter_api_key_info, smtp_password_info
 from ..memory import (
     read_global_memory,
     read_project_memory,
@@ -61,6 +62,8 @@ class ConfigUpdate(BaseModel):
     permissions: Optional[PermissionMode] = None
     max_cost_usd: Optional[float] = None
     openrouter_api_key: Optional[str] = None
+    notifications: Optional[dict] = None
+    smtp_password: Optional[str] = None
 
 
 class MemoryUpdate(BaseModel):
@@ -112,6 +115,7 @@ def _build_config_from_overrides(
         max_iterations=overrides.max_iterations if overrides.max_iterations else base_config.max_iterations,
         permissions=base_config.permissions,
         max_cost_usd=base_config.max_cost_usd,
+        notifications=base_config.notifications,
     )
     return new_config
 
@@ -191,6 +195,8 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
         resp = config.model_dump()
         resp["openrouter_key"] = openrouter_api_key_info(config_path)
+        resp["notifications"] = config.notifications.model_dump() if config.notifications else None
+        resp["smtp_password"] = smtp_password_info(config_path)
         return resp
 
     @app.post("/api/config")
@@ -206,6 +212,15 @@ def create_app(
         except Exception:
             current_config = None
 
+        notif_cfg = None
+        if data.notifications is not None:
+            try:
+                notif_cfg = NotificationConfig(**data.notifications)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid notifications config: {exc}")
+        elif current_config is not None:
+            notif_cfg = current_config.notifications
+
         config = Config(
             review=RoleConfig(backend=data.review_backend, model=data.review_model),
             build=RoleConfig(backend=data.build_backend, model=data.build_model),
@@ -213,10 +228,13 @@ def create_app(
             max_iterations=data.max_iterations,
             permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
             max_cost_usd=data.max_cost_usd if data.max_cost_usd is not None else (current_config.max_cost_usd if current_config else None),
+            notifications=notif_cfg,
         )
         dump_kwargs = {}
         if data.openrouter_api_key and data.openrouter_api_key.strip():
             dump_kwargs["openrouter_api_key"] = data.openrouter_api_key.strip()
+        if data.smtp_password and data.smtp_password.strip():
+            dump_kwargs["smtp_password"] = data.smtp_password.strip()
         try:
             dump_config(config, config_path, **dump_kwargs)
         except Exception as exc:
@@ -225,7 +243,18 @@ def create_app(
             "ok": True,
             "config": config.model_dump(),
             "openrouter_key": openrouter_api_key_info(config_path),
+            "notifications": config.notifications.model_dump() if config.notifications else None,
+            "smtp_password": smtp_password_info(config_path),
         }
+
+    @app.post("/api/notifications/test")
+    async def test_notifications() -> dict:
+        from .. import notify
+        try:
+            cfg = load_config(config_path)
+        except Exception as exc:
+            return {"result": f"error:could not load config: {exc}"}
+        return {"result": notify.send_test_email(cfg)}
 
     @app.get("/api/memory")
     async def get_memory(project: Optional[str] = None) -> dict:

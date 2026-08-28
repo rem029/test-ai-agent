@@ -5,6 +5,8 @@ from __future__ import annotations
 from agentflow.credentials import (
     openrouter_api_key,
     openrouter_api_key_info,
+    smtp_password,
+    smtp_password_info,
 )
 
 
@@ -84,4 +86,53 @@ def test_openrouter_api_key_info_handles_corrupt_config(tmp_path, monkeypatch):
     config.write_text("invalid: yaml: [syntax error\n")
 
     info = openrouter_api_key_info(str(config))
+    assert info == {"set": False, "masked": None, "source": None}
+
+
+def test_smtp_password_loads_from_config(tmp_path, monkeypatch):
+    config = tmp_path / "agentflow.config.yaml"
+    config.write_text("smtp_password: my-smtp-secret\n")
+    monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
+
+    assert smtp_password(str(config)) == "my-smtp-secret"
+
+
+def test_smtp_password_env_takes_precedence(tmp_path, monkeypatch):
+    config = tmp_path / "agentflow.config.yaml"
+    config.write_text("smtp_password: from-file\n")
+    monkeypatch.setenv("AGENTFLOW_SMTP_PASSWORD", "from-env")
+
+    assert smtp_password(str(config)) == "from-env"
+
+
+def test_smtp_password_info_with_env(tmp_path, monkeypatch):
+    pwd = "secretpassword123456"
+    monkeypatch.setenv("AGENTFLOW_SMTP_PASSWORD", pwd)
+    config = tmp_path / "agentflow.config.yaml"
+    config.write_text("smtp_password: file-pw\n")
+
+    info = smtp_password_info(str(config))
+    assert info["set"] is True
+    assert info["source"] == "env"
+    assert info["masked"] == f"{pwd[:8]}…{pwd[-4:]}"
+
+
+def test_smtp_password_info_with_config_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
+    pwd = "configpassword987654"
+    config = tmp_path / "agentflow.config.yaml"
+    config.write_text(f"smtp_password: {pwd}\n")
+
+    info = smtp_password_info(str(config))
+    assert info["set"] is True
+    assert info["source"] == "config"
+    assert info["masked"] == f"{pwd[:8]}…{pwd[-4:]}"
+
+
+def test_smtp_password_info_with_neither(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
+    config = tmp_path / "agentflow.config.yaml"
+    config.write_text("notifications:\n  enabled: true\n")
+
+    info = smtp_password_info(str(config))
     assert info == {"set": False, "masked": None, "source": None}

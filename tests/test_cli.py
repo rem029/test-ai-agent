@@ -270,4 +270,27 @@ def test_cli_serve_with_valid_projects(tmp_path):
         mock_uvicorn.assert_called_once()
 
 
+def test_cli_test_email_disabled(capsys):
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        notifications=None,
+    )
+    with patch("agentflow.cli.load_config", return_value=mock_config):
+        ret = main(["--test-email"])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "Test email: skipped:disabled" in captured.out
+
+
+def test_cli_test_email_success(capsys):
+    with patch("agentflow.notify.send_test_email", return_value="sent"):
+        ret = main(["--test-email"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Test email: sent" in captured.out
+
+
+
 
