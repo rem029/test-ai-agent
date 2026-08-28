@@ -262,6 +262,15 @@
                 <h2 id="detail-goal">Run Detail</h2>
             </div>
             <div id="run-detail-content" class="run-detail-content"></div>
+            <div id="session-composer" class="composer" hidden>
+                <h3 id="composer-title">Continue this session</h3>
+                <p class="form-hint" id="composer-hint"></p>
+                <textarea id="composer-input" rows="3" placeholder="What should happen next? e.g. &quot;verify still fails on X — try Y&quot;"></textarea>
+                <div class="composer-actions">
+                    <button type="button" id="composer-send" class="btn btn-primary">Send</button>
+                    <span id="composer-status" class="composer-status"></span>
+                </div>
+            </div>
         </section>
     </main>
 

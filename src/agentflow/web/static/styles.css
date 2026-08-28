@@ -495,6 +495,23 @@ h2 {
     margin-top: 24px;
 }
 
+.session-thread { margin-bottom: 20px; }
+.session-turns { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.session-turn { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); font-size: 0.875rem; }
+.session-turn:not(.current) { cursor: pointer; }
+.session-turn:not(.current):hover { border-color: var(--primary); }
+.session-turn.current { border-color: var(--primary); background: var(--primary-light); }
+.turn-num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); }
+.turn-goal { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer { margin-top: 24px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); }
+.composer h3 { margin-bottom: 6px; }
+.composer textarea { width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); color: var(--text); font-size: 1rem; resize: vertical; min-height: 70px; }
+.composer textarea:focus { outline: none; border-color: var(--primary); }
+.composer-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.composer-status { font-size: 0.875rem; color: var(--text-muted); }
+.composer-status.error { color: var(--danger); }
+.composer-status.success { color: var(--success); }
+
 .run-summary {
     margin-bottom: 20px;
 }
@@ -1069,6 +1086,14 @@ html.dark .tool-output.tool-error { color: #fca5a5; background: #2a0f0f; border-
     .blocker {
         flex-wrap: wrap;
     }
+
+    .session-turn {
+        flex-wrap: wrap;
+    }
+
+    .turn-goal {
+        white-space: normal;
+    }
 }
 
 /* Dark mode */
@@ -1078,6 +1103,10 @@ html.dark {
     --text: #e2e8f0;
     --text-muted: #94a3b8;
     --border: #334155;
+}
+
+html.dark .session-turn.current {
+    background: #312e81;
 }
 
 html.dark .health-item {

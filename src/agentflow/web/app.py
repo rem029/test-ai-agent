@@ -45,7 +45,7 @@ from ..database import (
     load_run,
 )
 from ..models import get_all_models
-from ..orchestrator import RunInProgressError, get_active_run, new_run_id, run_workflow
+from ..orchestrator import RunInProgressError, get_active_run, new_run_id, new_session_id, run_workflow
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -369,6 +369,7 @@ def create_app(
             return {"status": "queued", "queue_id": queue_id}
 
         run_id = new_run_id()
+        session_id = data.session_id or new_session_id()
 
         def _run_worker() -> None:
             try:
@@ -377,14 +378,14 @@ def create_app(
                     config=config,
                     cwd=target_cwd,
                     run_id=run_id,
-                    session_id=data.session_id,
+                    session_id=session_id,
                     database_path=db_path,
                 )
             except RunInProgressError:
                 add_queued_run(
                     cwd=target_cwd,
                     goal=data.goal,
-                    session_id=data.session_id,
+                    session_id=session_id,
                     config=config.model_dump(),
                     path=db_path,
                 )
@@ -396,7 +397,7 @@ def create_app(
             daemon=True,
         )
         thread.start()
-        return {"run_id": run_id, "status": "started"}
+        return {"run_id": run_id, "session_id": session_id, "status": "started"}
 
     @app.post("/api/runs/{run_id}/messages")
     async def send_message(run_id: str, data: MessageCreate, project: Optional[str] = None) -> dict:
