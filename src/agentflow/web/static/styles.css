@@ -27,6 +27,7 @@ body {
     background-color: var(--bg);
     color: var(--text);
     line-height: 1.6;
+    overflow-x: hidden;
     transition: background-color 0.3s ease, color 0.3s ease;
 }
 
@@ -49,7 +50,11 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 60px;
+    min-height: 60px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
 }
 
 .brand-logo,
@@ -63,6 +68,7 @@ body {
 .nav-links {
     display: flex;
     gap: 16px;
+    flex-wrap: wrap;
 }
 
 .nav-link {
@@ -316,7 +322,7 @@ h2 {
 /* Health List */
 .health-list {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     gap: 16px;
 }
 
@@ -362,6 +368,7 @@ h2 {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    max-width: 100%;
 }
 
 .run-item {
@@ -467,6 +474,10 @@ h2 {
 }
 
 /* Run detail */
+.run-detail-content {
+    max-width: 100%;
+}
+
 .detail-header {
     display: flex;
     align-items: center;
@@ -580,6 +591,7 @@ h2 {
     border-radius: var(--radius);
     max-height: 400px;
     overflow: auto;
+    max-width: 100%;
 }
 
 /* Tool timeline */
@@ -587,6 +599,7 @@ h2 {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    max-width: 100%;
 }
 
 .tool-call-item {
@@ -656,6 +669,7 @@ h2 {
     word-break: break-word;
     max-height: 300px;
     overflow: auto;
+    max-width: 100%;
 }
 
 /* Diff viewer */
@@ -667,6 +681,7 @@ h2 {
     border: 1px solid var(--border);
     overflow: auto;
     max-height: 400px;
+    max-width: 100%;
 }
 
 .diff-line {
@@ -763,7 +778,7 @@ h2 {
     color: var(--text);
     font-size: 0.925rem;
     line-height: 1.6;
-    max-width: 74ch;
+    max-width: min(74ch, 100%);
     overflow-wrap: anywhere;
 }
 
@@ -807,6 +822,7 @@ h2 {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow-x: auto;
+    max-width: 100%;
 }
 
 .md pre.md-code code {
@@ -895,6 +911,7 @@ h2 {
     line-height: 1.5;
     max-height: 340px;
     overflow: auto;
+    max-width: 100%;
 }
 
 .tool-args .arg-key {
@@ -939,6 +956,118 @@ html.dark .tool-output.tool-error { color: #fca5a5; background: #2a0f0f; border-
     .main-content,
     .main-container {
         padding-top: 20px;
+    }
+}
+
+@media (max-width: 640px) {
+    .nav-container {
+        column-gap: 8px;
+    }
+
+    .nav-logo {
+        flex: 1;
+        text-align: left;
+        font-size: 1.25rem;
+    }
+
+    .nav-links {
+        order: 3;
+        flex-basis: 100%;
+        justify-content: center;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        gap: 4px;
+        padding-bottom: 2px;
+    }
+
+    .nav-link {
+        padding: 8px 10px;
+        font-size: 0.9rem;
+        white-space: nowrap;
+    }
+
+    .nav-project {
+        max-width: 45vw;
+    }
+
+    #notify-toggle,
+    #theme-toggle {
+        font-size: 1.1rem;
+        padding: 6px;
+    }
+
+    h1 {
+        font-size: 1.35rem;
+    }
+
+    h2 {
+        font-size: 1.3rem;
+    }
+
+    .card {
+        padding: 16px;
+    }
+
+    .main-content,
+    .main-container {
+        padding: 16px 0;
+    }
+
+    .detail-header {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .detail-header h2 {
+        font-size: 1.2rem;
+    }
+
+    .detail-header .btn,
+    .detail-header button {
+        width: 100%;
+    }
+
+    .run-meta {
+        gap: 8px 12px;
+    }
+
+    .step-header {
+        gap: 8px;
+        padding: 10px 12px;
+    }
+
+    .step-meta {
+        margin-left: 0;
+        flex-basis: 100%;
+    }
+
+    .tool-call-header {
+        gap: 8px;
+        padding: 10px 12px;
+        flex-wrap: wrap;
+    }
+
+    .tool-call-time {
+        margin-left: 0;
+    }
+
+    .checkbox-row {
+        flex-wrap: wrap;
+        gap: 10px 20px;
+    }
+
+    .form-inline-action {
+        flex-wrap: wrap;
+    }
+
+    .pager {
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .blocker {
+        flex-wrap: wrap;
     }
 }
 
