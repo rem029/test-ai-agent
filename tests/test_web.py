@@ -630,3 +630,59 @@ def test_static_assets_contain_openrouter_key_ui(tmp_path):
     assert ".key-source" in css_resp.text
     assert ".form-hint" in css_resp.text
 
+
+def test_api_memory_get_and_put_endpoints(tmp_path):
+    client = _make_client(tmp_path)
+
+    # 1. Initial GET returns empty strings
+    get_resp = client.get("/api/memory")
+    assert get_resp.status_code == 200
+    data = get_resp.json()
+    assert data["global"] == ""
+    assert data["project"] == ""
+    assert data["cwd"] == str(tmp_path)
+
+    # 2. PUT with both fields
+    put_resp = client.put(
+        "/api/memory",
+        json={"global": "Global instruction G", "project": "Project convention P"},
+    )
+    assert put_resp.status_code == 200
+    put_data = put_resp.json()
+    assert put_data["global"] == "Global instruction G"
+    assert put_data["project"] == "Project convention P"
+    assert put_data["cwd"] == str(tmp_path)
+
+    # Follow-up GET confirms persistence
+    get_resp2 = client.get("/api/memory")
+    assert get_resp2.status_code == 200
+    assert get_resp2.json()["global"] == "Global instruction G"
+    assert get_resp2.json()["project"] == "Project convention P"
+
+    # 3. Partial PUT with only project leaves global untouched
+    put_proj = client.put("/api/memory", json={"project": "Project convention P2"})
+    assert put_proj.status_code == 200
+    assert put_proj.json()["global"] == "Global instruction G"
+    assert put_proj.json()["project"] == "Project convention P2"
+
+    # 4. Partial PUT with only global leaves project untouched
+    put_glob = client.put("/api/memory", json={"global": "Global instruction G2"})
+    assert put_glob.status_code == 200
+    assert put_glob.json()["global"] == "Global instruction G2"
+    assert put_glob.json()["project"] == "Project convention P2"
+
+
+def test_static_assets_contain_memory_ui(tmp_path):
+    client = _make_client(tmp_path)
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="config-memory-global"' in html_resp.text
+    assert 'id="config-memory-project"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "loadMemory" in js_resp.text
+    assert "config-memory-global" in js_resp.text
+    assert "config-memory-project" in js_resp.text
+
+

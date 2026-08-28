@@ -196,3 +196,54 @@ def test_cli_handles_run_in_progress_error(capsys):
     assert "Error: a run is already in progress for /path/to/repo" in captured.err
 
 
+def test_cli_show_memory(capsys, tmp_path):
+    from agentflow.memory import write_global_memory, write_project_memory
+
+    # 1. No memory configured
+    ret1 = main(["--show-memory"])
+    assert ret1 == 0
+    out1 = capsys.readouterr().out
+    assert "(no memory configured)" in out1
+
+    # 2. With memory configured
+    write_global_memory("Always run pytest before commit.")
+    write_project_memory(os.getcwd(), "Use uv environment.")
+    ret2 = main(["--show-memory"])
+    assert ret2 == 0
+    out2 = capsys.readouterr().out
+    assert "## Standing instructions & project memory" in out2
+    assert "### Global\nAlways run pytest before commit." in out2
+    assert "### This project\nUse uv environment." in out2
+
+
+def test_cli_edit_memory_invokes_editor(capsys, monkeypatch):
+    from agentflow.memory import global_memory_path, project_memory_path
+
+    monkeypatch.setenv("EDITOR", "my-editor")
+
+    with patch("subprocess.call", return_value=0) as mock_subproc:
+        ret_glob = main(["--edit-memory", "global"])
+        assert ret_glob == 0
+        g_path = global_memory_path()
+        assert g_path.exists()
+        mock_subproc.assert_called_once_with(["my-editor", str(g_path)])
+
+    with patch("subprocess.call", return_value=0) as mock_subproc:
+        ret_proj = main(["--edit-memory", "project"])
+        assert ret_proj == 0
+        p_path = project_memory_path(os.getcwd())
+        assert p_path.exists()
+        mock_subproc.assert_called_once_with(["my-editor", str(p_path)])
+
+
+def test_cli_edit_memory_missing_editor_fails(capsys, monkeypatch):
+    monkeypatch.delenv("EDITOR", raising=False)
+    with patch("shutil.which", return_value=None):
+        ret = main(["--edit-memory", "global"])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "Error: no editor found" in captured.err
+        assert "memory.md" in captured.err
+
+
+

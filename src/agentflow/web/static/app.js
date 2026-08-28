@@ -34,6 +34,9 @@ if (typeof document !== 'undefined') {
         // Load backend dropdowns with models
         populateModelOptions();
 
+        // Load memory
+        loadMemory();
+
         // Router setup & initial render
         window.addEventListener('popstate', renderRoute);
         renderRoute();
@@ -168,6 +171,7 @@ function renderRoute() {
         stopDetailPolling();
         showTab('config');
         loadConfig();
+        loadMemory();
     } else if (route.view === 'health') {
         stopDetailPolling();
         showTab('health');
@@ -217,13 +221,20 @@ function loadConfig() {
         .then(response => response.json())
         .then(config => {
             // Set role selections
-            document.getElementById('config-review_backend').value = config.review.backend;
-            document.getElementById('config-review_model').value = config.review.model || '';
-            document.getElementById('config-build_backend').value = config.build.backend;
-            document.getElementById('config-build_model').value = config.build.model || '';
-            document.getElementById('config-verify_backend').value = config.verify.backend;
-            document.getElementById('config-verify_model').value = config.verify.model || '';
-            document.getElementById('config-max_iterations').value = config.max_iterations;
+            const revB = document.getElementById('config-review_backend');
+            if (revB && config.review) revB.value = config.review.backend;
+            const revM = document.getElementById('config-review_model');
+            if (revM && config.review) revM.value = config.review.model || '';
+            const bldB = document.getElementById('config-build_backend');
+            if (bldB && config.build) bldB.value = config.build.backend;
+            const bldM = document.getElementById('config-build_model');
+            if (bldM && config.build) bldM.value = config.build.model || '';
+            const verB = document.getElementById('config-verify_backend');
+            if (verB && config.verify) verB.value = config.verify.backend;
+            const verM = document.getElementById('config-verify_model');
+            if (verM && config.verify) verM.value = config.verify.model || '';
+            const maxI = document.getElementById('config-max_iterations');
+            if (maxI && config.max_iterations !== undefined) maxI.value = config.max_iterations;
 
             const statusEl = document.getElementById('config-openrouter-status');
             if (statusEl) {
@@ -245,19 +256,44 @@ function loadConfig() {
         });
 }
 
+async function loadMemory() {
+    try {
+        const response = await fetch('/api/memory');
+        if (!response.ok) return;
+        const data = await response.json();
+        const globalEl = document.getElementById('config-memory-global');
+        if (globalEl) {
+            globalEl.value = data.global || '';
+        }
+        const projectEl = document.getElementById('config-memory-project');
+        if (projectEl) {
+            projectEl.value = data.project || '';
+        }
+    } catch (error) {
+        // Silently ignore network/parsing errors
+    }
+}
+
 async function submitConfig(e) {
     e.preventDefault();
     const form = e.target;
     const keyVal = form.openrouter_api_key ? form.openrouter_api_key.value : '';
     const payload = {
-        review_backend: form.review_backend.value,
-        review_model: form.review_model.value || null,
-        build_backend: form.build_backend.value,
-        build_model: form.build_model.value || null,
-        verify_backend: form.verify_backend.value,
-        verify_model: form.verify_model.value || null,
-        max_iterations: parseInt(form.max_iterations.value, 10),
+        review_backend: form.review_backend ? form.review_backend.value : '',
+        review_model: (form.review_model && form.review_model.value) || null,
+        build_backend: form.build_backend ? form.build_backend.value : '',
+        build_model: (form.build_model && form.build_model.value) || null,
+        verify_backend: form.verify_backend ? form.verify_backend.value : '',
+        verify_model: (form.verify_model && form.verify_model.value) || null,
+        max_iterations: form.max_iterations ? parseInt(form.max_iterations.value, 10) : 3,
         openrouter_api_key: keyVal.trim() || null
+    };
+
+    const globalEl = document.getElementById('config-memory-global');
+    const projectEl = document.getElementById('config-memory-project');
+    const memoryPayload = {
+        global: globalEl ? globalEl.value : '',
+        project: projectEl ? projectEl.value : ''
     };
 
     try {
@@ -267,15 +303,28 @@ async function submitConfig(e) {
             body: JSON.stringify(payload)
         });
         const data = await response.json();
-        if (response.ok) {
-            showStatus('config-status', 'Configuration saved successfully!', 'success');
-            if (form.openrouter_api_key) {
-                form.openrouter_api_key.value = '';
-            }
-            loadConfig();
-        } else {
+        if (!response.ok) {
             showStatus('config-status', `Error saving config: ${data.detail}`, 'error');
+            return;
         }
+
+        const memResponse = await fetch('/api/memory', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(memoryPayload)
+        });
+        const memData = await memResponse.json();
+        if (!memResponse.ok) {
+            showStatus('config-status', `Config saved, but memory failed: ${memData.detail}`, 'error');
+            return;
+        }
+
+        showStatus('config-status', 'Configuration saved successfully!', 'success');
+        if (form.openrouter_api_key) {
+            form.openrouter_api_key.value = '';
+        }
+        loadConfig();
+        loadMemory();
     } catch (error) {
         showStatus('config-status', `Network error: ${error.message}`, 'error');
     }
@@ -957,6 +1006,8 @@ if (typeof module !== 'undefined' && module.exports) {
         showTab,
         loadRuns,
         runStatus,
+        loadMemory,
+        submitConfig,
         NOTIFY_KEY,
         notifyEnabled,
         toggleNotify,

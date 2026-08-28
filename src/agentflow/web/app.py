@@ -10,7 +10,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..backends import BACKENDS
 from ..config import (
@@ -22,6 +22,12 @@ from ..config import (
     load_config,
 )
 from ..credentials import openrouter_api_key_info
+from ..memory import (
+    read_global_memory,
+    read_project_memory,
+    write_global_memory,
+    write_project_memory,
+)
 from ..database import (
     DEFAULT_DATABASE_PATH,
     add_control_signal,
@@ -55,6 +61,13 @@ class ConfigUpdate(BaseModel):
     permissions: Optional[PermissionMode] = None
     max_cost_usd: Optional[float] = None
     openrouter_api_key: Optional[str] = None
+
+
+class MemoryUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    global_: Optional[str] = Field(None, alias="global")
+    project: Optional[str] = None
 
 
 class RunCreate(BaseModel):
@@ -188,6 +201,26 @@ def create_app(
             "ok": True,
             "config": config.model_dump(),
             "openrouter_key": openrouter_api_key_info(config_path),
+        }
+
+    @app.get("/api/memory")
+    async def get_memory() -> dict:
+        return {
+            "global": read_global_memory(),
+            "project": read_project_memory(cwd),
+            "cwd": cwd,
+        }
+
+    @app.put("/api/memory")
+    async def update_memory(data: MemoryUpdate) -> dict:
+        if data.global_ is not None:
+            write_global_memory(data.global_)
+        if data.project is not None:
+            write_project_memory(cwd, data.project)
+        return {
+            "global": read_global_memory(),
+            "project": read_project_memory(cwd),
+            "cwd": cwd,
         }
 
     @app.get("/api/health")
