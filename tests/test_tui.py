@@ -1175,5 +1175,219 @@ def test_handle_mid_run_input_unsafe_command(isolate_database):
         )
 
 
+# ============================================================================
+# 10. File Mention Autocomplete Tests (Phase J.6)
+# ============================================================================
+
+
+def test_file_mention_completer_basic():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = [
+        "README.md",
+        "src/agentflow/tui/render.py",
+        "src/agentflow/tui/reader.py",
+        "docs/readiness.md",
+        "other/file.txt",
+    ]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    # "@rea" -> matches README.md, docs/readiness.md, src/agentflow/tui/reader.py
+    completions = list(completer.get_completions(Document("@rea", len("@rea")), CompleteEvent()))
+    texts = [c.text for c in completions]
+    assert "README.md" in texts
+    assert "src/agentflow/tui/reader.py" in texts
+    assert "docs/readiness.md" in texts
+    assert "other/file.txt" not in texts
+
+    # README.md (shorter path, basename match) ranks higher than deeper paths
+    assert texts[0] == "README.md"
+    # start_position covers len("rea") = 3
+    assert completions[0].start_position == -3
+
+
+def test_file_mention_completer_empty_query():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = [f"file_{i:03d}.py" for i in range(100)]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    completions = list(completer.get_completions(Document("@", len("@")), CompleteEvent()))
+    assert len(completions) == 50
+    assert completions[0].text == "file_000.py"
+    assert completions[0].start_position == 0
+    assert completions[-1].text == "file_049.py"
+
+
+def test_file_mention_completer_ignores_slash():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = ["README.md", "config.py"]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    completions = list(completer.get_completions(Document("/config ", len("/config ")), CompleteEvent()))
+    assert completions == []
+    completions2 = list(completer.get_completions(Document("/config @con", len("/config @con")), CompleteEvent()))
+    assert completions2 == []
+
+
+def test_file_mention_completer_not_a_mention():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = ["README.md", "src/agentflow/tui/render.py"]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    assert list(completer.get_completions(Document("build a thing", len("build a thing")), CompleteEvent())) == []
+    assert list(completer.get_completions(Document("user@example.com", len("user@example.com")), CompleteEvent())) == []
+    assert list(completer.get_completions(Document("", 0), CompleteEvent())) == []
+    assert list(completer.get_completions(Document("hello   ", len("hello   ")), CompleteEvent())) == []
+
+
+def test_file_mention_completer_midline():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = [
+        "src/agentflow/tui/render.py",
+        "src/agentflow/tui/completion.py",
+        "tests/test_tui.py",
+    ]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    text = "fix the bug in @src/ag"
+    completions = list(completer.get_completions(Document(text, len(text)), CompleteEvent()))
+    texts = [c.text for c in completions]
+    assert "src/agentflow/tui/render.py" in texts
+    assert "src/agentflow/tui/completion.py" in texts
+
+    # start_position must be -len("src/ag") = -6
+    for c in completions:
+        assert c.start_position == -6
+
+
+def test_list_project_files_git(tmp_path):
+    import shutil
+    import subprocess
+    from agentflow.tui.completion import _list_project_files
+
+    if not shutil.which("git"):
+        pytest.skip("git not available")
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    try:
+        subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+    except Exception:
+        pytest.skip("git init failed")
+
+    (repo_dir / "tracked.txt").write_text("hello")
+    (repo_dir / "untracked.txt").write_text("world")
+    (repo_dir / ".gitignore").write_text("ignored.txt\n")
+    (repo_dir / "ignored.txt").write_text("secret")
+
+    subprocess.run(["git", "add", "tracked.txt", ".gitignore"], cwd=repo_dir, check=True)
+
+    files = _list_project_files(str(repo_dir))
+    assert ".gitignore" in files
+    assert "tracked.txt" in files
+    assert "untracked.txt" in files
+    assert "ignored.txt" not in files
+
+
+def test_list_project_files_fallback(tmp_path):
+    from agentflow.tui.completion import _list_project_files
+
+    # Non-git directory
+    plain_dir = tmp_path / "plain"
+    plain_dir.mkdir()
+    (plain_dir / "src").mkdir()
+    (plain_dir / "src" / "app.py").write_text("print(1)")
+    (plain_dir / "README.md").write_text("# Hi")
+
+    # Noise dirs that should be ignored
+    (plain_dir / ".venv").mkdir()
+    (plain_dir / ".venv" / "pip.py").write_text("ignore")
+    (plain_dir / "node_modules").mkdir()
+    (plain_dir / "node_modules" / "pkg.js").write_text("ignore")
+    (plain_dir / "__pycache__").mkdir()
+    (plain_dir / "__pycache__" / "app.pyc").write_text("ignore")
+
+    files = _list_project_files(str(plain_dir))
+    assert files == ["README.md", "src/app.py"]
+
+
+def test_merged_completer_in_repl():
+    from prompt_toolkit.completion import CompleteEvent, merge_completers
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter, SlashCommandCompleter
+
+    files = ["README.md", "src/agentflow/tui/render.py"]
+    completer = merge_completers([
+        SlashCommandCompleter(),
+        FileMentionCompleter("/tmp", file_lister=lambda: files),
+    ])
+
+    # Slash command works
+    slash_completions = [c.text for c in completer.get_completions(Document("/co", len("/co")), CompleteEvent())]
+    assert "/config" in slash_completions
+
+    # @-file mention works
+    mention_completions = [c.text for c in completer.get_completions(Document("@REA", len("@REA")), CompleteEvent())]
+    assert "README.md" in mention_completions
+
+    # Plain text without @ yields nothing
+    plain_completions = [c.text for c in completer.get_completions(Document("just plain goal", len("just plain goal")), CompleteEvent())]
+    assert plain_completions == []
+
+
+def test_file_mention_completer_caching():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    call_count = 0
+
+    def lister():
+        nonlocal call_count
+        call_count += 1
+        return ["file1.txt"]
+
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lister, cache_ttl=10.0)
+
+    # First call triggers lister
+    list(completer.get_completions(Document("@f", len("@f")), CompleteEvent()))
+    assert call_count == 1
+
+    # Second call within TTL does not trigger lister again
+    list(completer.get_completions(Document("@f", len("@f")), CompleteEvent()))
+    assert call_count == 1
+
+
+def test_file_mention_completer_display_meta():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = ["README.md", "src/agentflow/tui/render.py"]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    completions = list(completer.get_completions(Document("@", len("@")), CompleteEvent()))
+    meta_by_text = {c.text: c.display_meta_text for c in completions}
+    assert meta_by_text["README.md"] == ""
+    assert meta_by_text["src/agentflow/tui/render.py"] == "src/agentflow/tui"
+
+
+
 
 

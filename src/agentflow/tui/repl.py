@@ -121,6 +121,7 @@ def run_repl(
     """Run the interactive Claude Code-like REPL."""
     # Lazy-import presentation dependencies
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import merge_completers
     from prompt_toolkit.history import FileHistory
     from rich.console import Console
 
@@ -128,7 +129,7 @@ def run_repl(
     from ..database import add_control_signal, get_session, list_events, reconstruct_run
     from ..orchestrator import new_run_id, new_session_id, run_workflow
     from .commands import dispatch, parse_command
-    from .completion import SlashCommandCompleter
+    from .completion import FileMentionCompleter, SlashCommandCompleter
     from .permissions import SessionPermissionBroker
     from .render import format_event, format_footer
 
@@ -144,7 +145,10 @@ def run_repl(
     history_file.parent.mkdir(parents=True, exist_ok=True)
     prompt_session: PromptSession[str] = PromptSession(
         history=FileHistory(str(history_file)),
-        completer=SlashCommandCompleter(),
+        completer=merge_completers([
+            SlashCommandCompleter(),
+            FileMentionCompleter(cwd),
+        ]),
         complete_while_typing=True,
         bottom_toolbar=lambda: _toolbar(),
     )
