@@ -168,6 +168,39 @@ def _build_toolbar(active_session_id: str, database_path: Path | None = None) ->
         return ""
 
 
+def _fmt_elapsed(start: float | None) -> str:
+    if not start:
+        return "0s"
+    s = int(max(0.0, time.monotonic() - start))
+    return f"{s}s" if s < 60 else f"{s // 60}:{s % 60:02d}"
+
+
+def _turn_prompt_message(
+    tstate: dict[str, Any],
+    worker: Any,
+    pending_perm: dict[str, Any],
+) -> Any:
+    req = pending_perm.get("req")
+    if req:
+        return _perm_prompt_message(req)
+    if worker.is_alive():
+        from prompt_toolkit.formatted_text import HTML
+
+        frame = FRAMES[int(time.monotonic() * 10) % len(FRAMES)]
+        role = tstate.get("last_role", "agent")
+        elapsed = _fmt_elapsed(tstate.get("start"))
+        cost = tstate.get("cost", 0.0)
+        # fixed-width-ish so the cursor doesn't jump as numbers grow
+        return HTML(
+            f"<ansicyan><b>{frame}</b></ansicyan> "
+            f"<b>{role}</b> <ansibrightblack>{elapsed} · ${cost:.4f} · Ctrl+C to interrupt</ansibrightblack>\n"
+            f"<ansigreen>›</ansigreen> "
+        )
+    from prompt_toolkit.formatted_text import HTML
+
+    return HTML("<ansigreen>›</ansigreen> ")
+
+
 def _perm_prompt_message(req: Any) -> str:
     tool_name = getattr(req, "tool_name", "") if req else ""
     return f"allow {tool_name}? [a]llow once / [s]ession / [d]eny › "
@@ -182,13 +215,16 @@ def _parse_perm_answer(ans: str | None) -> str:
     return "deny"
 
 
-def _turn_toolbar(tstate: dict[str, Any], worker: Any) -> str:
+def _turn_toolbar(tstate: dict[str, Any], worker: Any) -> Any:
     if not worker.is_alive():
         return ""
-    frame = FRAMES[int(time.time() * 8) % len(FRAMES)]
+    from prompt_toolkit.formatted_text import HTML
+
+    frame = FRAMES[int(time.monotonic() * 10) % len(FRAMES)]
     role = tstate.get("last_role", "agent")
     cost = tstate.get("cost", 0.0)
-    return f"{frame} {role} working · ${cost:.4f} · Ctrl+C stop"
+    elapsed = _fmt_elapsed(tstate.get("start"))
+    return HTML(f" {frame} <b>{role}</b> working · {elapsed} · ${cost:.4f} · <b>Ctrl+C</b> to interrupt ")
 
 
 def _wake(prompt_session: Any, sentinel: Any) -> None:
@@ -284,7 +320,8 @@ async def _turn_interactive(
 
     done = {"v": False}
     pending_perm: dict[str, Any] = {"req": None}
-    tstate: dict[str, Any] = {"last_role": "agent", "cost": 0.0}
+    turn_start = time.monotonic()
+    tstate: dict[str, Any] = {"last_role": "agent", "cost": 0.0, "start": turn_start}
     with patch_stdout(raw=True):
         turn_console = Console(width=shutil.get_terminal_size(fallback=(100, 24)).columns)
         drain = asyncio.create_task(
@@ -304,13 +341,11 @@ async def _turn_interactive(
         )
         stop_sent = False
         while not done["v"]:
-            req = pending_perm["req"]
-            msg = _perm_prompt_message(req) if req else "steer › "
             try:
                 ans = await prompt_session.prompt_async(
-                    msg,
+                    lambda: _turn_prompt_message(tstate, worker, pending_perm),
                     bottom_toolbar=lambda: _turn_toolbar(tstate, worker),
-                    refresh_interval=0.5,
+                    refresh_interval=0.3,
                 )
             except KeyboardInterrupt:
                 if not stop_sent:
