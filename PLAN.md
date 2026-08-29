@@ -1130,6 +1130,52 @@ with the Phase K rewrite).
   (`READ_ONLY_TOOLS` / `_check_tool_permission`) must extend to MCP tools -
   default unknown MCP tools to "prompt/deny", not "auto".
 
+**Design decisions (2026-08-29):**
+- Config store: `agentflow.config.yaml` `mcp_servers:` (user's instruction),
+  same file as backends / `credentials:`. Not a separate `.mcp.json`.
+- Client: the official `mcp` PyPI SDK (v2.0.0, already a transitive dep via
+  `google-antigravity`; promoted to a direct dependency). It's a wire-protocol
+  library, not an agent framework - consistent with the hand-rolled rule, same
+  as using `httpx` for OpenRouter. stdio transport first; HTTP/SSE deferred.
+- The SDK is async; the orchestrator tool loop is sync. `MCPManager` owns a
+  background asyncio loop thread, enters all `stdio_client` + `ClientSession`
+  contexts on `start()`, exposes sync `list_tools()` / `call_tool()` that block
+  on `run_coroutine_threadsafe`, and tears down on `close()`.
+
+**Config shape:**
+```yaml
+mcp_servers:
+  - name: playwright
+    command: npx
+    args: ["-y", "@playwright/mcp@latest"]
+    env: {}
+    enabled: true
+    auto_approve: []          # tool names auto-allowed even under prompt policy; "all" allowed
+```
+`MCPServerConfig`: `name`, `command|url` (exactly one), `args`, `env`,
+`enabled=True`, `auto_approve: list[str] | "all" = []`.
+
+### Sub-phases
+
+- **L7.1 - config + client + adapter (branch `phase-l7`).** `MCPServerConfig`
+  in `config.py` + `load_config`/`dump_config` round-trip; `src/agentflow/mcp/`
+  package: `MCPManager` (async-loop-thread bridge), `MCPClientError`, and
+  `MCPTool(Tool)` adapter naming remote tools `mcp__<server>__<tool>` with a
+  passthrough `param_model` built from the remote `inputSchema`. Unit tests
+  drive a fake in-process stdio MCP server script (no npx / network). No
+  orchestrator wiring yet.
+- **L7.2 - orchestrator wiring.** Thread an optional `Toolset` (registry +
+  live MCP tools) through `run_workflow` -> `_run_with_tools` ->
+  `_tool_schemas_text` / `_execute_tool_call` / `_check_tool_permission`.
+  `MCPManager` started before the review step, closed in `run_workflow`'s
+  `finally`. MCP tools never count as `READ_ONLY`; not in the server's
+  `auto_approve` -> treated as `prompt` even under `auto` policy. Every MCP
+  tool call recorded as a normal `tool_call` / `tool_result` event. Extend
+  `agentflow --list-tools` to spin the servers up and list their tools; add
+  `--mcp-check`. Tests.
+- **L7.3 - web config UI for MCP servers.** Deferred - lands with the Phase K
+  web console rewrite (config panel).
+
 ### L8 - User-defined skills
 
 - A skill = a named, versioned instruction bundle (like this repo's
