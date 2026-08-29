@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,6 +19,7 @@ from ..config import (
     Config,
     CredentialsConfig,
     DEFAULT_CONFIG_PATH,
+    MCPServerConfig,
     NotificationConfig,
     PermissionMode,
     RoleConfig,
@@ -46,7 +49,17 @@ from ..database import (
     load_run,
 )
 from ..models import get_all_models
-from ..orchestrator import RunInProgressError, get_active_run, new_run_id, new_session_id, run_workflow
+from ..orchestrator import (
+    READ_ONLY_TOOLS,
+    RunInProgressError,
+    get_active_run,
+    new_run_id,
+    new_session_id,
+    run_workflow,
+)
+from ..tools import get_tool, get_tool_schema, list_tools
+from ..tui.completion import _list_project_files
+from ..tui.render import session_cost
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -61,10 +74,11 @@ class ConfigUpdate(BaseModel):
     verify_model: Optional[str] = None
     max_iterations: int = Field(3, ge=1, le=10)
     permissions: Optional[PermissionMode] = None
-    max_cost_usd: Optional[float] = None
+    max_cost_usd: Optional[float] = Field(None, ge=0)
     openrouter_api_key: Optional[str] = None
     notifications: Optional[dict] = None
     smtp_password: Optional[str] = None
+    mcp_servers: Optional[list[dict[str, Any]]] = None
 
 
 class MemoryUpdate(BaseModel):
@@ -118,6 +132,7 @@ def _build_config_from_overrides(
         max_cost_usd=base_config.max_cost_usd,
         notifications=base_config.notifications,
         credentials=base_config.credentials,
+        mcp_servers=base_config.mcp_servers,
     )
     return new_config
 
@@ -242,15 +257,31 @@ def create_app(
                 smtp_password=new_smtp_pw,
             )
 
+        mcp_servers_cfg: list[MCPServerConfig] = []
+        if data.mcp_servers is not None:
+            try:
+                mcp_servers_cfg = [MCPServerConfig(**s) for s in data.mcp_servers]
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid MCP servers config: {exc}")
+        elif current_config is not None:
+            mcp_servers_cfg = list(current_config.mcp_servers)
+
+        max_cost = (
+            data.max_cost_usd
+            if "max_cost_usd" in data.model_fields_set
+            else (current_config.max_cost_usd if current_config else None)
+        )
+
         config = Config(
             review=RoleConfig(backend=data.review_backend, model=data.review_model),
             build=RoleConfig(backend=data.build_backend, model=data.build_model),
             verify=RoleConfig(backend=data.verify_backend, model=data.verify_model),
             max_iterations=data.max_iterations,
             permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
-            max_cost_usd=data.max_cost_usd if data.max_cost_usd is not None else (current_config.max_cost_usd if current_config else None),
+            max_cost_usd=max_cost,
             notifications=notif_cfg,
             credentials=creds_cfg,
+            mcp_servers=mcp_servers_cfg,
         )
         try:
             dump_config(config, config_path)
@@ -305,6 +336,87 @@ def create_app(
     async def models() -> dict:
         return get_all_models()
 
+    @app.get("/api/tools")
+    async def tools() -> dict:
+        tool_names = sorted(list_tools())
+        result = []
+        for name in tool_names:
+            tool = get_tool(name)
+            result.append({
+                "name": tool.name,
+                "description": tool.description,
+                "schema": get_tool_schema(name),
+                "read_only": name in READ_ONLY_TOOLS,
+            })
+        return {"tools": result}
+
+    @app.get("/api/mcp")
+    async def get_mcp(project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        try:
+            cfg = load_config(config_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        servers = cfg.mcp_servers or []
+        if not servers:
+            return {"servers": []}
+
+        def _check_servers() -> list[dict[str, Any]]:
+            enabled = [s for s in servers if s.enabled]
+            tools_by_server: dict[str, list[dict[str, str]]] = {}
+            errors: dict[str, str] = {}
+            if enabled:
+                from ..mcp import MCPManager
+
+                manager = MCPManager(enabled, cwd=target_cwd)
+                try:
+                    manager.start()
+                    for t in manager.list_tools():
+                        tools_by_server.setdefault(t.server_name, []).append({
+                            "name": t.name,
+                            "description": t.description,
+                        })
+                    errors = manager.errors
+                finally:
+                    manager.close()
+
+            results: list[dict[str, Any]] = []
+            for s in servers:
+                if not s.enabled:
+                    results.append({
+                        "name": s.name,
+                        "enabled": False,
+                        "connected": False,
+                        "tools": [],
+                        "error": None,
+                        "auto_approve": s.auto_approve,
+                    })
+                else:
+                    err = errors.get(s.name)
+                    if err is None and "_manager" in errors:
+                        err = errors["_manager"]
+                    connected = err is None
+                    srv_tools = tools_by_server.get(s.name, []) if connected else []
+                    results.append({
+                        "name": s.name,
+                        "enabled": True,
+                        "connected": connected,
+                        "tools": srv_tools,
+                        "error": err,
+                        "auto_approve": s.auto_approve,
+                    })
+            return results
+
+        server_list = await asyncio.to_thread(_check_servers)
+        return {"servers": server_list}
+
+    @app.get("/api/files")
+    async def files(project: Optional[str] = None) -> dict:
+        target_cwd = _resolve_project(project)
+        file_list = _list_project_files(target_cwd)
+        return {"files": file_list}
+
     @app.get("/api/runs")
     async def runs(limit: int = 25, offset: int = 0, project: Optional[str] = None) -> dict:
         target_cwd = _resolve_project(project)
@@ -325,6 +437,10 @@ def create_app(
         run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
+        active_id = get_active_run(target_cwd)
+        run["is_active"] = (active_id == run_id)
+        if run.get("finished_at") is None and active_id != run_id:
+            run["interrupted"] = True
         return run
 
     @app.get("/api/runs/{run_id}/tool_calls")
@@ -347,6 +463,88 @@ def create_app(
         events = list_events(run_id, path=db_path)
         return {"events": events}
 
+    @app.get("/api/runs/{run_id}/stream")
+    async def run_stream(run_id: str, request: Request, project: Optional[str] = None) -> StreamingResponse:
+        """Stream live run events as Server-Sent Events (SSE)."""
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        async def event_generator():
+            last_seq = 0
+            raw_last_id = request.headers.get("last-event-id")
+            if raw_last_id is not None:
+                try:
+                    last_seq = int(raw_last_id)
+                except ValueError:
+                    last_seq = 0
+
+            # Immediate check before loop: if run is already finished or orphaned/interrupted
+            initial_run = load_run(run_id, target_cwd, path=db_path)
+            if initial_run is not None:
+                if initial_run.get("finished_at") is not None:
+                    events = list_events(run_id, after_seq=last_seq, path=db_path)
+                    for ev in events:
+                        yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev['payload'])}\n\n"
+                    yield "event: done\ndata: {}\n\n"
+                    return
+                active_id = get_active_run(target_cwd)
+                if active_id != run_id:
+                    events = list_events(run_id, after_seq=last_seq, path=db_path)
+                    for ev in events:
+                        yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev['payload'])}\n\n"
+                    yield f"event: interrupted\ndata: {json.dumps({'run_id': run_id, 'interrupted': True})}\n\n"
+                    yield "event: done\ndata: {}\n\n"
+                    return
+
+            last_event_time = time.time()
+            max_iterations = 7200
+            iterations = 0
+
+            while iterations < max_iterations:
+                if await request.is_disconnected():
+                    return
+
+                events = list_events(run_id, after_seq=last_seq, path=db_path)
+                if events:
+                    for ev in events:
+                        yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev['payload'])}\n\n"
+                        last_seq = ev["seq"]
+                    last_event_time = time.time()
+                else:
+                    current_run = load_run(run_id, target_cwd, path=db_path)
+                    if current_run is not None:
+                        if current_run.get("finished_at") is not None:
+                            yield "event: done\ndata: {}\n\n"
+                            return
+                        active_id = get_active_run(target_cwd)
+                        if active_id != run_id:
+                            yield f"event: interrupted\ndata: {json.dumps({'run_id': run_id, 'interrupted': True})}\n\n"
+                            yield "event: done\ndata: {}\n\n"
+                            return
+
+                    now = time.time()
+                    if now - last_event_time >= 15.0:
+                        yield ": keepalive\n\n"
+                        last_event_time = now
+
+                if await request.is_disconnected():
+                    return
+
+                await asyncio.sleep(0.5)
+                iterations += 1
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
     @app.get("/api/sessions")
     async def sessions(project: Optional[str] = None) -> dict:
         target_cwd = _resolve_project(project)
@@ -360,6 +558,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="Session not found")
         runs = get_session_runs(session_id, path=db_path)
         session["runs"] = runs
+        session["total_cost"] = session_cost(runs)
+        session["run_count"] = len(runs)
         return session
 
     @app.post("/api/runs")

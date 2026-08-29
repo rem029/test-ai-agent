@@ -6,16 +6,20 @@ these tests never make a real backend call.
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 import agentflow.web.app as web_app
-from agentflow.config import Config, RoleConfig
+from agentflow.config import Config, MCPServerConfig, RoleConfig, dump_config, load_config
 from agentflow.database import save_run
 from agentflow.orchestrator import RunState
+
+FAKE_SERVER_PATH = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
 
 
 def _config() -> Config:
@@ -292,7 +296,7 @@ def test_static_assets_contain_tool_req_support(tmp_path):
     assert "renderToolReq" in js_resp.text
     assert "tool-req-name" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".tool-req" in css_resp.text
     assert ".tool-req-name" in css_resp.text
@@ -364,6 +368,57 @@ def test_js_split_tool_blocks_via_node():
     if (r8.requests.length !== 2 || r8.requests[0].name !== 'ReadFile' || r8.requests[1].name !== 'WriteFile' || r8.prose !== '' || r8.prose.includes('<') || r8.prose.includes('DSML')) {
         process.exit(8);
     }
+
+    // 9. Well-formed step header with role, backend, model, cost, iter, and verdict PASS
+    const verifyStep = {
+        role: 'verify',
+        iteration: 2,
+        text: 'All tests pass.\\nVERIFY_RESULT: PASS',
+        usage: { backend: 'openrouter', model: 'deepseek/deepseek-chat', cost_usd: 0.0142 }
+    };
+    const vHtml = app.renderStep(verifyStep, 0);
+    if (!vHtml.includes('step-role') || !vHtml.includes('verify') || !vHtml.includes('iter 2') || !vHtml.includes('PASS') || !vHtml.includes('openrouter · deepseek/deepseek-chat') || !vHtml.includes('$0.0142')) {
+        process.exit(9);
+    }
+
+    // 10. Failed verify step
+    const failStep = {
+        role: 'verify',
+        iteration: 1,
+        text: 'Tests failed.\\nVERIFY_RESULT: FAIL',
+        usage: { backend: 'claude-code', model: 'claude-3-7-sonnet', cost_usd: 0.005 }
+    };
+    const fHtml = app.renderStep(failStep, 1);
+    if (!fHtml.includes('FAIL') || !fHtml.includes('claude-code · claude-3-7-sonnet')) {
+        process.exit(10);
+    }
+
+    // 11. renderRunHeader with full goal, state, cost, duration, and role models
+    const testRun = {
+        run_id: 'run-xyz-12345678',
+        goal: 'Add an awesome new tape header block to the Transport console with full prompt text.',
+        started_at: 100.0,
+        finished_at: 220.0,
+        config: {
+            review: { backend: 'claude-code' },
+            build: { backend: 'openrouter', model: 'deepseek-chat' },
+            verify: { backend: 'antigravity' }
+        },
+        steps: [
+            { role: 'review', usage: { cost_usd: 0.01 } },
+            { role: 'build', usage: { cost_usd: 0.03 } }
+        ]
+    };
+    const hdrHtml = app.renderRunHeader(testRun);
+    if (!hdrHtml.includes('GOAL') ||
+        !hdrHtml.includes('Add an awesome new tape header block to the Transport console with full prompt text.') ||
+        !hdrHtml.includes('run-xyz-12345678') ||
+        !hdrHtml.includes('completed') ||
+        !hdrHtml.includes('02:00') ||
+        !hdrHtml.includes('$0.04') ||
+        !hdrHtml.includes('review claude-code · build openrouter/deepseek-chat · verify antigravity')) {
+        process.exit(11);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
@@ -422,7 +477,7 @@ def test_spa_catch_all_and_404(tmp_path):
         resp = client.get(path)
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert 'id="run-form"' in resp.text or 'class="nav-logo"' in resp.text
+        assert 'class="brand"' in resp.text or 'id="transport-bar"' in resp.text
 
     # Unknown /api routes must return 404 JSON, NOT html
     api_404 = client.get("/api/nonesuch")
@@ -578,7 +633,7 @@ def test_static_assets_contain_notify_and_blockers(tmp_path):
     assert "blocker" in js_resp.text
     assert "step-noresponse" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".blockers" in css_resp.text
     assert ".blocker" in css_resp.text
@@ -676,7 +731,7 @@ def test_static_assets_contain_openrouter_key_ui(tmp_path):
     assert "config-openrouter-status" in js_resp.text
     assert "openrouter_api_key" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".key-status" in css_resp.text
     assert ".key-source" in css_resp.text
@@ -910,7 +965,7 @@ def test_static_assets_contain_project_selector_ui(tmp_path):
     assert 'id="project-select"' in html_resp.text
     assert 'class="nav-project"' in html_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".nav-project" in css_resp.text
 
@@ -1132,10 +1187,491 @@ def test_static_assets_contain_session_composer_and_thread(tmp_path):
     assert "session-thread" in js_resp.text
     assert "renderSessionThread" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".session-thread" in css_resp.text
     assert ".composer" in css_resp.text
+
+
+def test_api_run_stream_finished_run(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-1",
+        goal="Test streaming finished",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+    append_event("run-stream-1", 1, "run_started", {"goal": "Test streaming finished"}, path=db)
+    append_event("run-stream-1", 2, "step_started", {"role": "build"}, path=db)
+    append_event("run-stream-1", 3, "run_finished", {"finished_at": 2.0}, path=db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/run-stream-1/stream")
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    assert resp.headers["cache-control"] == "no-cache"
+
+    text = resp.text
+    assert "id: 1\nevent: run_started\ndata: {\"goal\": \"Test streaming finished\"}\n\n" in text
+    assert "id: 2\nevent: step_started\ndata: {\"role\": \"build\"}\n\n" in text
+    assert "id: 3\nevent: run_finished\ndata: {\"finished_at\": 2.0}\n\n" in text
+    assert "event: done\ndata: {}\n\n" in text
+
+
+def test_api_run_stream_reconnection_last_event_id(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-2",
+        goal="Test Last-Event-ID",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+    append_event("run-stream-2", 1, "run_started", {"goal": "Test Last-Event-ID"}, path=db)
+    append_event("run-stream-2", 2, "step_started", {"role": "review"}, path=db)
+    append_event("run-stream-2", 3, "run_finished", {"finished_at": 2.0}, path=db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/run-stream-2/stream", headers={"Last-Event-ID": "2"})
+    assert resp.status_code == 200
+    text = resp.text
+
+    assert "id: 1" not in text
+    assert "id: 2" not in text
+    assert "id: 3\nevent: run_finished\ndata: {\"finished_at\": 2.0}\n\n" in text
+    assert "event: done\ndata: {}\n\n" in text
+
+
+def test_api_run_stream_unknown_run_returns_404(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/nonexistent-run/stream")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Run not found"
+
+
+def test_api_run_stream_invalid_last_event_id(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-3",
+        goal="Test invalid header",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+    append_event("run-stream-3", 1, "run_started", {"goal": "Test invalid header"}, path=db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/run-stream-3/stream", headers={"Last-Event-ID": "invalid-seq"})
+    assert resp.status_code == 200
+    text = resp.text
+    assert "id: 1\nevent: run_started" in text
+    assert "event: done\ndata: {}\n\n" in text
+
+
+def test_api_run_stream_project_scoping(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    db_file = dir_a / "agentflow.db"
+
+    state = RunState(
+        run_id="run-stream-proj",
+        goal="Scoped stream",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(dir_b.resolve()), db_file)
+    append_event("run-stream-proj", 1, "run_started", {"goal": "Scoped stream"}, path=db_file)
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # With project=dir_b -> 200
+    resp_b = client.get(f"/api/runs/run-stream-proj/stream?project={dir_b.resolve()}")
+    assert resp_b.status_code == 200
+    assert "id: 1\nevent: run_started" in resp_b.text
+
+    # With project=dir_a -> 404
+    resp_a = client.get(f"/api/runs/run-stream-proj/stream?project={dir_a.resolve()}")
+    assert resp_a.status_code == 404
+
+
+def test_api_run_stream_keepalive(tmp_path):
+    from agentflow.database import save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-live",
+        goal="Live stream",
+        started_at=100.0,
+        finished_at=None,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+
+    client = _make_client(tmp_path)
+
+    call_count = 0
+    in_mock = False
+    def mock_time():
+        nonlocal call_count, in_mock
+        if in_mock:
+            return 130.0
+        call_count += 1
+        if call_count == 1:
+            return 100.0
+        elif call_count == 2:
+            return 120.0
+        else:
+            in_mock = True
+            try:
+                state.finished_at = 130.0
+                save_run(state, str(tmp_path), db)
+            finally:
+                in_mock = False
+            return 130.0
+
+    with patch("agentflow.web.app.time.time", side_effect=mock_time), patch("agentflow.web.app.get_active_run", return_value="run-stream-live"):
+        resp = client.get("/api/runs/run-stream-live/stream")
+        assert resp.status_code == 200
+        assert ": keepalive\n\n" in resp.text
+        assert "event: done\ndata: {}\n\n" in resp.text
+
+
+def test_api_config_mcp_servers_and_max_cost_null_reset(tmp_path):
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+
+    # 1. Initial POST setting mcp_servers and max_cost_usd
+    resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "antigravity",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "max_cost_usd": 5.0,
+            "mcp_servers": [
+                {
+                    "name": "fake",
+                    "command": sys.executable,
+                    "args": [FAKE_SERVER_PATH],
+                    "enabled": True,
+                    "auto_approve": ["echo"],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["config"]["max_cost_usd"] == 5.0
+    assert len(data["config"]["mcp_servers"]) == 1
+    assert data["config"]["mcp_servers"][0]["name"] == "fake"
+
+    # Verify GET /api/config returns mcp_servers and max_cost_usd
+    get_resp = client.get("/api/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["max_cost_usd"] == 5.0
+    assert len(get_data["mcp_servers"]) == 1
+    assert get_data["mcp_servers"][0]["name"] == "fake"
+    assert get_data["mcp_servers"][0]["auto_approve"] == ["echo"]
+
+    # 2. Second POST omitting mcp_servers should preserve existing mcp_servers
+    resp2 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "openrouter",
+            "review_model": "test-model",
+            "build_backend": "antigravity",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 4,
+        },
+    )
+    assert resp2.status_code == 200
+    cfg2 = load_config(str(config_path))
+    assert cfg2.review.backend == "openrouter"
+    assert len(cfg2.mcp_servers) == 1
+    assert cfg2.mcp_servers[0].name == "fake"
+    assert cfg2.max_cost_usd == 5.0
+
+    # 3. Third POST with max_cost_usd: None (null) clears it
+    resp3 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "openrouter",
+            "review_model": "test-model",
+            "build_backend": "antigravity",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 4,
+            "max_cost_usd": None,
+        },
+    )
+    assert resp3.status_code == 200
+    cfg3 = load_config(str(config_path))
+    assert cfg3.max_cost_usd is None
+    assert len(cfg3.mcp_servers) == 1
+
+    # 4. Invalid MCP server config returns 400
+    resp4 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "build_backend": "antigravity",
+            "verify_backend": "claude-code",
+            "mcp_servers": [
+                {
+                    "name": "bad name with spaces!",
+                    "command": "python",
+                }
+            ],
+        },
+    )
+    assert resp4.status_code == 400
+    assert "Invalid MCP servers config" in resp4.json()["detail"]
+
+    # 5. Negative max_cost_usd rejected with 422
+    resp5 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "build_backend": "antigravity",
+            "verify_backend": "claude-code",
+            "max_cost_usd": -1.0,
+        },
+    )
+    assert resp5.status_code == 422
+
+
+def test_api_tools_endpoint(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/tools")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "tools" in data
+    tools = data["tools"]
+    assert len(tools) > 0
+
+    # Sorted by name
+    names = [t["name"] for t in tools]
+    assert names == sorted(names)
+
+    # Check known read-only tool (ReadFile)
+    read_file = next((t for t in tools if t["name"] == "ReadFile"), None)
+    assert read_file is not None
+    assert read_file["read_only"] is True
+    assert isinstance(read_file["description"], str) and len(read_file["description"]) > 0
+    assert isinstance(read_file["schema"], dict)
+    assert read_file["schema"]["name"] == "ReadFile"
+
+    # Check known mutating tool (WriteFile)
+    write_file = next((t for t in tools if t["name"] == "WriteFile"), None)
+    assert write_file is not None
+    assert write_file["read_only"] is False
+    assert isinstance(write_file["description"], str) and len(write_file["description"]) > 0
+    assert isinstance(write_file["schema"], dict)
+    assert write_file["schema"]["name"] == "WriteFile"
+
+
+def test_api_mcp_endpoint(tmp_path):
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+
+    # 1. No servers configured -> empty list
+    resp = client.get("/api/mcp")
+    assert resp.status_code == 200
+    assert resp.json() == {"servers": []}
+
+    # 2. Configured servers: connected stdio, broken command, and disabled server
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                enabled=True,
+                auto_approve=["echo"],
+            ),
+            MCPServerConfig(
+                name="broken",
+                command="nonexistent_binary_xyz_12345",
+                enabled=True,
+            ),
+            MCPServerConfig(
+                name="disabled-one",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                enabled=False,
+            ),
+        ],
+    )
+    dump_config(cfg, str(config_path))
+
+    resp2 = client.get("/api/mcp")
+    assert resp2.status_code == 200
+    servers = resp2.json()["servers"]
+    assert len(servers) == 3
+
+    # Fake server (connected)
+    s_fake = next(s for s in servers if s["name"] == "fake")
+    assert s_fake["enabled"] is True
+    assert s_fake["connected"] is True
+    assert s_fake["error"] is None
+    assert s_fake["auto_approve"] == ["echo"]
+    tool_names = [t["name"] for t in s_fake["tools"]]
+    assert "mcp__fake__echo" in tool_names
+    assert "mcp__fake__add" in tool_names
+
+    # Broken server (not connected, error set)
+    s_broken = next(s for s in servers if s["name"] == "broken")
+    assert s_broken["enabled"] is True
+    assert s_broken["connected"] is False
+    assert s_broken["tools"] == []
+    assert s_broken["error"] is not None
+    assert len(s_broken["error"]) > 0
+
+    # Disabled server (not connected, no error, tools empty)
+    s_disabled = next(s for s in servers if s["name"] == "disabled-one")
+    assert s_disabled["enabled"] is False
+    assert s_disabled["connected"] is False
+    assert s_disabled["tools"] == []
+    assert s_disabled["error"] is None
+
+
+def test_api_session_detail_cost_and_run_count(tmp_path):
+    from agentflow.database import create_session, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    create_session("sess-cost-1", str(tmp_path), title="Session With Cost", path=db)
+
+    # Add run 1 with usage cost 0.05
+    run1 = RunState(
+        run_id="run-c1",
+        session_id="sess-cost-1",
+        goal="Run 1",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+        steps=[
+            {"role": "build", "usage": {"cost_usd": 0.05}},
+        ],
+    )
+    save_run(run1, str(tmp_path), db)
+
+    # Add run 2 with usage cost 0.12
+    run2 = RunState(
+        run_id="run-c2",
+        session_id="sess-cost-1",
+        goal="Run 2",
+        started_at=3.0,
+        finished_at=4.0,
+        config={},
+        steps=[
+            {"role": "verify", "usage": {"cost_usd": 0.12}},
+        ],
+    )
+    save_run(run2, str(tmp_path), db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/sessions/sess-cost-1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == "sess-cost-1"
+    assert data["run_count"] == 2
+    assert data["total_cost"] == pytest.approx(0.17)
+
+    # Empty session has 0 runs and 0.0 cost
+    create_session("sess-cost-empty", str(tmp_path), title="Empty Session", path=db)
+    resp_empty = client.get("/api/sessions/sess-cost-empty")
+    assert resp_empty.status_code == 200
+    data_empty = resp_empty.json()
+    assert data_empty["run_count"] == 0
+    assert data_empty["total_cost"] == 0.0
+
+
+def test_api_files_endpoint(tmp_path):
+    # Setup test file tree
+    (tmp_path / "file1.txt").write_text("hello")
+    (tmp_path / "README.md").write_text("# Readme")
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "app.py").write_text("print(1)")
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/files")
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    assert "file1.txt" in files
+    assert "README.md" in files
+    assert "src/app.py" in files
+
+
+def test_api_run_stream_interrupted_orphan_run(tmp_path):
+    """An orphaned run with finished_at None that is not the active run should emit interrupted and done."""
+    from agentflow.orchestrator import RunState
+    from agentflow.database import save_run, append_event
+
+    db = tmp_path / "agentflow.db"
+    run = RunState(
+        run_id="run-orphan-1",
+        session_id="sess-orphan-1",
+        goal="Orphaned zombie task",
+        config={},
+        started_at=1000.0,
+        finished_at=None,  # unfinished
+        steps=[],
+    )
+    save_run(run, str(tmp_path), db)
+    append_event("run-orphan-1", 1, "step_started", {"role": "review"}, path=db)
+
+    client = _make_client(tmp_path)
+
+    # 1. run_detail returns interrupted=True
+    detail = client.get("/api/runs/run-orphan-1").json()
+    assert detail["interrupted"] is True
+    assert detail["is_active"] is False
+
+    # 2. SSE stream emits events, interrupted event, and done
+    with client.stream("GET", "/api/runs/run-orphan-1/stream") as response:
+        assert response.status_code == 200
+        content = "".join(list(response.iter_text()))
+        assert "event: step_started" in content
+        assert "event: interrupted" in content
+        assert "event: done" in content
+
+
+
+
+
 
 
 

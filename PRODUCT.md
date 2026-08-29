@@ -13,17 +13,17 @@ Individual software developers using local multi-agent AI workflows (Claude Code
 agentflow orchestrates multi-agent dev workflows (review, build, verify, iterate, push) with pluggable backends per role and provides a local admin web UI for monitoring runs, starting tasks, and editing configurations.
 
 ## Positioning
-A deterministic Python-driven orchestrator with zero LLM in the coordination loop, per-step cost & token tracking, local file persistence, and a lightweight web interface (FastAPI + Jinja2 + htmx) without heavy frontend build tools or external CDN dependencies.
+A deterministic Python-driven orchestrator with zero LLM in the coordination loop, per-step cost & token tracking, local file persistence, and a lightweight web interface (FastAPI JSON API + a zero-build vanilla-JS SPA) without heavy frontend build tools or external CDN dependencies.
 
 ## Operating Context
 Personal local dev environments and hosted code-server/Coolify setups (reverse-proxied to port 4200). Single-user operation, bound to local or container network.
 
 ## Capabilities and Constraints
 - Review, build, and verify workflows with auto-iteration on failure.
-- Live progress polling via htmx fragments against local JSON run state.
+- Live run progress in the SPA, streamed over SSE from the persisted event log.
 - One-at-a-time task execution with thread concurrency lock.
 - Backend configuration editing with Pydantic validation before writing YAML.
-- Zero client-side build step; vendored htmx.
+- Zero client-side build step; hand-written vanilla JS, no framework or CDN.
 
 ## Product Principles
 - Clarity and scanability over decorative complexity.

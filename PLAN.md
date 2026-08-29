@@ -480,8 +480,10 @@ projects.
 Phases A, B, C, D, E, F, G, H, I (incl. I.5), and J (incl. J.5, J.6) are done.
 L1-L5 done. L7 (MCP client support) done and merged to `dev`: L7.1 config +
 client, L7.2 orchestrator wiring + `--list-tools`/`--mcp-check`, L7.2a `/mcp`
-REPL command. L7.3 (web MCP config UI) deferred to Phase K. Phase K: K1 + K2
-done on branch `phase-k` (K3-K5 remaining).
+REPL command. Phase K (web console rewrite) done on branch `phase-k`: K1+K2
+(dead-asset delete, SSE endpoint) plus the full "Transport"-direction SPA
+rewrite (K3-K5) - see the Phase K section below. L6 (visual direction) and
+L7.3 (web MCP config UI) landed with it.
 
 Also merged to `dev` this session (not part of a numbered phase):
 - Readable tool-arg validation errors + `file_path`/`filepath`/`filename`
@@ -1076,6 +1078,61 @@ contents-expansion as a follow-up if the agent needs it.
   the `@`-file mention picker (J.6) in the composer. Track this as an
   explicit checklist item when K3 starts.
 
+### Sub-phases
+
+- **K1 - Dead-code cleanup (done, branch `phase-k`).** Deleted the orphaned
+  Jinja `templates/` dir (`base`, `dashboard`, `run_detail`, `_run_fragment`,
+  `config_edit`, `login`), `static/auth.css`, `static/style.css` (Phase E,
+  superseded by `styles.css`), and the unused vendored `static/htmx.min.js`.
+  Dropped the now-unused `jinja2` dependency from `pyproject.toml`. Updated
+  `AGENTS.md`, `.github/copilot-instructions.md`, `PRODUCT.md` stack
+  descriptions (SPA, not Jinja/htmx). 338 tests still pass. Note: the
+  single-run worktree lock is **not** a regression — Phase I.5 added a per-cwd
+  `threading.Lock` + `fcntl.flock` inside `run_workflow` and `create_run`
+  already routes a submission during an active run to `queued_runs`.
+- **K2 - SSE live event stream (done, `7df9053`).** `GET /api/runs/{id}/stream`
+  replaying the persisted `events` table then tailing new rows.
+- **K3-K5 - "Transport" SPA rewrite (done, 2026-08-29, commits `e5f1334`
+  backend + `df40394` frontend).** Full from-scratch rewrite, not a reskin.
+  - **Direction (L6):** Impeccable `new-work` / `operate` roll, seed
+    `dfedc3e0`, candidate 7 of 7 - "a run is a recording you scrub".
+    `DESIGN.md` replaced from the built world. A run plays out on a shared
+    review/build/verify timeline with a draggable playhead that scrubs the
+    event log; a docked transport bar (stop / steer / live cost) is always
+    present. One self-hosted mono face (JetBrains Mono), one amber signal
+    reserved for the live element, state by lane treatment + cell glyphs not
+    pills, hairline dividers, no cards/shadows, dark-only, animation gated to
+    live runs + `prefers-reduced-motion`.
+  - **K3 backend:** `GET /api/tools`, `GET /api/mcp` (the `--mcp-check`
+    equivalent), `GET /api/files` (@-mention), `mcp_servers` in
+    `POST /api/config` (was silently wiped), `max_cost_usd: null` clears,
+    `total_cost`/`run_count` on `GET /api/sessions/{id}`.
+  - **K3/K4 frontend:** session rail, timeline + playhead scrub-to-replay,
+    playhead-bound thread, collapsible steps + tool calls, fixed-scale inline
+    diffs, docked transport bar (stop / steer / start-run), `@`-file
+    completion, `GOAL` header with the full untruncated prompt + full-text
+    hover on truncated titles.
+  - **SSE everywhere:** `EventSource` off the Phase I event log; all
+    `setInterval` polling of run endpoints removed. Orphan/interrupted runs
+    (`finished_at` null, not the active run) now resolve to a static
+    `interrupted` state - the stream emits `interrupted`+`done`, the client
+    classifies up front. Closes the "runs show Running forever" open item.
+  - **TUI/web parity:** `Cmd/Ctrl-K` command palette (model / config / tools /
+    mcp / resume <session> / cost / clear / stop). Right-side overlay panels
+    (no scrim): Config (per-role backend/model, permissions, `max_cost_usd`,
+    masked OpenRouter key, global/project memory, notifications, **full MCP
+    servers editor - L7.3**), Tools (read-only registry), MCP (live
+    per-server connect/error/disabled status + tools).
+  - Hand-authored SVG icon set for controls; `styles.css` deleted,
+    `console.css` added. Detector clean. 387 tests pass. Desktop + all panels
+    + palette + empty/interrupted states verified live via the Coolify URL;
+    mobile (<700px) code-reviewed only (review browser stopped honoring
+    viewport resize).
+  - **Still open (follow-ups, noted in DESIGN.md):** interactive web
+    permission prompts (`permissions: prompt` still denies in the headless
+    web thread); no session-level SSE stream; no queue-management UI; mobile
+    not screenshot-verified.
+
 ## Phase L - Projects, memory, extensibility, notifications (user backlog, 2026-08-28)
 
 Captured from the user during the Phase I.5 session. Several items overlap
@@ -1084,8 +1141,8 @@ new capability work on top of the Phase H tool layer.
 
 **Status (2026-08-29):** L1, L2, L3, L4, L5 implemented on branch `phase-l`
 (commits `64a4d41` L2, `a80536e` L4+L5, `2fee0c7` L3, `3b97be5` L1). 217
-tests pass. L6, L7, L8 not started — deferred to their own phases (L6 belongs
-with the Phase K rewrite).
+tests pass. L6 landed with the Phase K rewrite (2026-08-29) - see Phase K.
+L7 done. L8 not started.
 
 ### L1 - Email notifications
 
@@ -1134,15 +1191,15 @@ with the Phase K rewrite).
   stored per-repo. Project memory layers on top of global memory in the
   prompt. Editable from Config, filtered by the L3 project selector.
 
-### L6 - UI design reference pass
+### L6 - UI design reference pass (done, with Phase K, 2026-08-29)
 
-- Current UI "looks built by AI." Research the console UIs of comparable
-  products - OpenCode, Claude Code, Cursor, Warp, Devin, plus general
-  dashboard craft (Linear, Vercel, Railway) - and commit to a real visual
-  direction (this is the Impeccable `new-work` / `DESIGN.md`-replace path,
-  not a polish pass). Do this as part of the Phase K rewrite, not before it.
-- Reconcile `styles.css` to `DESIGN.md` (it predates the token discipline;
-  ~58 off-ramp values flagged by the Impeccable hook).
+- Committed to the "Transport" visual direction via the Impeccable `new-work`
+  `operate` roll (seed `dfedc3e0`). `DESIGN.md` replaced from the built world.
+  Full detail in the Phase K section above.
+- `styles.css` deleted, not reconciled - the SPA rewrite replaced it with
+  `console.css` on the new token discipline. Detector clean (the few
+  intentional ramp/palette literals the degraded regex detector can't
+  resolve are recorded in `.impeccable/config.json`).
 
 ### L7 - MCP client support
 

@@ -1,100 +1,225 @@
 ---
 name: agentflow
-description: Clean, high-contrast, developer-focused admin panel for local multi-agent workflows
+description: "Transport — a run is a recording you scrub, on an emissive monospace console for watching autonomous agent workflows"
+seed: dfedc3e0
 colors:
-  primary: "#2563eb"
-  primary-hover: "#1d4ed8"
-  bg: "#f8fafc"
-  surface: "#ffffff"
-  fg: "#0f172a"
-  muted: "#64748b"
-  border: "#e2e8f0"
-  ok: "#16a34a"
-  ok-bg: "#dcfce7"
-  fail: "#dc2626"
-  fail-bg: "#fee2e2"
-  warn: "#d97706"
-  warn-bg: "#fef3c7"
+  bg-ground: "#0b0d10"
+  bg-panel: "#12151a"
+  bg-raised: "#171b21"
+  bg-hover: "#1c2128"
+  bg-active: "#222730"
+  border-hairline: "#23272e"
+  border-subtle: "#2d333b"
+  text-primary: "#e6e8ea"
+  text-secondary: "#8b939c"
+  text-faint: "#5c636b"
+  accent-amber: "#ffb020"
+  status-red: "#e5484d"
+  diff-add-bg: "rgba(63,185,80,0.09)"
+  diff-del-bg: "rgba(248,81,73,0.09)"
 typography:
-  body:
-    fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-    fontSize: "14px"
-    lineHeight: "1.5"
   mono:
-    fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+    fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    fontSize: "13px"
+    lineHeight: "1.5rem"
+scale:
+  micro: "11px"
+  small: "12px"
+  body: "13px"
+  head: "14px"
 rounded:
-  sm: "4px"
-  md: "8px"
+  none: "0"
+  input: "2px"
   pill: "9999px"
 spacing:
-  xs: "4px"
-  sm: "8px"
-  md: "16px"
-  lg: "24px"
-  xl: "32px"
+  unit-x: "1ch"
+  unit-y: "1.5rem"
+  xs: "0.4rem"
+  sm: "0.6rem"
+  md: "1rem"
+  lg: "1.5rem"
 ---
 
 ## Overview
-agentflow's web admin panel is designed for clarity, high contrast, fast scanability, and density appropriate for developer tooling. It operates in both light and dark environments with zero runtime external dependencies.
+
+The agentflow web console is a dark-only operator surface for watching a
+multi-agent run unfold — review → build → verify → iterate → push. It is not a
+chat log with a status badge; it treats a run as a **recording on a transport**.
+A shared timeline is the spine, a draggable playhead scrubs the persisted event
+log, and a docked transport bar (stop / steer / live cost) is always present
+like a mixing desk's master section. Zero build step, zero runtime CDN, one
+self-hosted monospace face.
+
+Direction locked from the Impeccable `operate` concept roll, seed `dfedc3e0`,
+candidate 7 of 7. Full contract in the HTML comment at the top of
+`src/agentflow/web/static/index.html`.
+
+## Scene, not category
+
+Dark is chosen from the use scene, not convention: a developer watching a
+long-running agent build, often at night, with a terminal open beside this tab.
+There is no light theme and no theme toggle.
 
 ## Colors
-- **Foreground / Background**: Deep slate on soft light background for light mode; high-contrast off-white on deep slate/navy for dark mode.
-- **Surface**: Pure white cards in light mode, elevated slate container surfaces in dark mode.
-- **Status & Feedback**:
-  - `Running`: Warm amber pill and highlight.
-  - `Pushed / OK`: Vibrant emerald green pill and highlight.
-  - `Failed / Not Pushed`: Crisp red pill and alert state.
-- **Accent**: Refined royal blue for interactive elements, links, and primary actions.
+
+- **Ground**: near-black emissive `#0b0d10`; panels `#12151a`, raised
+  `#171b21`. Surfaces separate by a 1px hairline (`#23272e`), never by shadow.
+- **Text**: `#e6e8ea` primary, `#8b939c` secondary (tinted toward the ground's
+  cool hue — never neutral gray), `#5c636b` faint.
+- **One signal — amber `#ffb020`.** Reserved for the single live element and
+  nothing else: the running lane's pulsing edge, the playhead dot, the
+  `⟩ live` return control while scrubbed on an active run, `:focus-visible`
+  rings, the input caret, `::selection`, and the primary action button
+  (`send`, `save config`). Amber never colors links, headings, tool names,
+  session titles, or any static label.
+- **Status is lane treatment + a glyph, not a pill.** `done` → dim neutral
+  fill (`#20242b` track / `#3a414b` fill), `✓` in secondary text. `running` →
+  amber pulsing edge. `failed` → hatched fill, `!`. `queued` → empty lane,
+  `·`. `stopped` → fill stops mid-lane, `▪`. `interrupted` → static, no clock.
+- **Red `#e5484d`** appears only for a fatal blocker banner and a verify-FAIL
+  verdict. **Green is not used** as a status color; a completed run reads
+  neutral. A faint green/red tint distinguishes added/removed lines in diffs.
 
 ## Typography
-- **UI & Content**: Clean system sans-serif hierarchy (`system-ui, -apple-system, sans-serif`).
-- **Code, Run IDs & Data**: Monospaced font (`ui-monospace, Menlo, monospace`) with tabular figures (`font-variant-numeric: tabular-nums`) for aligned numerical data, timestamps, and commit hashes.
-- **Scale**:
-  - Page Titles (h1): 1.5rem, bold (700).
-  - Section Headings (h2): 1.15rem, semi-bold (600).
-  - Body: 0.925rem (14.8px), regular (400).
-  - Captions / Meta / Badges: 0.75rem – 0.85rem.
+
+- **One face: JetBrains Mono** (self-hosted woff2, weights 400 / 500 / 700,
+  latin subset, `static/fonts/`, OFL). The whole console — labels, prose,
+  telemetry, headings — is on it. No UI sans.
+- Body `13px` / `1.5rem` line. Steps on `11–14px`. All numeric and time
+  values carry `font-variant-numeric: tabular-nums`.
+- Weight and case carry hierarchy: tracked lowercase-caps for region labels
+  (`SESSIONS`, panel titles), 500–700 for active/heading rows, 400 for body.
+  There is no large display type — this is an instrument panel.
+
+## The cell grid
+
+Horizontal rhythm is in `ch`, vertical in a fixed `--line: 1.5rem`. Timeline
+lane labels, playhead ticks, cost columns, list rows and log lines all resolve
+to the same column lattice, so the console reads as one ruled surface. This is
+the teletext / terminal-grid discipline carried through from the concept
+roll's challengers.
 
 ## Layout
-- Centered container constrained to 960px max width for optimal line lengths and scanability.
-- Header with clear branding, navigation items, and active route indication.
-- Consistent vertical rhythm with 24px–32px separation between major sections.
-- Responsive table design with horizontal scroll containers when viewports are constrained.
 
-## Elevation & Depth
-- Flat, modern surface separation using subtle 1px border lines and faint ambient elevation (`0 1px 3px rgba(0,0,0,0.05)`).
-- Clear contrast hierarchy between the page background and content cards.
+```
+topbar (2.5rem)  ── agentflow · [project] · session · "goal…" (hover = full)
+├── session rail (26ch) ──┬── timeline area (full width) ───────────────────
+│  › active  · inactive   │   review / build / verify lanes + playhead ruler
+│  n runs · $cost         │  ─────────────────────────────────────────────
+│  + new session          │   thread (centered, max 90ch, playhead-bound)
+│                         │     GOAL header (full untruncated prompt)
+│                         │     step blocks · tool calls · diffs · blockers
+├─────────────────────────┴── transport bar (3.5rem, docked) ──────────────
+   ⏹ stop   ⏭ steer / describe a run…   send      <state> · <dur> · $<cost>
+```
 
-## Shapes
-- Input controls, buttons, cards, and banners use a 6px–8px radius.
-- Status badges use pill shapes (rounded 9999px).
+- **Timeline** is sticky; the thread scrolls under it.
+- **Playhead**: a `range` slider styled to the world; dragging / arrows / click
+  rebind the thread to the event at that position; a `⟩ live` snap returns to
+  the edge. New SSE events snap the playhead forward unless the user has
+  scrubbed back.
+- **Thread** is centered in the stage at a ~90ch measure; the timeline above
+  spans full width.
+- **Overlay panels** (Config, Tools, MCP) are in-flow `position: fixed`
+  columns on the right edge — no scrim, no backdrop-filter, the console stays
+  legible behind them. Esc closes.
+- **Command palette** (`⌘K`): a focused input dropping from the top with a
+  fuzzy action list — the web equivalent of the REPL prompt and its slash
+  commands (`model`, `config`, `tools`, `mcp`, `resume <session>`, `cost`,
+  `clear`, `stop`).
+
+## Elevation & shape
+
+Flat. Separation is a 1px hairline or a background-value step, never a shadow.
+`border-radius: 0` on every container; `2px` only on inputs and buttons; `pill`
+only where a true toggle needs it. No card has another card inside it.
+
+## Motion
+
+- The playhead advances on a shared real-time clock; the running lane's edge
+  carries a 1px amber pulse; lane fill grows left-to-right. **Everything else
+  is still.**
+- All keyframe animation is gated behind `body.run-live` (added only while a
+  run is actually executing) and `@media (prefers-reduced-motion:
+  no-preference)`. On an idle, finished, or interrupted view
+  `document.getAnimations()` is empty.
+- `prefers-reduced-motion: reduce` freezes the pulse and playhead advance
+  (static fill kept) and disables panel transitions.
+
+## Iconography vs. state glyphs (deliberate)
+
+- **Interactive controls** use the hand-authored SVG set (one 1.5px stroke,
+  16px grid): `#icon-stop`, `#icon-play`, `#icon-pause`, `#icon-skip`,
+  `#icon-chevron-*`, `#icon-close`, `#icon-wrench`, `#icon-plug`, `#icon-bell`,
+  `#icon-folder`, `#icon-menu`, `#icon-plus`, `#icon-trash`, `#icon-alert`,
+  `#icon-check`.
+- **Timeline / status state marks** stay as monospace cell glyphs
+  (`✓ ! ▪ · ⠋`) and the `›` active-session marker. In this committed
+  terminal-grid world they are a notation that holds tabular alignment, not
+  glyph-for-icon substitution. Nowhere else are unicode glyphs used as icons.
+
+## Browser surfaces
+
+Themed from the palette, not left to defaults: `::selection` (amber-dim),
+`caret-color` amber, thin custom scrollbars (`#23272e` track / `#3a4048`
+thumb), `:focus-visible` 2px amber outline with 1px offset.
 
 ## Components
-- **Banners**: Used for active run alerts and action confirmations with tinted backgrounds and icons.
-- **Tables**: Clean border-bottom dividers, bold headers with subtle background, zebra hover states, and monospaced cells for identifiers and costs.
-- **Forms**: Vertical stack with clear labels, helpful focus outlines (`focus-visible: 2px solid var(--accent)`), and distinct fieldsets.
-- **Step Logs**: Collapsible step views with structured headers (Role, Mode, Backend, Cost, Status) and expandable preformatted output.
 
-## Do's and Don'ts
-- **Do** format run IDs, hashes, and costs with monospaced typography.
-- **Do** ensure focus rings are visible on all interactive elements.
-- **Don't** add decorative animations or heavy layout shifts that distract from real-time monitoring.
-- **Don't** use low-contrast grays for secondary text or status labels.
+- **Session rail row**: `‹marker› <title>` + a dim `<n runs · $total>` line;
+  `title=` carries the full untruncated goal. Active row: amber `›`, primary
+  text, subtle left border.
+- **GOAL header** ("tape label"): pinned at the top of the thread — the full,
+  wrapped, selectable prompt under a faint `GOAL` label, then a meta line:
+  run id · state · duration · cost · `review <backend·model> · build … ·
+  verify …`. Hairline bottom border, no card.
+- **Step block**: collapsible; header `▾ <role> · <backend> · <model> ·
+  $<cost> [· iter N] [· PASS/FAIL]`. A no-response step renders as a thin
+  dimmed line (`opacity .55`), not a full card, so real content dominates.
+- **Tool call**: one collapsed line `▸ <ToolName> <primary arg> …<result
+  summary>`; expands to formatted args and — for a file write — an inline diff
+  at a **fixed height** so iteration 1 and iteration 3 compare at a glance.
+  Shell shows a capped `<pre>` + exit code. A parse-failed block becomes a
+  `requested: <ToolName>` chip — raw `<tool_call>` XML never reaches the prose.
+- **Transport bar**: `stop` is disabled/dim unless a run is live (no red when
+  idle); the steer input doubles as the start-a-run input when nothing is
+  active; the right side shows the state word, a real duration (`MM:SS`, or
+  `Nh MMm` past an hour — one shared formatter with the playhead ruler), and
+  running cost, with the braille spinner only while live.
+- **Overlay panels**: hairline left border, own scroll, mono form controls.
+  Config carries per-role backend + model, max iterations, permissions,
+  `max_cost_usd` (empty clears it), a masked OpenRouter key indicator
+  (`sk-or…c064`, write-only replace), global + project memory, email
+  notifications, and the full **MCP servers editor** (name, stdio-command /
+  SSE-URL, args, `KEY=VALUE` env, enabled, auto-approve). Tools panel: a
+  read-only `name / RO·RW / description` table. MCP panel: per-server
+  connected / error / disabled status with a wrapping tool-chip list and a
+  recheck button.
 
-## Tool Integration
+## Responsive
 
-The web UI surfaces tool calls as first-class events in the run detail view:
+One breakpoint at `700px`: the session rail becomes a slide-in drawer behind a
+`☰` toggle, the topbar drops the session title, timeline lanes shrink to one
+line, overlay panels go full-width, and the transport bar wraps with the
+status readout on its own row above the input.
 
-- **Tool call timeline**: a chronological list of every tool invoked during a
-  step, showing tool name, status (success/failure), and execution time.
-- **Expandable output**: large outputs (file contents, diffs, command output)
-  are collapsed by default and expand on demand.
-- **Visual diff viewer**: file changes are rendered with added/removed line
-  highlighting and links to the full file content.
-- **Real-time updates**: the run detail page polls the `/api/runs/{run_id}`
-  endpoint so new tool calls appear as the orchestrator executes them.
+## Do / don't
 
-Tool calls are persisted in the run state JSON and in a dedicated
-`tool_calls` SQLite table for querying and auditing. The orchestrator remains
-in control of the workflow: it parses tool requests from agent responses,
-executes the tools, and returns the results.
+- **Do** keep amber for the one live element; **don't** spend it on links,
+  headings, or static labels.
+- **Do** gate every animation behind `body.run-live`; **don't** animate an
+  idle or finished view.
+- **Do** show the full goal in the GOAL header and on hover; **don't** leave a
+  run with only truncated context.
+- **Don't** reintroduce cards, shadows, rounded containers, a light theme, or
+  a second typeface.
+
+## Known follow-ups (not blockers)
+
+- Interactive web permission prompts: with `permissions: prompt`, the headless
+  web thread still denies mutating tools (the SSE stream has no permission
+  round-trip yet).
+- No session-level SSE stream; the sessions list is refetched.
+- No queue-management UI (cancel / reorder queued runs).
+- Mobile at ~390px is code-reviewed, not screenshot-verified (the review
+  browser stopped honoring viewport resize).

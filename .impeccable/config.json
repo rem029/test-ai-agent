@@ -14,6 +14,66 @@
         "value": "#fef2f2",
         "createdAt": "2026-08-28T19:10:04.119Z",
         "reason": "incumbent styles.css status-tint convention: value already used for .badge.danger/.status-message.error/.detail-error; matches DESIGN.md fail-bg intent"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "11px",
+        "createdAt": "2026-08-29T20:11:17.560Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "12px",
+        "createdAt": "2026-08-29T20:11:17.671Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "13px",
+        "createdAt": "2026-08-29T20:11:17.784Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "14px",
+        "createdAt": "2026-08-29T20:11:17.875Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#ffffff",
+        "createdAt": "2026-08-29T20:11:17.976Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#f4f5f7",
+        "createdAt": "2026-08-29T20:11:18.074Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#4e5765",
+        "createdAt": "2026-08-29T20:11:18.183Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#3a4048",
+        "createdAt": "2026-08-29T20:11:18.285Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#3a414b",
+        "createdAt": "2026-08-29T20:11:18.390Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "#20242b",
+        "createdAt": "2026-08-29T20:11:18.487Z",
+        "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
       }
     ]
   }

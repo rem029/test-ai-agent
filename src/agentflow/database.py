@@ -242,7 +242,7 @@ def append_event(
 
 
 def list_events(
-    run_id: str, path: Path | None = None
+    run_id: str, after_seq: int = 0, path: Path | None = None
 ) -> list[dict]:
     """Return all events for a run in chronological order."""
     db_path = path or DEFAULT_DATABASE_PATH
@@ -253,10 +253,10 @@ def list_events(
             """
             SELECT seq, type, payload_json, ts
             FROM events
-            WHERE run_id = ?
+            WHERE run_id = ? AND seq > ?
             ORDER BY seq ASC
             """,
-            (run_id,),
+            (run_id, after_seq),
         ).fetchall()
     return [
         {
