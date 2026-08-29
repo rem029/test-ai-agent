@@ -1138,5 +1138,170 @@ def test_static_assets_contain_session_composer_and_thread(tmp_path):
     assert ".composer" in css_resp.text
 
 
+def test_api_run_stream_finished_run(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-1",
+        goal="Test streaming finished",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+    append_event("run-stream-1", 1, "run_started", {"goal": "Test streaming finished"}, path=db)
+    append_event("run-stream-1", 2, "step_started", {"role": "build"}, path=db)
+    append_event("run-stream-1", 3, "run_finished", {"finished_at": 2.0}, path=db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/run-stream-1/stream")
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    assert resp.headers["cache-control"] == "no-cache"
+
+    text = resp.text
+    assert "id: 1\nevent: run_started\ndata: {\"goal\": \"Test streaming finished\"}\n\n" in text
+    assert "id: 2\nevent: step_started\ndata: {\"role\": \"build\"}\n\n" in text
+    assert "id: 3\nevent: run_finished\ndata: {\"finished_at\": 2.0}\n\n" in text
+    assert "event: done\ndata: {}\n\n" in text
+
+
+def test_api_run_stream_reconnection_last_event_id(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-2",
+        goal="Test Last-Event-ID",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+    append_event("run-stream-2", 1, "run_started", {"goal": "Test Last-Event-ID"}, path=db)
+    append_event("run-stream-2", 2, "step_started", {"role": "review"}, path=db)
+    append_event("run-stream-2", 3, "run_finished", {"finished_at": 2.0}, path=db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/run-stream-2/stream", headers={"Last-Event-ID": "2"})
+    assert resp.status_code == 200
+    text = resp.text
+
+    assert "id: 1" not in text
+    assert "id: 2" not in text
+    assert "id: 3\nevent: run_finished\ndata: {\"finished_at\": 2.0}\n\n" in text
+    assert "event: done\ndata: {}\n\n" in text
+
+
+def test_api_run_stream_unknown_run_returns_404(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/nonexistent-run/stream")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Run not found"
+
+
+def test_api_run_stream_invalid_last_event_id(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-3",
+        goal="Test invalid header",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+    append_event("run-stream-3", 1, "run_started", {"goal": "Test invalid header"}, path=db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/runs/run-stream-3/stream", headers={"Last-Event-ID": "invalid-seq"})
+    assert resp.status_code == 200
+    text = resp.text
+    assert "id: 1\nevent: run_started" in text
+    assert "event: done\ndata: {}\n\n" in text
+
+
+def test_api_run_stream_project_scoping(tmp_path):
+    from agentflow.database import append_event, save_run
+    from agentflow.orchestrator import RunState
+
+    dir_a = tmp_path / "repo-a"
+    dir_b = tmp_path / "repo-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    db_file = dir_a / "agentflow.db"
+
+    state = RunState(
+        run_id="run-stream-proj",
+        goal="Scoped stream",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+    )
+    save_run(state, str(dir_b.resolve()), db_file)
+    append_event("run-stream-proj", 1, "run_started", {"goal": "Scoped stream"}, path=db_file)
+
+    client = _make_client(dir_a, projects=[str(dir_a), str(dir_b)])
+
+    # With project=dir_b -> 200
+    resp_b = client.get(f"/api/runs/run-stream-proj/stream?project={dir_b.resolve()}")
+    assert resp_b.status_code == 200
+    assert "id: 1\nevent: run_started" in resp_b.text
+
+    # With project=dir_a -> 404
+    resp_a = client.get(f"/api/runs/run-stream-proj/stream?project={dir_a.resolve()}")
+    assert resp_a.status_code == 404
+
+
+def test_api_run_stream_keepalive(tmp_path):
+    from agentflow.database import save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    state = RunState(
+        run_id="run-stream-live",
+        goal="Live stream",
+        started_at=100.0,
+        finished_at=None,
+        config={},
+    )
+    save_run(state, str(tmp_path), db)
+
+    client = _make_client(tmp_path)
+
+    call_count = 0
+    in_mock = False
+    def mock_time():
+        nonlocal call_count, in_mock
+        if in_mock:
+            return 130.0
+        call_count += 1
+        if call_count == 1:
+            return 100.0
+        elif call_count == 2:
+            return 120.0
+        else:
+            in_mock = True
+            try:
+                state.finished_at = 130.0
+                save_run(state, str(tmp_path), db)
+            finally:
+                in_mock = False
+            return 130.0
+
+    with patch("agentflow.web.app.time.time", side_effect=mock_time):
+        resp = client.get("/api/runs/run-stream-live/stream")
+        assert resp.status_code == 200
+        assert ": keepalive\n\n" in resp.text
+        assert "event: done\ndata: {}\n\n" in resp.text
+
+
+
+
 
 

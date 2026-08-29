@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -346,6 +348,64 @@ def create_app(
             raise HTTPException(status_code=404, detail="Run not found")
         events = list_events(run_id, path=db_path)
         return {"events": events}
+
+    @app.get("/api/runs/{run_id}/stream")
+    async def run_stream(run_id: str, request: Request, project: Optional[str] = None) -> StreamingResponse:
+        """Stream live run events as Server-Sent Events (SSE)."""
+        target_cwd = _resolve_project(project)
+        run = load_run(run_id, target_cwd, path=db_path)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        async def event_generator():
+            last_seq = 0
+            raw_last_id = request.headers.get("last-event-id")
+            if raw_last_id is not None:
+                try:
+                    last_seq = int(raw_last_id)
+                except ValueError:
+                    last_seq = 0
+
+            last_event_time = time.time()
+            max_iterations = 7200
+            iterations = 0
+
+            while iterations < max_iterations:
+                if await request.is_disconnected():
+                    return
+
+                events = list_events(run_id, after_seq=last_seq, path=db_path)
+                if events:
+                    for ev in events:
+                        yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev['payload'])}\n\n"
+                        last_seq = ev["seq"]
+                    last_event_time = time.time()
+                else:
+                    current_run = load_run(run_id, target_cwd, path=db_path)
+                    if current_run is not None and current_run.get("finished_at") is not None:
+                        yield "event: done\ndata: {}\n\n"
+                        return
+
+                    now = time.time()
+                    if now - last_event_time >= 15.0:
+                        yield ": keepalive\n\n"
+                        last_event_time = now
+
+                if await request.is_disconnected():
+                    return
+
+                await asyncio.sleep(0.5)
+                iterations += 1
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @app.get("/api/sessions")
     async def sessions(project: Optional[str] = None) -> dict:

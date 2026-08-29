@@ -231,3 +231,28 @@ def test_cli_list_sessions(tmp_path, capsys):
     assert rc == 0
     captured = capsys.readouterr()
     assert "sess-xyz" in captured.out
+
+
+def test_list_events_after_seq(tmp_path):
+    db_path = tmp_path / "test.db"
+    run_id = "run-inc"
+
+    append_event(run_id, 1, "run_started", {"goal": "test"}, path=db_path)
+    append_event(run_id, 2, "step_started", {"step": 1}, path=db_path)
+    append_event(run_id, 3, "step_finished", {"step": 1}, path=db_path)
+    append_event(run_id, 4, "run_finished", {"status": "ok"}, path=db_path)
+
+    # after_seq=0 (default) returns all events
+    all_events = list_events(run_id, path=db_path)
+    assert len(all_events) == 4
+    assert [e["seq"] for e in all_events] == [1, 2, 3, 4]
+
+    # after_seq=2 returns events with seq > 2
+    after_2 = list_events(run_id, after_seq=2, path=db_path)
+    assert len(after_2) == 2
+    assert [e["seq"] for e in after_2] == [3, 4]
+
+    # after_seq=4 returns empty list
+    after_4 = list_events(run_id, after_seq=4, path=db_path)
+    assert after_4 == []
+
