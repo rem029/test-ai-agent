@@ -12,7 +12,7 @@ import os
 import sys
 
 from .backends import BACKENDS
-from .config import DEFAULT_CONFIG_PATH, load_config
+from .config import Config, CredentialsConfig, DEFAULTS, DEFAULT_CONFIG_PATH, dump_config, load_config
 from .models import get_all_models
 from .orchestrator import RunInProgressError, run_workflow
 from .tools import list_tools
@@ -218,10 +218,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.set_openrouter_key is not None:
-        from .dotenv import set_dotenv_var
-
-        set_dotenv_var("OPENROUTER_API_KEY", args.set_openrouter_key, ".env")
-        print("OpenRouter API key saved to .env")
+        try:
+            cfg = load_config(config_path)
+        except Exception:
+            cfg = Config(
+                review=DEFAULTS["review"],
+                build=DEFAULTS["build"],
+                verify=DEFAULTS["verify"],
+            )
+        if cfg.credentials is None:
+            cfg.credentials = CredentialsConfig()
+        cfg.credentials.openrouter_api_key = args.set_openrouter_key
+        dump_config(cfg, config_path)
+        print(f"OpenRouter API key saved to {config_path}")
         return 0
 
     if args.version:

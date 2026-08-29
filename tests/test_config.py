@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agentflow.config import (
     Config,
+    CredentialsConfig,
     NotificationConfig,
     RoleConfig,
     _from_file,
@@ -57,6 +58,45 @@ def test_dump_and_load_config_notifications_roundtrip(tmp_path):
     assert loaded.notifications.smtp_port == 465
     assert loaded.notifications.notify_on == ["finished", "blocked"]
     assert loaded.notifications.base_url == "https://agentui.example.com"
+
+
+def test_dump_and_load_config_credentials_roundtrip(tmp_path):
+    config_file = tmp_path / "agentflow.config.yaml"
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity", model="gemini-2.5-pro"),
+        verify=RoleConfig(backend="claude-code"),
+        credentials=CredentialsConfig(
+            openrouter_api_key="sk-or-test-not-a-real-key",
+            smtp_password="test-smtp-password-123",
+        ),
+    )
+
+    dump_config(cfg, str(config_file))
+    assert oct(config_file.stat().st_mode & 0o777) == oct(0o600)
+
+    raw_data = _from_file(str(config_file))
+    assert "credentials" in raw_data
+    assert raw_data["credentials"]["openrouter_api_key"] == "sk-or-test-not-a-real-key"
+    assert raw_data["credentials"]["smtp_password"] == "test-smtp-password-123"
+
+    loaded = load_config(str(config_file))
+    assert loaded.credentials is not None
+    assert loaded.credentials.openrouter_api_key == "sk-or-test-not-a-real-key"
+    assert loaded.credentials.smtp_password == "test-smtp-password-123"
+
+
+def test_dump_config_omits_empty_credentials(tmp_path):
+    config_file = tmp_path / "agentflow.config.yaml"
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        credentials=CredentialsConfig(),
+    )
+    dump_config(cfg, str(config_file))
+    raw_data = _from_file(str(config_file))
+    assert "credentials" not in raw_data
 
 
 def test_dump_config_strips_deprecated_secrets_from_existing_file(tmp_path):

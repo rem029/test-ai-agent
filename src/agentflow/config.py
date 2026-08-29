@@ -40,6 +40,11 @@ class NotificationConfig(BaseModel):
     base_url: str | None = None   # e.g. https://agentui.app.rem029.com — used to build a run link
 
 
+class CredentialsConfig(BaseModel):
+    openrouter_api_key: str | None = None
+    smtp_password: str | None = None
+
+
 class RoleConfig(BaseModel):
     backend: BackendName
     model: str | None = None
@@ -53,6 +58,7 @@ class Config(BaseModel):
     permissions: PermissionMode = "auto"
     max_cost_usd: float | None = None
     notifications: NotificationConfig | None = None
+    credentials: CredentialsConfig | None = None
 
     def roles(self) -> dict[str, RoleConfig]:
         return {"review": self.review, "build": self.build, "verify": self.verify}
@@ -132,6 +138,17 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     if notif is not None:
         roles["notifications"] = notif
 
+    credentials_data = file_data.get("credentials")
+    if isinstance(credentials_data, dict):
+        creds = CredentialsConfig(**credentials_data)
+    elif isinstance(credentials_data, CredentialsConfig):
+        creds = credentials_data
+    else:
+        creds = None
+
+    if creds is not None:
+        roles["credentials"] = creds
+
     return Config(**roles)
 
 
@@ -155,6 +172,10 @@ def dump_config(
         data["max_cost_usd"] = config.max_cost_usd
     if config.notifications is not None:
         data["notifications"] = config.notifications.model_dump(exclude_none=True)
+    if config.credentials is not None:
+        creds_dump = config.credentials.model_dump(exclude_none=True)
+        if creds_dump:
+            data["credentials"] = creds_dump
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)

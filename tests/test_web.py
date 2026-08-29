@@ -627,26 +627,25 @@ def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post
     post_data = resp.json()
     assert post_data["ok"] is True
     assert post_data["openrouter_key"]["set"] is True
-    assert post_data["openrouter_key"]["source"] == "env"
+    assert post_data["openrouter_key"]["source"] == "config"
     assert post_data["openrouter_key"]["masked"] != real_key
     assert real_key not in resp.text
 
-    env_path = tmp_path / ".env"
-    assert env_path.exists()
-    assert oct(env_path.stat().st_mode & 0o777) == oct(0o600)
-    assert f"OPENROUTER_API_KEY={real_key}" in env_path.read_text()
-    assert "openrouter_api_key" not in _from_file(str(config_path))
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+    raw = _from_file(str(config_path))
+    assert raw["credentials"]["openrouter_api_key"] == real_key
 
     # 2. GET /api/config verifies masked status and no raw key leak
     get_resp = client.get("/api/config")
     assert get_resp.status_code == 200
     get_data = get_resp.json()
     assert get_data["openrouter_key"]["set"] is True
-    assert get_data["openrouter_key"]["source"] == "env"
+    assert get_data["openrouter_key"]["source"] == "config"
     assert get_data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
     assert real_key not in get_resp.text
 
-    # 3. POST /api/config without the field preserves the existing key in .env
+    # 3. POST /api/config without the field preserves the existing key in config
     post2_resp = client.post(
         "/api/config",
         json={
@@ -660,8 +659,8 @@ def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post
         },
     )
     assert post2_resp.status_code == 200
-    assert f"OPENROUTER_API_KEY={real_key}" in env_path.read_text()
-    assert "openrouter_api_key" not in _from_file(str(config_path))
+    raw2 = _from_file(str(config_path))
+    assert raw2["credentials"]["openrouter_api_key"] == real_key
     assert real_key not in post2_resp.text
 
 
@@ -966,15 +965,14 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
     assert post_data["notifications"]["enabled"] is True
     assert post_data["notifications"]["email_to"] == "alerts@example.com"
     assert post_data["smtp_password"]["set"] is True
-    assert post_data["smtp_password"]["source"] == "env"
+    assert post_data["smtp_password"]["source"] == "config"
     assert post_data["smtp_password"]["masked"] != real_pw
     assert real_pw not in post_resp.text
 
-    env_path = tmp_path / ".env"
-    assert env_path.exists()
-    assert oct(env_path.stat().st_mode & 0o777) == oct(0o600)
-    assert f"AGENTFLOW_SMTP_PASSWORD={real_pw}" in env_path.read_text()
-    assert "smtp_password" not in _from_file(str(config_path))
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+    raw = _from_file(str(config_path))
+    assert raw["credentials"]["smtp_password"] == real_pw
 
     # 3. GET /api/config verifies masked password and no raw secret leak
     get_resp = client.get("/api/config")
@@ -982,11 +980,11 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
     get_data = get_resp.json()
     assert get_data["notifications"]["enabled"] is True
     assert get_data["smtp_password"]["set"] is True
-    assert get_data["smtp_password"]["source"] == "env"
+    assert get_data["smtp_password"]["source"] == "config"
     assert get_data["smtp_password"]["masked"] == f"{real_pw[:8]}…{real_pw[-4:]}"
     assert real_pw not in get_resp.text
 
-    # 4. POST /api/config without smtp_password preserves existing password in .env
+    # 4. POST /api/config without smtp_password preserves existing password in config
     post2_resp = client.post(
         "/api/config",
         json={
@@ -1003,8 +1001,8 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
         },
     )
     assert post2_resp.status_code == 200
-    assert f"AGENTFLOW_SMTP_PASSWORD={real_pw}" in env_path.read_text()
-    assert "smtp_password" not in _from_file(str(config_path))
+    raw2 = _from_file(str(config_path))
+    assert raw2["credentials"]["smtp_password"] == real_pw
     assert real_pw not in post2_resp.text
 
 

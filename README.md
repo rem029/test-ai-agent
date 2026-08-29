@@ -110,19 +110,28 @@ permissions: auto  # auto | prompt | deny
 max_cost_usd: 1.00  # optional budget limit in USD
 ```
 
-API keys and secrets (such as `OPENROUTER_API_KEY` and `AGENTFLOW_SMTP_PASSWORD`) are read from `.env` (or environment variables) and are never stored in `agentflow.config.yaml`:
+API keys and secrets (such as `OPENROUTER_API_KEY` and `AGENTFLOW_SMTP_PASSWORD`)
+are stored in `agentflow.config.yaml` under a `credentials:` block — this is the
+installed application's config store, and both the CLI and web UI read and write
+it. The file is written mode `0600` and is gitignored.
 
-```bash
-cp .env.example .env
-# Edit .env and set your OPENROUTER_API_KEY
+```yaml
+credentials:
+  openrouter_api_key: sk-or-...
+  smtp_password: ...
 ```
 
-Alternatively, set the environment variable directly or via CLI:
+Set the OpenRouter key via CLI or the web config panel:
+
+```bash
+uv run agentflow --set-openrouter-key "your-key"   # writes agentflow.config.yaml
+```
+
+An environment variable (or `.env` entry) of the same name overrides the config
+file — intended for local development only:
 
 ```bash
 export OPENROUTER_API_KEY="your-key"
-# or save to .env using:
-uv run agentflow --set-openrouter-key "your-key"
 ```
 
 Check that the configured backends are installed and authenticated:

@@ -457,6 +457,12 @@ permissions and is gitignored.
 
 *(Note 2026-08-29)*: Credential storage moved to `.env` (env vars only); `agentflow.config.yaml` no longer holds secrets.
 
+*(Note 2026-08-29, reversed)*: Secrets moved back into `agentflow.config.yaml`
+under a `credentials:` block — this is the installed app's config store (CLI and
+web both read/write it). Resolution order: env var (dev override) > config file
+`credentials.<field>` > none. File stays `0600` and gitignored; API responses
+never echo the raw key (only masked + source).
+
 ### Phase G — Central local persistence
 
 **Implemented:** Backend settings are stored in the project-local `agentflow.config.yaml`.
@@ -466,6 +472,8 @@ so the web UI no longer depends on `.agentflow/runs/*.json` inside individual
 projects.
 
 *(Note 2026-08-29)*: Credential storage moved to `.env` (env vars only); `agentflow.config.yaml` no longer holds secrets. The CLI `--set-openrouter-key` and web UI write keys to `.env` (mode 0600).
+
+*(Note 2026-08-29, reversed)*: `--set-openrouter-key` and the web UI now write `agentflow.config.yaml` (`credentials:` block) again; `.env` / env vars remain a dev-only override.
 
 ## Status
 

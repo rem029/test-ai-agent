@@ -114,19 +114,23 @@ def test_openrouter_key_flag_sets_invocation_environment(monkeypatch):
     assert os.environ["OPENROUTER_API_KEY"] == "test-key"
 
 
-def test_set_openrouter_key_persists_to_dotenv(tmp_path, monkeypatch, capsys):
+def test_set_openrouter_key_persists_to_config(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     ret = main(["--set-openrouter-key", "saved-key-12345"])
 
     assert ret == 0
     captured = capsys.readouterr()
-    assert "OpenRouter API key saved to .env" in captured.out
+    assert "OpenRouter API key saved to agentflow.config.yaml" in captured.out
 
-    env_path = tmp_path / ".env"
-    assert env_path.exists()
-    assert oct(env_path.stat().st_mode & 0o777) == oct(0o600)
-    assert "OPENROUTER_API_KEY=saved-key-12345" in env_path.read_text()
-    assert os.environ.get("OPENROUTER_API_KEY") == "saved-key-12345"
+    config_path = tmp_path / "agentflow.config.yaml"
+    assert config_path.exists()
+    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
+
+    from agentflow.config import load_config
+
+    cfg = load_config(str(config_path))
+    assert cfg.credentials is not None
+    assert cfg.credentials.openrouter_api_key == "saved-key-12345"
 
 
 def test_cli_say_flag(capsys):

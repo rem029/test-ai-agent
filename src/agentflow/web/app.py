@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..backends import BACKENDS
 from ..config import (
     Config,
+    CredentialsConfig,
     DEFAULT_CONFIG_PATH,
     NotificationConfig,
     PermissionMode,
@@ -116,6 +117,7 @@ def _build_config_from_overrides(
         permissions=base_config.permissions,
         max_cost_usd=base_config.max_cost_usd,
         notifications=base_config.notifications,
+        credentials=base_config.credentials,
     )
     return new_config
 
@@ -153,7 +155,7 @@ def create_app(
     database_path: Path | None = None,
     projects: list[str] | None = None,
 ) -> FastAPI:
-    from ..dotenv import load_env, set_dotenv_var
+    from ..dotenv import load_env
 
     load_env(cwd)
 
@@ -198,6 +200,7 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
         resp = config.model_dump()
+        resp.pop("credentials", None)
         resp["openrouter_key"] = openrouter_api_key_info(config_path)
         resp["notifications"] = config.notifications.model_dump() if config.notifications else None
         resp["smtp_password"] = smtp_password_info(config_path)
@@ -225,6 +228,20 @@ def create_app(
         elif current_config is not None:
             notif_cfg = current_config.notifications
 
+        existing_creds = current_config.credentials if current_config else None
+        existing_or_key = existing_creds.openrouter_api_key if existing_creds else None
+        existing_smtp_pw = existing_creds.smtp_password if existing_creds else None
+
+        new_or_key = data.openrouter_api_key.strip() if (data.openrouter_api_key and data.openrouter_api_key.strip()) else existing_or_key
+        new_smtp_pw = data.smtp_password.strip() if (data.smtp_password and data.smtp_password.strip()) else existing_smtp_pw
+
+        creds_cfg = None
+        if new_or_key or new_smtp_pw:
+            creds_cfg = CredentialsConfig(
+                openrouter_api_key=new_or_key,
+                smtp_password=new_smtp_pw,
+            )
+
         config = Config(
             review=RoleConfig(backend=data.review_backend, model=data.review_model),
             build=RoleConfig(backend=data.build_backend, model=data.build_model),
@@ -233,18 +250,17 @@ def create_app(
             permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
             max_cost_usd=data.max_cost_usd if data.max_cost_usd is not None else (current_config.max_cost_usd if current_config else None),
             notifications=notif_cfg,
+            credentials=creds_cfg,
         )
-        if data.openrouter_api_key and data.openrouter_api_key.strip():
-            set_dotenv_var("OPENROUTER_API_KEY", data.openrouter_api_key.strip(), Path(cwd) / ".env")
-        if data.smtp_password and data.smtp_password.strip():
-            set_dotenv_var("AGENTFLOW_SMTP_PASSWORD", data.smtp_password.strip(), Path(cwd) / ".env")
         try:
             dump_config(config, config_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
+        resp_cfg = config.model_dump()
+        resp_cfg.pop("credentials", None)
         return {
             "ok": True,
-            "config": config.model_dump(),
+            "config": resp_cfg,
             "openrouter_key": openrouter_api_key_info(config_path),
             "notifications": config.notifications.model_dump() if config.notifications else None,
             "smtp_password": smtp_password_info(config_path),
