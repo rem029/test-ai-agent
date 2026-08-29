@@ -1201,6 +1201,121 @@ mcp_servers:
   skill's instructions into the relevant step's prompt. Keep it
   hand-rolled - no third-party skill runtime.
 
+## Phase M - Release & distribution (Linux only, for now)
+
+**Requested 2026-08-29. Not yet implemented.**
+
+**Goal:** a one-liner install on Linux -
+`curl -fsSL https://rem029.agentflow.com/install.sh | sh` - plus tagged
+GitHub Releases with downloadable artifacts. Linux `x86_64` + `aarch64` only
+for the first release; macOS/Windows later.
+
+**Why it's feasible cheaply:** every dependency (`google-antigravity`, `mcp`,
+`fastapi`, `pydantic`, `rich`, `prompt_toolkit`, `pyyaml`, `httpx`,
+`uvicorn`) ships as a pure-Python wheel - no compiled extensions - so a
+single built wheel runs on any Linux with a Python 3.11+ runtime. The heavy
+lifting (Python provisioning, isolated env, dependency resolution, PATH
+shim) is all handled by `uv tool install`, which the script just bootstraps.
+The actual LLM backends (`claude`, `agy`) are the user's own separate
+installs and out of scope here.
+
+### M1 - Packaging
+
+- `pyproject.toml` for real distribution: confirm the project `name`
+  (PyPI-safe; `agentflow` if the name is free, else `rem029-agentflow` -
+  affects every install URL), single-source `version`, `license`, `readme`,
+  classifiers, `requires-python = ">=3.11"`. The `[project.scripts]`
+  `agentflow = "agentflow:main"` entry point already exists.
+- Verify `uv build` includes the vendored web assets
+  (`src/agentflow/web/static/*`) and `tests/fixtures/fake_mcp_server.py` is
+  NOT shipped. `uv_build` is already the backend; check the wheel contents
+  (`unzip -l dist/*.whl`).
+- `uv build` -> `dist/agentflow-<v>-py3-none-any.whl` + `dist/*.tar.gz`.
+- Decide: publish to PyPI as well? Not required for the `install.sh` path
+  (which pulls the wheel straight from the GitHub Release), but it makes
+  `uv tool install agentflow` / `pipx install agentflow` work for everyone.
+  If yes, reserve the name now.
+
+### M2 - GitHub Release automation
+
+- `.github/workflows/release.yml`: trigger on pushing a `v*` tag.
+  Steps: checkout, `astral-sh/setup-uv`, `uv build`, generate `SHA256SUMS`,
+  `gh release create v<x> dist/* SHA256SUMS install.sh --generate-notes`.
+- Guard: fail the job if the tag != `project.version` in `pyproject.toml`.
+- Release notes: `--generate-notes` plus a hand-curated summary pulled from
+  the PLAN "Phase N done" lines since the last tag.
+- Artifacts on the release: the wheel, the sdist, `SHA256SUMS`, and a copy
+  of `install.sh` (so a release-pinned script URL exists).
+
+### M3 - `install.sh` (repo root)
+
+POSIX `sh`, `set -eu`, no bashisms. Flow:
+
+1. `uname -s` must be `Linux` (else print "only Linux is supported right
+   now" and exit 1). `uname -m` -> `x86_64` | `aarch64`; anything else exits
+   with a clear message. (The wheel is arch-independent, but the check keeps
+   the promise honest and lets a future arch-specific asset slot in.)
+2. Need one of `curl` / `wget`, plus `sh`, `uname`, `mktemp` - all base.
+3. Ensure `uv`: if absent, install via `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   (or honour `AGENTFLOW_NO_UV_BOOTSTRAP=1` and error out). `uv` provides its
+   own Python, so that's the only prerequisite.
+4. Resolve the version: `AGENTFLOW_VERSION` env if set, else the latest tag
+   from `https://api.github.com/repos/<owner>/<repo>/releases/latest`.
+5. `uv tool install --force agentflow \
+     --from https://github.com/<owner>/<repo>/releases/download/v<v>/agentflow-<v>-py3-none-any.whl`
+   (`--force` makes re-runs an upgrade). Optionally verify the wheel against
+   `SHA256SUMS` first.
+6. Check `~/.local/bin` (or `uv tool dir`'s bin) is on `PATH`; if not, print
+   the exact `export PATH=...` line and the shell-rc snippet.
+7. `agentflow --version` sanity check; then print "next: `agentflow --check`".
+
+- Idempotent, safe to pipe from `curl`. Keep it short and auditable.
+- `agentflow --version` already exists and prints
+  `importlib.metadata.version("agentflow")` (so the packaged dist name is
+  `agentflow` - if that's taken on PyPI and we publish there, this call and
+  the dist name both change together).
+
+### M4 - Where to host `install.sh`
+
+- **Source of truth:** `install.sh` in the repo root - versioned, code-reviewed,
+  attached to each release by M2.
+- **Served at `https://rem029.agentflow.com/install.sh` via, in order of
+  preference:**
+  1. **GitHub Pages** on this repo (a `/docs` dir or a `gh-pages` branch)
+     with a `CNAME` file containing `rem029.agentflow.com`, and a DNS
+     `CNAME rem029 -> <owner>.github.io`. Free, automatic HTTPS, no server to
+     run, updates on push. The release job copies the tagged `install.sh` to
+     the Pages source so the hosted script is always a released version.
+     **Recommended.**
+  2. **The existing Coolify host** (already serving `agentui.app.rem029.com`
+     for this project) - add a tiny static route / nginx container serving
+     `install.sh` from a checkout. Uses infra already operated; good if the
+     script should track a branch without a Pages deploy. Second choice.
+  3. **Cloudflare Pages / Workers** if `agentflow.com` DNS is already on
+     Cloudflare - same upsides as GitHub Pages plus redirect control.
+  4. **No custom domain / zero setup:** document
+     `https://raw.githubusercontent.com/<owner>/<repo>/v<v>/install.sh`
+     directly - works today, just an uglier URL.
+- **Release artifacts** (wheel, sdist, checksums) are always hosted by
+  GitHub Releases - no decision needed there.
+
+### M5 - Docs
+
+- README "Install" section: the `curl | sh` one-liner, the manual
+  `uv tool install` path, and the "grab the wheel from Releases" path.
+- Security note: reading the script before piping to `sh`, verifying
+  `SHA256SUMS`, and pinning `AGENTFLOW_VERSION`.
+
+### Open questions for the user
+
+- Do you control `agentflow.com` / the `rem029.agentflow.com` DNS record?
+  (Decides M4: option 1/3 need it, option 2 can use `*.rem029.com`.)
+- Publish to PyPI too, or GitHub Releases only?
+- Will the repo stay `rem029/test-ai-agent` or be renamed to
+  `rem029/agentflow` before the first release? Every install URL depends on
+  this - worth settling first.
+- Confirm `aarch64` matters for v1, or is `x86_64`-only fine to start?
+
 ## Housekeeping
 
 - Gitignore `.agentflow-test-todo/` (a stray workflow output artifact committed
