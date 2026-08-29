@@ -939,6 +939,45 @@ first (claude-code and openrouter usage already flow through).
   $<running cost>`. Footer call passes the session.
 
 
+## Phase J.6 - REPL: `@`-file completion (do next)
+
+Requested 2026-08-29. Like Claude Code: typing `@` at the between-turns
+prompt pops a fuzzy file picker for files in the project.
+
+### Autocomplete
+- Extend the completer in `tui/completion.py`. Today `SlashCommandCompleter`
+  only fires on a leading `/`; add an `@`-branch (or a second completer
+  combined via `prompt_toolkit.completion.merge_completers`).
+- When the token under the cursor starts with `@`, complete file paths
+  under `cwd`. File list source: `git ls-files` (tracked) plus untracked-
+  not-ignored (`git ls-files --others --exclude-standard`); fall back to a
+  bounded `os.walk` skipping `.git/` when not a git repo. Cache the list
+  per REPL session, refresh lazily (e.g. on each fresh prompt, or every
+  ~30s).
+- Fuzzy match the text after `@` — wrap the path completer in
+  `prompt_toolkit.completion.FuzzyCompleter`, or match with a small
+  subsequence scorer. Show the path as `display`, the containing dir as
+  `display_meta`.
+- Insert `@<path>` on selection. `complete_while_typing=True` is already
+  set, so the menu appears as soon as `@` is typed.
+- tty / between-turns prompt only (the mid-run `select` input path from
+  J.5a stays plain — no completion there).
+
+### Expansion (decide the semantics)
+Autocomplete only inserts text; something must act on `@path` when the
+goal is submitted. Options, cheapest first:
+- Leave it literal — the path string is context enough for the agent
+  (it has Read tools). Zero code.
+- Expand in the REPL before dispatch: replace each `@path` with the file
+  contents fenced as ```` ```path ... ``` ```` (cap size; skip binary),
+  mirroring how `_drain_steer` folds text in. New helper in `repl.py` or
+  `commands.py`.
+- A dedicated `@`-mentions parser shared by REPL + web composer (aligns
+  with Phase K).
+Recommendation: ship autocomplete + literal passthrough first; add
+contents-expansion as a follow-up if the agent needs it.
+
+
 ## Phase K - Web console rewrite (OpenCode-like)
 
 - Delete the dead templates, `login.html`, `auth.css`, and the empty
