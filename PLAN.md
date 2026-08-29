@@ -927,6 +927,13 @@ showed literal `?[36m` codes and didn't wrap. Now `patch_stdout(raw=True)`
 and the in-turn `Console` gets an explicit `shutil.get_terminal_size()`
 width. 336 tests pass.
 
+**Run indicator (branch `phase-j.5a-run-indicator`):** the dim
+`bottom_toolbar` was easy to miss. The prompt itself is now a two-line
+animated status while a run executes — cyan spinner + role + elapsed +
+cost + "Ctrl+C to interrupt" directly above the `›` input line, re-rendered
+every 0.3s via a callable `message` (`_turn_prompt_message`) + `_fmt_elapsed`.
+Toolbar restyled to match. 338 tests pass.
+
 ### J.5b - Persistent bottom status bar + richer footer
 
 `format_footer()` (`render.py:212`) already computes per-backend
