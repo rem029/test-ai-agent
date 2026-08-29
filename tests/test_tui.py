@@ -1482,7 +1482,8 @@ def test_list_project_files_git(tmp_path):
     assert ".gitignore" in files
     assert "tracked.txt" in files
     assert "untracked.txt" in files
-    assert "ignored.txt" not in files
+    assert "ignored.txt" in files
+    assert not any(f.startswith(".git/") or f == ".git" for f in files)
 
 
 def test_list_project_files_fallback(tmp_path):
@@ -1504,7 +1505,10 @@ def test_list_project_files_fallback(tmp_path):
     (plain_dir / "__pycache__" / "app.pyc").write_text("ignore")
 
     files = _list_project_files(str(plain_dir))
-    assert files == ["README.md", "src/app.py"]
+    assert "src/" in files
+    assert "README.md" in files
+    assert "src/app.py" in files
+    assert not any(".venv" in f or "node_modules" in f or "__pycache__" in f for f in files)
 
 
 def test_list_project_files_keeps_dot_dirs(tmp_path):
@@ -1520,8 +1524,70 @@ def test_list_project_files_keeps_dot_dirs(tmp_path):
     (plain_dir / "src" / "app.py").write_text("print(1)")
 
     files = _list_project_files(str(plain_dir))
-    assert files == [".github/workflows/ci.yml", "src/app.py"]
+    assert ".github/" in files
+    assert ".github/workflows/" in files
+    assert ".github/workflows/ci.yml" in files
+    assert "src/" in files
+    assert "src/app.py" in files
     assert not any(f.startswith(".git/") or f == ".git" for f in files)
+
+
+def test_list_project_files_includes_gitignored(tmp_path):
+    import shutil
+    import subprocess
+    import pytest
+    from agentflow.tui.completion import _list_project_files
+
+    if not shutil.which("git"):
+        pytest.skip("git not available")
+
+    repo_dir = tmp_path / "repo_ignored"
+    repo_dir.mkdir()
+    try:
+        subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+    except Exception:
+        pytest.skip("git init failed")
+
+    (repo_dir / ".gitignore").write_text("scratch/\n")
+    (repo_dir / "scratch").mkdir()
+    (repo_dir / "scratch" / "notes.py").write_text("secret notes")
+
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo_dir, check=True)
+
+    files = _list_project_files(str(repo_dir))
+    assert "scratch/notes.py" in files
+    assert "scratch/" in files
+
+
+def test_file_mention_completer_dir_entries():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = [".test/", ".test/dragtask/", ".test/dragtask/app.py", "src/app.py"]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    completions = list(completer.get_completions(Document("@.te", len("@.te")), CompleteEvent()))
+    texts = [c.text for c in completions]
+    assert texts[0] == ".test/"
+    assert ".test/dragtask/app.py" in texts
+    test_completion = next(c for c in completions if c.text == ".test/")
+    assert test_completion.display_meta_text == "dir"
+
+
+def test_score_strips_trailing_slash():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = [".test/", ".testing/", ".test/x.py"]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    completions = list(completer.get_completions(Document("@.test", len("@.test")), CompleteEvent()))
+    texts = [c.text for c in completions]
+    assert texts[0] == ".test/"
 
 
 def test_merged_completer_in_repl():
