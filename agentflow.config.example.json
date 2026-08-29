@@ -1,5 +1,4 @@
 {
-  "openrouter_api_key": "sk-or-...",
   "review": {
     "backend": "openrouter",
     "model": "deepseek/deepseek-chat"

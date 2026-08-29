@@ -138,9 +138,6 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
 def dump_config(
     config: Config,
     path: str,
-    *,
-    openrouter_api_key: str | None = None,
-    smtp_password: str | None = None,
 ) -> None:
     """Write a validated Config back to the agentflow YAML config.
 
@@ -160,13 +157,7 @@ def dump_config(
         data["notifications"] = config.notifications.model_dump(exclude_none=True)
 
     output = Path(path)
-    existing = _from_file(path)
-    key = openrouter_api_key if openrouter_api_key is not None else existing.get("openrouter_api_key")
-    if isinstance(key, str) and key:
-        data["openrouter_api_key"] = key
-    pw = smtp_password if smtp_password is not None else existing.get("smtp_password")
-    if isinstance(pw, str) and pw:
-        data["smtp_password"] = pw
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(yaml.safe_dump(data, sort_keys=False))
     output.chmod(0o600)
+

@@ -203,7 +203,7 @@ def test_api_config_preserves_permissions_and_max_cost(tmp_path):
         permissions="deny",
         max_cost_usd=1.75,
     )
-    dump_config(initial, str(config_path), openrouter_api_key="sk-secret-key")
+    dump_config(initial, str(config_path))
 
     client = _make_client(tmp_path, config_path=str(config_path))
     resp = client.post(
@@ -224,9 +224,8 @@ def test_api_config_preserves_permissions_and_max_cost(tmp_path):
     assert reloaded.review.backend == "openrouter"
     assert reloaded.permissions == "deny"
     assert reloaded.max_cost_usd == 1.75
-    # Verify openrouter_api_key in file was also preserved
     from agentflow.config import _from_file
-    assert _from_file(str(config_path)).get("openrouter_api_key") == "sk-secret-key"
+    assert "openrouter_api_key" not in _from_file(str(config_path))
 
 
 def test_api_create_run_preserves_permissions_and_max_cost(tmp_path):
@@ -587,11 +586,10 @@ def test_static_assets_contain_notify_and_blockers(tmp_path):
 
 
 def test_api_config_get_returns_masked_openrouter_key_status(tmp_path, monkeypatch):
-    from agentflow.config import dump_config
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config_path = tmp_path / "agentflow.config.yaml"
-    real_key = "sk-or-v1-secret-key-1234567890"
-    dump_config(_config(), str(config_path), openrouter_api_key=real_key)
+    real_key = "fake-openrouter-key-abcdefghijklmnop"
+    monkeypatch.setenv("OPENROUTER_API_KEY", real_key)
 
     client = _make_client(tmp_path, config_path=str(config_path))
     resp = client.get("/api/config")
@@ -599,7 +597,7 @@ def test_api_config_get_returns_masked_openrouter_key_status(tmp_path, monkeypat
     data = resp.json()
     assert "openrouter_key" in data
     assert data["openrouter_key"]["set"] is True
-    assert data["openrouter_key"]["source"] == "config"
+    assert data["openrouter_key"]["source"] == "env"
     assert data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
     assert real_key not in resp.text
 
@@ -609,7 +607,7 @@ def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config_path = tmp_path / "agentflow.config.yaml"
     client = _make_client(tmp_path, config_path=str(config_path))
-    real_key = "sk-or-v1-testkey-1234567890"
+    real_key = "unit-test-key-not-a-secret-01"
 
     # 1. POST with openrouter_api_key
     resp = client.post(
@@ -629,22 +627,26 @@ def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post
     post_data = resp.json()
     assert post_data["ok"] is True
     assert post_data["openrouter_key"]["set"] is True
+    assert post_data["openrouter_key"]["source"] == "env"
     assert post_data["openrouter_key"]["masked"] != real_key
     assert real_key not in resp.text
 
-    assert config_path.exists()
-    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
-    assert _from_file(str(config_path)).get("openrouter_api_key") == real_key
+    env_path = tmp_path / ".env"
+    assert env_path.exists()
+    assert oct(env_path.stat().st_mode & 0o777) == oct(0o600)
+    assert f"OPENROUTER_API_KEY={real_key}" in env_path.read_text()
+    assert "openrouter_api_key" not in _from_file(str(config_path))
 
     # 2. GET /api/config verifies masked status and no raw key leak
     get_resp = client.get("/api/config")
     assert get_resp.status_code == 200
     get_data = get_resp.json()
     assert get_data["openrouter_key"]["set"] is True
+    assert get_data["openrouter_key"]["source"] == "env"
     assert get_data["openrouter_key"]["masked"] == f"{real_key[:8]}…{real_key[-4:]}"
     assert real_key not in get_resp.text
 
-    # 3. POST /api/config without the field preserves the existing key
+    # 3. POST /api/config without the field preserves the existing key in .env
     post2_resp = client.post(
         "/api/config",
         json={
@@ -658,7 +660,8 @@ def test_api_config_post_updates_openrouter_key_and_preserves_on_subsequent_post
         },
     )
     assert post2_resp.status_code == 200
-    assert _from_file(str(config_path)).get("openrouter_api_key") == real_key
+    assert f"OPENROUTER_API_KEY={real_key}" in env_path.read_text()
+    assert "openrouter_api_key" not in _from_file(str(config_path))
     assert real_key not in post2_resp.text
 
 
@@ -924,7 +927,7 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
     config_path = tmp_path / "agentflow.config.yaml"
     client = _make_client(tmp_path, config_path=str(config_path))
-    real_pw = "smtp-super-secret-123456"
+    real_pw = "pw-unit-test-value-000000"
 
     # 1. Initial GET before any notifications config
     init_get = client.get("/api/config")
@@ -963,12 +966,15 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
     assert post_data["notifications"]["enabled"] is True
     assert post_data["notifications"]["email_to"] == "alerts@example.com"
     assert post_data["smtp_password"]["set"] is True
+    assert post_data["smtp_password"]["source"] == "env"
     assert post_data["smtp_password"]["masked"] != real_pw
     assert real_pw not in post_resp.text
 
-    assert config_path.exists()
-    assert oct(config_path.stat().st_mode & 0o777) == oct(0o600)
-    assert _from_file(str(config_path)).get("smtp_password") == real_pw
+    env_path = tmp_path / ".env"
+    assert env_path.exists()
+    assert oct(env_path.stat().st_mode & 0o777) == oct(0o600)
+    assert f"AGENTFLOW_SMTP_PASSWORD={real_pw}" in env_path.read_text()
+    assert "smtp_password" not in _from_file(str(config_path))
 
     # 3. GET /api/config verifies masked password and no raw secret leak
     get_resp = client.get("/api/config")
@@ -976,10 +982,11 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
     get_data = get_resp.json()
     assert get_data["notifications"]["enabled"] is True
     assert get_data["smtp_password"]["set"] is True
+    assert get_data["smtp_password"]["source"] == "env"
     assert get_data["smtp_password"]["masked"] == f"{real_pw[:8]}…{real_pw[-4:]}"
     assert real_pw not in get_resp.text
 
-    # 4. POST /api/config without smtp_password preserves existing password
+    # 4. POST /api/config without smtp_password preserves existing password in .env
     post2_resp = client.post(
         "/api/config",
         json={
@@ -996,7 +1003,8 @@ def test_api_config_notifications_get_and_post(tmp_path, monkeypatch):
         },
     )
     assert post2_resp.status_code == 200
-    assert _from_file(str(config_path)).get("smtp_password") == real_pw
+    assert f"AGENTFLOW_SMTP_PASSWORD={real_pw}" in env_path.read_text()
+    assert "smtp_password" not in _from_file(str(config_path))
     assert real_pw not in post2_resp.text
 
 

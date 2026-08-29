@@ -455,14 +455,17 @@ the saved key without ever rendering it.
 **Security:** The agentflow config is written with owner-only (`0600`)
 permissions and is gitignored.
 
+*(Note 2026-08-29)*: Credential storage moved to `.env` (env vars only); `agentflow.config.yaml` no longer holds secrets.
+
 ### Phase G — Central local persistence
 
-**Implemented:** Backend settings and the OpenRouter key are stored in
-the project-local `agentflow.config.yaml`; the web UI and
-`agentflow --set-openrouter-key` update that file. Workflow task/run state is
+**Implemented:** Backend settings are stored in the project-local `agentflow.config.yaml`.
+Workflow task/run state is
 persisted in `~/.agentflow/agentflow.db` (SQLite), scoped by target repository,
 so the web UI no longer depends on `.agentflow/runs/*.json` inside individual
 projects.
+
+*(Note 2026-08-29)*: Credential storage moved to `.env` (env vars only); `agentflow.config.yaml` no longer holds secrets. The CLI `--set-openrouter-key` and web UI write keys to `.env` (mode 0600).
 
 ## Status
 
@@ -928,3 +931,5 @@ with the Phase K rewrite).
 
 - Gitignore `.agentflow-test-todo/` (a stray workflow output artifact committed
   to the repo root).
+- Credential handling: secrets moved from `agentflow.config.yaml` to `.env` (env vars only). Added `.env.example` and hand-rolled `agentflow.dotenv` loader/writer.
+
