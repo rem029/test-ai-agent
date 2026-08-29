@@ -344,6 +344,27 @@ def test_js_split_tool_blocks_via_node():
     if (!stepHtml.includes('tool-req-name') || stepHtml.includes('<｜DSML｜tool_call>')) {
         process.exit(5);
     }
+
+    // 6. Format B (nested invoke)
+    const t6 = '<｜DSML｜tool_call>\\n<｜DSML｜invoke>ReadFile</｜DSML｜invoke>\\n<｜DSML｜invoke>{"path": ".agentflow-test-todo/index.html"}</｜DSML｜invoke>\\n</｜DSML｜tool_call>';
+    const r6 = app.splitToolBlocks(t6);
+    if (r6.requests.length !== 1 || r6.requests[0].name !== 'ReadFile' || r6.requests[0].args.path !== '.agentflow-test-todo/index.html' || r6.prose !== '' || r6.prose.includes('<') || r6.prose.includes('DSML')) {
+        process.exit(6);
+    }
+
+    // 7. Format C (invoke name="X" with parameter tags)
+    const t7 = '<｜DSML｜tool_calls>\\n<｜DSML｜invoke name="ListDirectory">\\n<｜DSML｜parameter>args</｜DSML｜parameter>\\n<｜DSML｜parameter>{"path": "."}</｜DSML｜parameter>\\n</｜DSML｜invoke>\\n</｜DSML｜tool_calls>';
+    const r7 = app.splitToolBlocks(t7);
+    if (r7.requests.length !== 1 || r7.requests[0].name !== 'ListDirectory' || r7.requests[0].args.path !== '.' || r7.prose !== '' || r7.prose.includes('<') || r7.prose.includes('DSML')) {
+        process.exit(7);
+    }
+
+    // 8. Multiple invokes in tool_calls wrapper
+    const t8 = '<｜DSML｜tool_calls>\\n<｜DSML｜invoke name="ReadFile">\\n<｜DSML｜parameter>{"path": "a.txt"}</｜DSML｜parameter>\\n</｜DSML｜invoke>\\n<｜DSML｜invoke name="WriteFile">\\n<｜DSML｜parameter>{"path": "b.txt", "content": "hello"}</｜DSML｜parameter>\\n</｜DSML｜invoke>\\n</｜DSML｜tool_calls>';
+    const r8 = app.splitToolBlocks(t8);
+    if (r8.requests.length !== 2 || r8.requests[0].name !== 'ReadFile' || r8.requests[1].name !== 'WriteFile' || r8.prose !== '' || r8.prose.includes('<') || r8.prose.includes('DSML')) {
+        process.exit(8);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"

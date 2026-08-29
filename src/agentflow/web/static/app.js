@@ -1076,45 +1076,155 @@ function renderToolReq(req) {
     return `<div class="tool-req"><span class="tool-req-name">${name}</span>${argsHtml}</div>`;
 }
 
+function extractBalancedJson(text) {
+    const results = [];
+    let inString = false;
+    let escape = false;
+    let depth = 0;
+    let start = -1;
+
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (inString) {
+            if (escape) {
+                escape = false;
+            } else if (char === '\\') {
+                escape = true;
+            } else if (char === '"') {
+                inString = false;
+            }
+        } else {
+            if (char === '"') {
+                inString = true;
+            } else if (char === '{') {
+                if (depth === 0) start = i;
+                depth++;
+            } else if (char === '}') {
+                if (depth > 0) {
+                    depth--;
+                    if (depth === 0 && start !== -1) {
+                        results.push(text.slice(start, i + 1));
+                        start = -1;
+                    }
+                }
+            }
+        }
+    }
+    return results;
+}
+
 function splitToolBlocks(text) {
     if (!text) return { prose: '', requests: [] };
 
     let str = String(text);
     const requests = [];
+    const nameRe = /^[A-Za-z_]\w*$/;
 
-    function tryPushRequest(raw) {
-        if (!raw) return;
-        const trimmed = String(raw).trim();
-        let parsed = null;
-        try {
-            parsed = JSON.parse(trimmed);
-        } catch (e) {
-            const m = trimmed.match(/\{[\s\S]*\}/);
-            if (m) {
-                try {
-                    parsed = JSON.parse(m[0]);
-                } catch (e2) {}
+    function parseSingleUnit(unit) {
+        if (!unit) return;
+        let name = '';
+        let args = {};
+
+        const jsonCandidates = extractBalancedJson(unit);
+
+        // 1. JSON object with string "name" key anywhere in the block
+        for (const raw of jsonCandidates) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    if (typeof parsed.name === 'string' && nameRe.test(parsed.name)) {
+                        name = parsed.name;
+                        if (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args)) {
+                            args = parsed.args;
+                        }
+                        requests.push({ name, args });
+                        return;
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // 2. invoke name="X"
+        const m2 = unit.match(/invoke\s+name\s*=\s*["']([A-Za-z_]\w*)["']/i);
+        if (m2 && nameRe.test(m2[1])) {
+            name = m2[1];
+        }
+
+        // 3. bare-word inside invoke tags - Format B
+        if (!name) {
+            const m3 = unit.match(/<[^>]*?invoke[^>]*?>\s*([A-Za-z_]\w*)\s*</i);
+            if (m3 && nameRe.test(m3[1])) {
+                name = m3[1];
             }
         }
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string') {
-            const args = (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args))
-                ? parsed.args
-                : {};
-            requests.push({ name: parsed.name, args });
+
+        // 4. function | sep | name
+        if (!name) {
+            const m4 = unit.match(/function\s*[｜|]\s*sep\s*[｜|]\s*([A-Za-z_]\w*)/i);
+            if (m4 && nameRe.test(m4[1])) {
+                name = m4[1];
+            }
         }
+
+        if (!name) return;
+
+        // Get args: first balanced {...} yielding a dict that is not a name wrapper
+        for (const raw of jsonCandidates) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    args = parsed;
+                    break;
+                }
+            } catch (e) {}
+        }
+
+        requests.push({ name, args });
     }
 
-    // 1. Strip closed tool_call blocks
-    const toolCallBlockRe = /<[^\n>]*?tool_call\s*>([\s\S]*?)<\s*\/[^\n>]*?tool_call\s*>/gi;
-    str = str.replace(toolCallBlockRe, (_, inner) => {
-        tryPushRequest(inner);
+    function parseBlock(block) {
+        if (!block) return;
+        const invokeNameMatches = [...block.matchAll(/<[^>]*?invoke\b[^>]*?name\s*=\s*["']([A-Za-z_]\w*)["'][^>]*>/gi)];
+        if (invokeNameMatches.length > 0) {
+            for (let i = 0; i < invokeNameMatches.length; i++) {
+                const startIdx = invokeNameMatches[i].index;
+                const endIdx = (i + 1 < invokeNameMatches.length) ? invokeNameMatches[i + 1].index : block.length;
+                parseSingleUnit(block.slice(startIdx, endIdx));
+            }
+            return;
+        }
+
+        const bareInvokeMatches = [...block.matchAll(/<[^>]*?invoke[^>]*?>\s*([A-Za-z_]\w*)\s*</gi)];
+        if (bareInvokeMatches.length > 1) {
+            for (let i = 0; i < bareInvokeMatches.length; i++) {
+                const startIdx = bareInvokeMatches[i].index;
+                const endIdx = (i + 1 < bareInvokeMatches.length) ? bareInvokeMatches[i + 1].index : block.length;
+                parseSingleUnit(block.slice(startIdx, endIdx));
+            }
+            return;
+        }
+
+        parseSingleUnit(block);
+    }
+
+    // 1. Strip closed tool_call / tool_calls blocks
+    const closedToolCallRe = /<[^>]*?tool_calls?\b[^>]*>([\s\S]*?)<\s*\/[^>]*?tool_calls?\b[^>]*>/gi;
+    str = str.replace(closedToolCallRe, (_, inner) => {
+        parseBlock(inner);
         return '';
     });
 
-    // Strip unclosed trailing tool_call block
-    const unclosedBlockRe = /<[^\n>]*?tool_call\s*>([\s\S]*)$/i;
-    str = str.replace(unclosedBlockRe, (_, inner) => {
-        tryPushRequest(inner);
+    // Strip unclosed trailing tool_call / tool_calls block
+    const unclosedToolCallRe = /<[^>]*?tool_calls?\b[^>]*>([\s\S]*)$/i;
+    str = str.replace(unclosedToolCallRe, (_, inner) => {
+        parseBlock(inner);
+        return '';
+    });
+
+    // Strip standalone invoke blocks if any exist outside tool_calls
+    const closedInvokeRe = /<[^>]*?invoke\b[^>]*>([\s\S]*?)<\s*\/[^>]*?invoke\b[^>]*>/gi;
+    str = str.replace(closedInvokeRe, (_, inner) => {
+        parseBlock(inner);
         return '';
     });
 
@@ -1126,7 +1236,7 @@ function splitToolBlocks(text) {
         if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             try {
                 const parsed = JSON.parse(trimmed);
-                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string') {
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.name && typeof parsed.name === 'string' && nameRe.test(parsed.name)) {
                     const args = (parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args))
                         ? parsed.args
                         : {};
@@ -1135,7 +1245,11 @@ function splitToolBlocks(text) {
                 }
             } catch (e) {}
         }
-        keptLines.push(line);
+        // Defensive: strip any leftover DSML / tool_call / invoke / parameter markup tags
+        const stripped = line.replace(/<[^>]*?(?:DSML|tool_calls?|invoke|parameter)[^>]*>/gi, '').replace(/<\/[^>]*?(?:DSML|tool_calls?|invoke|parameter)[^>]*>/gi, '');
+        if (stripped.trim() || !line.trim()) {
+            keptLines.push(stripped);
+        }
     }
 
     const prose = keptLines.join('\n').trim();
