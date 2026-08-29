@@ -1200,7 +1200,7 @@ def test_turn_interactive_steer(isolate_database):
 
     with (
         patch("sys.stdin.isatty", return_value=True),
-        patch("prompt_toolkit.patch_stdout.patch_stdout", contextlib.nullcontext),
+        patch("prompt_toolkit.patch_stdout.patch_stdout", lambda *a, **k: contextlib.nullcontext()),
         patch.object(PromptSession, "prompt_async", side_effect=fake_prompt_async),
         patch("agentflow.orchestrator.run_workflow", side_effect=fake_workflow),
     ):
@@ -1221,6 +1221,71 @@ def test_turn_interactive_steer(isolate_database):
     assert len(pending) == 1
     assert pending[0]["body"] == "please write tests first"
     assert pending[0]["kind"] == "steer"
+
+
+def test_turn_interactive_uses_raw_patch_stdout(isolate_database):
+    from prompt_toolkit import PromptSession
+    from rich.console import Console
+
+    from agentflow.config import Config, RoleConfig
+    from agentflow.orchestrator import RunState
+    from agentflow.tui.permissions import SessionPermissionBroker
+    from agentflow.tui.repl import _execute_turn
+
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+
+    recorded_kwargs: dict[str, Any] = {}
+
+    def fake_patch_stdout(*args, **kwargs):
+        recorded_kwargs.update(kwargs)
+        return contextlib.nullcontext()
+
+    async def fake_prompt_async(*args, **kwargs):
+        raise EOFError
+
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+        append_event(run_id, 1, "run_started", {"run_id": run_id, "session_id": session_id, "goal": goal}, path=database_path)
+        time.sleep(0.01)
+        append_event(run_id, 2, "run_finished", {"finished_at": time.time()}, path=database_path)
+        state = RunState(
+            run_id=run_id,
+            goal=goal,
+            started_at=time.time() - 1.0,
+            config={},
+            session_id=session_id,
+            finished_at=time.time(),
+        )
+        save_run(state, cwd, path=database_path)
+        return state
+
+    broker = SessionPermissionBroker()
+    console = Console(file=io.StringIO())
+    session = PromptSession()
+
+    with (
+        patch("sys.stdin.isatty", return_value=True),
+        patch("prompt_toolkit.patch_stdout.patch_stdout", side_effect=fake_patch_stdout),
+        patch.object(PromptSession, "prompt_async", side_effect=fake_prompt_async),
+        patch("agentflow.orchestrator.run_workflow", side_effect=fake_workflow),
+    ):
+        state = _execute_turn(
+            goal="check raw",
+            run_id="run-raw-check",
+            config=config,
+            cwd="/tmp",
+            session_id="sess-raw",
+            database_path=isolate_database,
+            broker=broker,
+            console=console,
+            prompt_session=session,
+        )
+
+    assert state is not None
+    assert recorded_kwargs.get("raw") is True
 
 
 def test_handle_mid_run_input_steer_plain_text(isolate_database):
