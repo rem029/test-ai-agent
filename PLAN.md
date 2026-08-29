@@ -1131,7 +1131,30 @@ contents-expansion as a follow-up if the agent needs it.
   - **Still open (follow-ups, noted in DESIGN.md):** interactive web
     permission prompts (`permissions: prompt` still denies in the headless
     web thread); no session-level SSE stream; no queue-management UI; mobile
-    not screenshot-verified.
+    not screenshot-verified; deep-linking `/runs/<id>` shows the active run
+    rather than the requested one when a run is in flight.
+
+### Post-K bug-fix round (2026-08-30, on `dev`)
+
+Shipped after the merge, from live use:
+- `558a812` - MCP config save sent `auto_approve: "all"` (string) not
+  `["all"]`; `handleTransportSubmit` swallowed `{status:queued}` and every
+  4xx/5xx silently (now an inline feedback line); `loadProjectFiles` never
+  parsed its response so `@`-mention was dead; double-submit guard.
+- `0adf7c3` - session dates in the left rail.
+- `438e483` - **analysis-only workflow path.** A goal like "review X, give
+  me your feedback" produced a good review step then ran build+verify
+  anyway; with nothing to build, a tool-using build backend spiralled
+  (malformed tool syntax, endless `ListDirectory`, one step hit 213K tokens
+  off a recursive full-repo listing). Now: `REVIEW_PROMPT` asks for a
+  trailing `BUILD_NEEDED: yes|no`; `run_workflow` finishes after review on
+  `no` (or, absent the marker, a goal matching review/audit/explain/question
+  verbs). New `Config.workflow_mode = auto|review_only|full`, CLI
+  `--workflow-mode` / `--review-only`. Plus tool-loop guards (stop after 3
+  identical consecutive calls, or 6 write-mode calls with zero writes) and
+  `ListDirectory` now skips `.git`/`.venv`/`node_modules`/... and caps at
+  400 entries. Verified live: both "review @.test/dragtask ..." phrasings
+  finish review-only, `mode: review_only`, no build. 400 tests.
 
 ## Phase L - Projects, memory, extensibility, notifications (user backlog, 2026-08-28)
 
