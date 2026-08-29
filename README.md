@@ -110,11 +110,19 @@ permissions: auto  # auto | prompt | deny
 max_cost_usd: 1.00  # optional budget limit in USD
 ```
 
-For OpenRouter, prefer an environment variable rather than placing a key in a
-config file:
+API keys and secrets (such as `OPENROUTER_API_KEY` and `AGENTFLOW_SMTP_PASSWORD`) are read from `.env` (or environment variables) and are never stored in `agentflow.config.yaml`:
+
+```bash
+cp .env.example .env
+# Edit .env and set your OPENROUTER_API_KEY
+```
+
+Alternatively, set the environment variable directly or via CLI:
 
 ```bash
 export OPENROUTER_API_KEY="your-key"
+# or save to .env using:
+uv run agentflow --set-openrouter-key "your-key"
 ```
 
 Check that the configured backends are installed and authenticated:

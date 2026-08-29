@@ -79,6 +79,10 @@ def _apply_overrides(config, args):
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .dotenv import load_env
+
+    load_env()
+
     parser = argparse.ArgumentParser(prog="agentflow")
     parser.add_argument("goal", nargs="?", help="The goal to work toward")
     parser.add_argument(
@@ -167,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--set-openrouter-key",
         metavar="KEY",
-        help="Save an OpenRouter API key to the selected agentflow config and exit",
+        help="Save an OpenRouter API key to .env and exit",
     )
     parser.add_argument(
         "--project",
@@ -214,10 +218,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.set_openrouter_key is not None:
-        from .config import dump_config
+        from .dotenv import set_dotenv_var
 
-        dump_config(load_config(config_path), config_path, openrouter_api_key=args.set_openrouter_key)
-        print(f"OpenRouter API key saved to {config_path}")
+        set_dotenv_var("OPENROUTER_API_KEY", args.set_openrouter_key, ".env")
+        print("OpenRouter API key saved to .env")
         return 0
 
     if args.version:

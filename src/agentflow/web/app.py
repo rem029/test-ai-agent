@@ -153,6 +153,10 @@ def create_app(
     database_path: Path | None = None,
     projects: list[str] | None = None,
 ) -> FastAPI:
+    from ..dotenv import load_env, set_dotenv_var
+
+    load_env(cwd)
+
     app = FastAPI(title="agentflow Web UI", version="0.1.0")
     db_path = database_path or DEFAULT_DATABASE_PATH
 
@@ -230,13 +234,12 @@ def create_app(
             max_cost_usd=data.max_cost_usd if data.max_cost_usd is not None else (current_config.max_cost_usd if current_config else None),
             notifications=notif_cfg,
         )
-        dump_kwargs = {}
         if data.openrouter_api_key and data.openrouter_api_key.strip():
-            dump_kwargs["openrouter_api_key"] = data.openrouter_api_key.strip()
+            set_dotenv_var("OPENROUTER_API_KEY", data.openrouter_api_key.strip(), Path(cwd) / ".env")
         if data.smtp_password and data.smtp_password.strip():
-            dump_kwargs["smtp_password"] = data.smtp_password.strip()
+            set_dotenv_var("AGENTFLOW_SMTP_PASSWORD", data.smtp_password.strip(), Path(cwd) / ".env")
         try:
-            dump_config(config, config_path, **dump_kwargs)
+            dump_config(config, config_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
         return {

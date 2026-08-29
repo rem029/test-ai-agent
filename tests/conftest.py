@@ -26,4 +26,6 @@ def isolate_database(tmp_path, monkeypatch):
     monkeypatch.setattr(agentflow.config, "AGENTFLOW_HOME", test_home)
     if hasattr(agentflow, "orchestrator") and hasattr(agentflow.orchestrator, "AGENTFLOW_HOME"):
         monkeypatch.setattr(agentflow.orchestrator, "AGENTFLOW_HOME", test_home)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGENTFLOW_SMTP_PASSWORD", raising=False)
     yield test_db

@@ -34,14 +34,15 @@ def test_dump_and_load_config_notifications_roundtrip(tmp_path):
         ),
     )
 
-    dump_config(cfg, str(config_file), smtp_password="super-secret-smtp-password")
+    dump_config(cfg, str(config_file))
 
     # Verify file permission is 0600
     assert oct(config_file.stat().st_mode & 0o777) == oct(0o600)
 
-    # Verify raw file content has top-level smtp_password
+    # Verify raw file content has no secrets
     raw_data = _from_file(str(config_file))
-    assert raw_data["smtp_password"] == "super-secret-smtp-password"
+    assert "smtp_password" not in raw_data
+    assert "openrouter_api_key" not in raw_data
     assert raw_data["notifications"]["email_to"] == "dev@example.com"
     assert raw_data["notifications"]["smtp_port"] == 465
 
@@ -58,26 +59,25 @@ def test_dump_and_load_config_notifications_roundtrip(tmp_path):
     assert loaded.notifications.base_url == "https://agentui.example.com"
 
 
-def test_dump_config_preserves_existing_smtp_password_when_not_passed(tmp_path):
+def test_dump_config_strips_deprecated_secrets_from_existing_file(tmp_path):
     config_file = tmp_path / "agentflow.config.yaml"
+    config_file.write_text(
+        "openrouter_api_key: legacy-key\n"
+        "smtp_password: legacy-pw\n"
+        "build:\n"
+        "  backend: claude-code\n"
+    )
+
     cfg = Config(
         review=RoleConfig(backend="claude-code"),
         build=RoleConfig(backend="antigravity"),
         verify=RoleConfig(backend="claude-code"),
-        notifications=NotificationConfig(enabled=True, smtp_host="smtp.example.com"),
     )
 
-    # Initial dump with password
-    dump_config(cfg, str(config_file), smtp_password="initial-password")
-    assert _from_file(str(config_file))["smtp_password"] == "initial-password"
-
-    # Second dump without specifying password preserves it
     dump_config(cfg, str(config_file))
-    assert _from_file(str(config_file))["smtp_password"] == "initial-password"
-
-    # Third dump with new password updates it
-    dump_config(cfg, str(config_file), smtp_password="updated-password")
-    assert _from_file(str(config_file))["smtp_password"] == "updated-password"
+    raw = _from_file(str(config_file))
+    assert "openrouter_api_key" not in raw
+    assert "smtp_password" not in raw
 
 
 def test_load_config_env_notifications_enabled(tmp_path, monkeypatch):
