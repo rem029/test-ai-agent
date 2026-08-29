@@ -132,6 +132,14 @@ class SlashCommandCompleter(Completer):
             return
 
 
+NOISE_DIRS = frozenset({
+    ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    ".next", ".nuxt", ".svelte-kit", ".parcel-cache", ".cache",
+    "dist", "build", ".gradle", ".idea", "site-packages",
+})
+
+
 def _is_subsequence(sub: str, s: str) -> bool:
     """Check if sub is a subsequence of s in order."""
     if not sub:
@@ -151,51 +159,71 @@ def _list_project_files(cwd: str) -> list[str]:
             timeout=5,
         )
         r2 = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
+            ["git", "ls-files", "--others"],
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=5,
         )
         if r1.returncode == 0 and r2.returncode == 0:
-            files: set[str] = set()
+            raw_files: set[str] = set()
             for line in r1.stdout.splitlines():
                 line = line.strip()
                 if line:
-                    files.add(line.replace("\\", "/"))
+                    raw_files.add(line.replace("\\", "/"))
             for line in r2.stdout.splitlines():
                 line = line.strip()
                 if line:
-                    files.add(line.replace("\\", "/"))
-            return sorted(files)
+                    raw_files.add(line.replace("\\", "/"))
+            filtered_files = [
+                p
+                for p in raw_files
+                if not any(
+                    seg in NOISE_DIRS or seg.endswith(".egg-info")
+                    for seg in p.split("/")
+                )
+            ]
+            file_list = sorted(filtered_files)[:8000]
+            dir_set: set[str] = set()
+            for path in file_list:
+                parts = path.split("/")
+                for i in range(1, len(parts)):
+                    dir_set.add("/".join(parts[:i]) + "/")
+            return sorted(set(file_list) | dir_set)
     except Exception:
         pass
 
     try:
-        files_list: list[str] = []
-        noise_dirs = {
-            ".git",
-            ".venv",
-            "venv",
-            "node_modules",
-            "__pycache__",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-        }
+        file_set: set[str] = set()
         cwd_path = Path(cwd).resolve()
         for root, dirs, filenames in os.walk(cwd_path):
-            dirs[:] = [d for d in dirs if d not in noise_dirs]
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in NOISE_DIRS and not d.endswith(".egg-info")
+            ]
             for filename in filenames:
                 full_path = Path(root) / filename
                 try:
                     rel_path = full_path.relative_to(cwd_path).as_posix()
-                    files_list.append(rel_path)
+                    if not any(
+                        seg in NOISE_DIRS or seg.endswith(".egg-info")
+                        for seg in rel_path.split("/")
+                    ):
+                        file_set.add(rel_path)
                 except ValueError:
                     continue
-                if len(files_list) >= 5000:
-                    return sorted(files_list)
-        return sorted(files_list)
+                if len(file_set) >= 8000:
+                    break
+            if len(file_set) >= 8000:
+                break
+        file_list = sorted(file_set)[:8000]
+        dir_set: set[str] = set()
+        for path in file_list:
+            parts = path.split("/")
+            for i in range(1, len(parts)):
+                dir_set.add("/".join(parts[:i]) + "/")
+        return sorted(set(file_list) | dir_set)
     except Exception:
         return []
 
@@ -252,7 +280,7 @@ class FileMentionCompleter(Completer):
 
             if not query:
                 for path in sorted(files)[:50]:
-                    display_meta = os.path.dirname(path)
+                    display_meta = "dir" if path.endswith("/") else os.path.dirname(path)
                     yield Completion(
                         path,
                         start_position=0,
@@ -268,20 +296,22 @@ class FileMentionCompleter(Completer):
                 return
 
             def _score(path: str) -> tuple[int, int, str]:
-                path_lower = path.lower()
-                basename_lower = os.path.basename(path).lower()
+                p = path[:-1] if path.endswith("/") else path
+                p_lower = p.lower()
+                basename_lower = os.path.basename(p).lower()
                 if basename_lower == query_lower:
                     tier = 0
                 elif basename_lower.startswith(query_lower):
                     tier = 1
                 elif any(
                     seg.startswith(query_lower)
-                    for seg in path_lower.replace("\\", "/").split("/")
+                    for seg in p_lower.replace("\\", "/").split("/")
+                    if seg
                 ):
                     tier = 2
                 elif query_lower in basename_lower:
                     tier = 3
-                elif query_lower in path_lower:
+                elif query_lower in p_lower:
                     tier = 4
                 else:
                     tier = 5
@@ -290,7 +320,7 @@ class FileMentionCompleter(Completer):
             matching_paths.sort(key=_score)
 
             for path in matching_paths[:50]:
-                display_meta = os.path.dirname(path)
+                display_meta = "dir" if path.endswith("/") else os.path.dirname(path)
                 yield Completion(
                     path,
                     start_position=-len(query),
