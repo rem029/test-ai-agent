@@ -24,6 +24,60 @@ class CommandResult:
     should_exit: bool = False
 
 
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str
+    summary: str
+    usage: str | None = None          # shown in /help when it takes args
+    arg_completions: tuple[str, ...] = ()  # completion sources per positional slot; see below
+
+
+COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        name="/help",
+        summary="Show available commands",
+    ),
+    CommandSpec(
+        name="/model",
+        summary="Show or set role models",
+        usage="/model [<role> <model-id>]",
+        arg_completions=("role", "model_id"),
+    ),
+    CommandSpec(
+        name="/config",
+        summary="Show or change configuration",
+        usage="/config [permissions <mode> | max-cost <val> | <role> <backend> [model]]",
+        arg_completions=("config_sub", "backend", "model_id"),
+    ),
+    CommandSpec(
+        name="/tools",
+        summary="List available tools",
+    ),
+    CommandSpec(
+        name="/resume",
+        summary="Switch to a prior session",
+        usage="/resume <session_id>",
+        arg_completions=("session_id",),
+    ),
+    CommandSpec(
+        name="/clear",
+        summary="Clear screen, start a fresh session",
+    ),
+    CommandSpec(
+        name="/cost",
+        summary="Show cumulative cost for this session",
+    ),
+    CommandSpec(
+        name="/exit",
+        summary="Exit the REPL",
+    ),
+    CommandSpec(
+        name="/quit",
+        summary="Exit the REPL",
+    ),
+)
+
+
 def parse_command(line: str) -> tuple[str, list[str]] | None:
     """Parse a line into (command, args) if it starts with '/', else return None."""
     line = line.strip()
@@ -48,21 +102,11 @@ def dispatch(
 ) -> CommandResult:
     """Dispatch a slash command, mutating state/config and returning result."""
     if cmd in ("/help", "/?"):
-        lines = [
-            "[bold]Available REPL Commands:[/bold]",
-            "  • [cyan]/help[/cyan] - Show this help message",
-            "  • [cyan]/model[/cyan] - Show active models and pricing catalog",
-            "  • [cyan]/model <role> <model-id>[/cyan] - Set model for a role (review/build/verify)",
-            "  • [cyan]/config[/cyan] - Show current configuration",
-            "  • [cyan]/config permissions <auto|prompt|deny>[/cyan] - Set tool permissions policy",
-            "  • [cyan]/config max-cost <amount|none>[/cyan] - Set maximum cost budget in USD",
-            "  • [cyan]/config <role> <backend> [model][/cyan] - Set backend and optional model for a role",
-            "  • [cyan]/tools[/cyan] - List all available tools and descriptions",
-            "  • [cyan]/resume <session_id>[/cyan] - Switch to a prior session and view history",
-            "  • [cyan]/clear[/cyan] - Clear screen and start a fresh session",
-            "  • [cyan]/cost[/cyan] - Show cumulative token cost for the active session",
-            "  • [cyan]/exit[/cyan], [cyan]/quit[/cyan] - Exit the REPL",
-        ]
+        lines = ["[bold]Available REPL Commands:[/bold]"]
+        for spec in COMMANDS:
+            lines.append(f"  • [cyan]{spec.name}[/cyan] - {spec.summary}")
+            if spec.usage:
+                lines.append(f"    [dim]Usage:[/dim] [cyan]{spec.usage}[/cyan]")
         return CommandResult("\n".join(lines))
 
     if cmd == "/model":

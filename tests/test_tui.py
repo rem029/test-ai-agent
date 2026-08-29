@@ -862,3 +862,85 @@ def test_repl_dedup_consecutive_tools(isolate_database, capsys):
     assert "(same as above)" in captured.out
 
 
+# ============================================================================
+# 8. Slash Command Autocomplete & Registry Tests
+# ============================================================================
+
+
+def test_slash_command_completer():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.backends import BACKENDS
+    from agentflow.tui.commands import COMMANDS
+    from agentflow.tui.completion import SlashCommandCompleter
+
+    completer = SlashCommandCompleter()
+
+    def complete(text: str) -> list[str]:
+        completions = list(completer.get_completions(Document(text, len(text)), CompleteEvent()))
+        return [c.text for c in completions]
+
+    # "/" -> yields every registry command name
+    all_cmd_names = [spec.name for spec in COMMANDS]
+    assert complete("/") == all_cmd_names
+
+    # "/co" -> yields exactly /config and /cost
+    assert complete("/co") == ["/config", "/cost"]
+
+    # "/config " -> yields permissions, max-cost, review, build, verify
+    assert complete("/config ") == ["permissions", "max-cost", "review", "build", "verify"]
+
+    # "/config review " -> yields the backend names (tuple(BACKENDS))
+    assert complete("/config review ") == list(BACKENDS.keys())
+
+    # "/config permissions " -> yields auto, prompt, deny
+    assert complete("/config permissions ") == ["auto", "prompt", "deny"]
+
+    # "/model " -> yields review, build, verify
+    assert complete("/model ") == ["review", "build", "verify"]
+
+    # "build a login page" (no slash) -> yields nothing
+    assert complete("build a login page") == []
+
+    # Partial arguments
+    assert complete("/config p") == ["permissions"]
+    assert complete("/config permissions a") == ["auto"]
+    assert complete("/model r") == ["review"]
+
+    # Model ID completions (static curated catalog, < 40 models)
+    model_completions = complete("/model review ")
+    assert 0 < len(model_completions) < 40
+    assert "deepseek/deepseek-v4-flash" in model_completions
+    assert "claude-3-7-sonnet" in model_completions
+
+
+def test_slash_command_completer_session_resolver():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import SlashCommandCompleter
+
+    # Default has no session resolver -> returns empty list
+    completer_default = SlashCommandCompleter()
+    assert list(completer_default.get_completions(Document("/resume ", len("/resume ")), CompleteEvent())) == []
+
+    # Custom session resolver
+    completer_with_sessions = SlashCommandCompleter(session_resolver=lambda: ["sess-1", "sess-2"])
+    completions = [c.text for c in completer_with_sessions.get_completions(Document("/resume ", len("/resume ")), CompleteEvent())]
+    assert completions == ["sess-1", "sess-2"]
+
+
+def test_help_contains_all_commands():
+    from agentflow.config import Config, RoleConfig
+    from agentflow.tui.commands import COMMANDS, dispatch
+
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    res = dispatch("/help", [], config, cwd="/tmp", session_id="s1")
+    for spec in COMMANDS:
+        assert spec.name in res.output
+
+
+

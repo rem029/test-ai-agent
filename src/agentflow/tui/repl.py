@@ -51,6 +51,7 @@ def run_repl(
     from ..database import add_control_signal, list_events, reconstruct_run
     from ..orchestrator import new_run_id, new_session_id, run_workflow
     from .commands import dispatch, parse_command
+    from .completion import SlashCommandCompleter
     from .permissions import SessionPermissionBroker
     from .render import format_event, format_footer
 
@@ -59,7 +60,11 @@ def run_repl(
     # Configure session history
     history_file = AGENTFLOW_HOME / "repl_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_session: PromptSession[str] = PromptSession(history=FileHistory(str(history_file)))
+    prompt_session: PromptSession[str] = PromptSession(
+        history=FileHistory(str(history_file)),
+        completer=SlashCommandCompleter(),
+        complete_while_typing=True,
+    )
 
     active_session_id = session_id or new_session_id()
 
