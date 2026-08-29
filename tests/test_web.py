@@ -6,16 +6,20 @@ these tests never make a real backend call.
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 import agentflow.web.app as web_app
-from agentflow.config import Config, RoleConfig
+from agentflow.config import Config, MCPServerConfig, RoleConfig, dump_config, load_config
 from agentflow.database import save_run
 from agentflow.orchestrator import RunState
+
+FAKE_SERVER_PATH = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
 
 
 def _config() -> Config:
@@ -1299,6 +1303,286 @@ def test_api_run_stream_keepalive(tmp_path):
         assert resp.status_code == 200
         assert ": keepalive\n\n" in resp.text
         assert "event: done\ndata: {}\n\n" in resp.text
+
+
+def test_api_config_mcp_servers_and_max_cost_null_reset(tmp_path):
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+
+    # 1. Initial POST setting mcp_servers and max_cost_usd
+    resp = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "review_model": "",
+            "build_backend": "antigravity",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 3,
+            "max_cost_usd": 5.0,
+            "mcp_servers": [
+                {
+                    "name": "fake",
+                    "command": sys.executable,
+                    "args": [FAKE_SERVER_PATH],
+                    "enabled": True,
+                    "auto_approve": ["echo"],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["config"]["max_cost_usd"] == 5.0
+    assert len(data["config"]["mcp_servers"]) == 1
+    assert data["config"]["mcp_servers"][0]["name"] == "fake"
+
+    # Verify GET /api/config returns mcp_servers and max_cost_usd
+    get_resp = client.get("/api/config")
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["max_cost_usd"] == 5.0
+    assert len(get_data["mcp_servers"]) == 1
+    assert get_data["mcp_servers"][0]["name"] == "fake"
+    assert get_data["mcp_servers"][0]["auto_approve"] == ["echo"]
+
+    # 2. Second POST omitting mcp_servers should preserve existing mcp_servers
+    resp2 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "openrouter",
+            "review_model": "test-model",
+            "build_backend": "antigravity",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 4,
+        },
+    )
+    assert resp2.status_code == 200
+    cfg2 = load_config(str(config_path))
+    assert cfg2.review.backend == "openrouter"
+    assert len(cfg2.mcp_servers) == 1
+    assert cfg2.mcp_servers[0].name == "fake"
+    assert cfg2.max_cost_usd == 5.0
+
+    # 3. Third POST with max_cost_usd: None (null) clears it
+    resp3 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "openrouter",
+            "review_model": "test-model",
+            "build_backend": "antigravity",
+            "build_model": "",
+            "verify_backend": "claude-code",
+            "verify_model": "",
+            "max_iterations": 4,
+            "max_cost_usd": None,
+        },
+    )
+    assert resp3.status_code == 200
+    cfg3 = load_config(str(config_path))
+    assert cfg3.max_cost_usd is None
+    assert len(cfg3.mcp_servers) == 1
+
+    # 4. Invalid MCP server config returns 400
+    resp4 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "build_backend": "antigravity",
+            "verify_backend": "claude-code",
+            "mcp_servers": [
+                {
+                    "name": "bad name with spaces!",
+                    "command": "python",
+                }
+            ],
+        },
+    )
+    assert resp4.status_code == 400
+    assert "Invalid MCP servers config" in resp4.json()["detail"]
+
+    # 5. Negative max_cost_usd rejected with 422
+    resp5 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "build_backend": "antigravity",
+            "verify_backend": "claude-code",
+            "max_cost_usd": -1.0,
+        },
+    )
+    assert resp5.status_code == 422
+
+
+def test_api_tools_endpoint(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.get("/api/tools")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "tools" in data
+    tools = data["tools"]
+    assert len(tools) > 0
+
+    # Sorted by name
+    names = [t["name"] for t in tools]
+    assert names == sorted(names)
+
+    # Check known read-only tool (ReadFile)
+    read_file = next((t for t in tools if t["name"] == "ReadFile"), None)
+    assert read_file is not None
+    assert read_file["read_only"] is True
+    assert isinstance(read_file["description"], str) and len(read_file["description"]) > 0
+    assert isinstance(read_file["schema"], dict)
+    assert read_file["schema"]["name"] == "ReadFile"
+
+    # Check known mutating tool (WriteFile)
+    write_file = next((t for t in tools if t["name"] == "WriteFile"), None)
+    assert write_file is not None
+    assert write_file["read_only"] is False
+    assert isinstance(write_file["description"], str) and len(write_file["description"]) > 0
+    assert isinstance(write_file["schema"], dict)
+    assert write_file["schema"]["name"] == "WriteFile"
+
+
+def test_api_mcp_endpoint(tmp_path):
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+
+    # 1. No servers configured -> empty list
+    resp = client.get("/api/mcp")
+    assert resp.status_code == 200
+    assert resp.json() == {"servers": []}
+
+    # 2. Configured servers: connected stdio, broken command, and disabled server
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                enabled=True,
+                auto_approve=["echo"],
+            ),
+            MCPServerConfig(
+                name="broken",
+                command="nonexistent_binary_xyz_12345",
+                enabled=True,
+            ),
+            MCPServerConfig(
+                name="disabled-one",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                enabled=False,
+            ),
+        ],
+    )
+    dump_config(cfg, str(config_path))
+
+    resp2 = client.get("/api/mcp")
+    assert resp2.status_code == 200
+    servers = resp2.json()["servers"]
+    assert len(servers) == 3
+
+    # Fake server (connected)
+    s_fake = next(s for s in servers if s["name"] == "fake")
+    assert s_fake["enabled"] is True
+    assert s_fake["connected"] is True
+    assert s_fake["error"] is None
+    assert s_fake["auto_approve"] == ["echo"]
+    tool_names = [t["name"] for t in s_fake["tools"]]
+    assert "mcp__fake__echo" in tool_names
+    assert "mcp__fake__add" in tool_names
+
+    # Broken server (not connected, error set)
+    s_broken = next(s for s in servers if s["name"] == "broken")
+    assert s_broken["enabled"] is True
+    assert s_broken["connected"] is False
+    assert s_broken["tools"] == []
+    assert s_broken["error"] is not None
+    assert len(s_broken["error"]) > 0
+
+    # Disabled server (not connected, no error, tools empty)
+    s_disabled = next(s for s in servers if s["name"] == "disabled-one")
+    assert s_disabled["enabled"] is False
+    assert s_disabled["connected"] is False
+    assert s_disabled["tools"] == []
+    assert s_disabled["error"] is None
+
+
+def test_api_session_detail_cost_and_run_count(tmp_path):
+    from agentflow.database import create_session, save_run
+    from agentflow.orchestrator import RunState
+
+    db = tmp_path / "agentflow.db"
+    create_session("sess-cost-1", str(tmp_path), title="Session With Cost", path=db)
+
+    # Add run 1 with usage cost 0.05
+    run1 = RunState(
+        run_id="run-c1",
+        session_id="sess-cost-1",
+        goal="Run 1",
+        started_at=1.0,
+        finished_at=2.0,
+        config={},
+        steps=[
+            {"role": "build", "usage": {"cost_usd": 0.05}},
+        ],
+    )
+    save_run(run1, str(tmp_path), db)
+
+    # Add run 2 with usage cost 0.12
+    run2 = RunState(
+        run_id="run-c2",
+        session_id="sess-cost-1",
+        goal="Run 2",
+        started_at=3.0,
+        finished_at=4.0,
+        config={},
+        steps=[
+            {"role": "verify", "usage": {"cost_usd": 0.12}},
+        ],
+    )
+    save_run(run2, str(tmp_path), db)
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/sessions/sess-cost-1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == "sess-cost-1"
+    assert data["run_count"] == 2
+    assert data["total_cost"] == pytest.approx(0.17)
+
+    # Empty session has 0 runs and 0.0 cost
+    create_session("sess-cost-empty", str(tmp_path), title="Empty Session", path=db)
+    resp_empty = client.get("/api/sessions/sess-cost-empty")
+    assert resp_empty.status_code == 200
+    data_empty = resp_empty.json()
+    assert data_empty["run_count"] == 0
+    assert data_empty["total_cost"] == 0.0
+
+
+def test_api_files_endpoint(tmp_path):
+    # Setup test file tree
+    (tmp_path / "file1.txt").write_text("hello")
+    (tmp_path / "README.md").write_text("# Readme")
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "app.py").write_text("print(1)")
+
+    client = _make_client(tmp_path)
+    resp = client.get("/api/files")
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    assert "file1.txt" in files
+    assert "README.md" in files
+    assert "src/app.py" in files
+
 
 
 
