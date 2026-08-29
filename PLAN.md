@@ -856,9 +856,10 @@ interactive REPL (the one-shot `agentflow "<goal>"` form stays).
   subscription. Commit `fb3c5a1`.
 
 
-## Phase J.5 - REPL: concurrent input & live status (do next)
+## Phase J.5 - REPL: concurrent input & live status
 
-Follow-on polish to Phase J. Feasibility checked 2026-08-29; not yet started.
+Follow-on polish to Phase J. Feasibility checked 2026-08-29; **implemented
+2026-08-29** (commits `50ac23c` J.5b, `867f70e` J.5a). 313 tests pass.
 
 ### J.5a - Accept input while a run is executing (Claude Code style)
 
@@ -898,6 +899,15 @@ boundary, which during a long build can be minutes away.
 Estimate: ~half a day (state/DB layer is done; this is a REPL input-loop
 rewrite).
 
+**Done (`867f70e`):** non-blocking `select` poll on stdin (tty-only) each
+loop tick, after event drain + permission servicing. Plain text ->
+`add_pending_message(run_id, text, "steer")`; `/config /model /cost /help
+/tools` dispatched live (config mutations shared with the running
+workflow); other slash commands rejected. `_read_pending_line` /
+`_handle_mid_run_input` helpers in `repl.py`. Deferred: prompt_toolkit
+line-editing/history for mid-run input (raw tty line discipline for now),
+and queuing a *separate* run mid-build (steer only).
+
 ### J.5b - Persistent bottom status bar + richer footer
 
 `format_footer()` (`render.py:212`) already computes per-backend
@@ -916,6 +926,17 @@ Missing: session id and title.
 currently returns `_empty_usage()` (`antigravity.py`), so agy runs record
 zero tokens/cost. Parse `agy -p --output-format json` for its usage block
 first (claude-code and openrouter usage already flow through).
+
+**Done (`50ac23c`):**
+- `_run_cli` now uses `--output-format json`; `_extract_usage` parses the
+  `usage` block (`input_tokens` / `output_tokens`; agy reports no
+  per-token cost, so `cost_usd` stays `None` — subscription). Non-JSON
+  stdout falls back to raw text + empty usage.
+- `format_footer(state, session=...)` prepends `Session: <id> — "<title>"`
+  (output unchanged when `session` omitted).
+- `repl.py`: `_session_tag` / `_build_toolbar` helpers; persistent
+  `bottom_toolbar` on the prompt: `agentflow · <tag> · "<title>" ·
+  $<running cost>`. Footer call passes the session.
 
 
 ## Phase K - Web console rewrite (OpenCode-like)
