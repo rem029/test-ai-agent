@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import difflib
+import re
 import time
+from pathlib import Path
 from typing import Any
+
+
+def _is_git_entry(line: str) -> bool:
+    """Check if a directory listing entry represents .git or a path inside .git."""
+    clean = re.sub(r"^\[(dir|file)\]\s*", "", line.strip())
+    return ".git" in Path(clean).parts
 
 
 def truncate_output(text: str, max_lines: int = 20) -> str:
@@ -74,7 +82,7 @@ def format_event(ev: dict[str, Any]) -> str | None:
     if etype == "step_started":
         role = payload.get("role", "")
         iteration = payload.get("iteration", 0)
-        iter_str = f" [dim](iteration {iteration})[/dim]" if iteration > 0 else ""
+        iter_str = f" [dim](iteration {iteration})[/dim]" if iteration > 1 else ""
         return f"[bold cyan]▸ {role}[/bold cyan]{iter_str}"
 
     if etype == "text_delta":
@@ -107,7 +115,31 @@ def format_event(ev: dict[str, Any]) -> str | None:
 
         output = result.get("output", "") if isinstance(result, dict) else str(result)
         if status == "OK":
-            out_str = f"\n{truncate_output(output)}" if output else ""
+            if name == "ReadFile":
+                args = payload.get("args", {})
+                path = args.get("path", "") if isinstance(args, dict) else ""
+                path_str = f" {path}" if path else ""
+                n_lines = output.count("\n") + 1 if output else 0
+                return f"[green]✓[/green] [bold]ReadFile[/bold]{path_str} [dim]({n_lines} lines)[/dim]"
+
+            if name == "ListDirectory":
+                lines = output.splitlines() if output else []
+                filtered = [line for line in lines if not _is_git_entry(line)]
+                if len(filtered) > 8:
+                    shown = filtered[:8]
+                    remaining = len(filtered) - 8
+                    entries_text = "\n".join(shown) + f"\n[dim]… (+{remaining} more)[/dim]"
+                else:
+                    entries_text = "\n".join(filtered)
+                out_str = f"\n{entries_text}" if entries_text else ""
+                return f"[green]✓[/green] [bold]ListDirectory[/bold] [dim]({duration}ms)[/dim]{out_str}"
+
+            if name in ("GitDiff", "GitStatus", "Lint"):
+                out_str = f"\n{truncate_output(output)}" if output else ""
+                return f"[green]✓[/green] [bold]{name}[/bold] [dim]({duration}ms)[/dim]{out_str}"
+
+            # Generic other tools OK with body
+            out_str = f"\n{truncate_output(output, max_lines=12)}" if output else ""
             return f"[green]✓[/green] [bold]{name}[/bold] [dim]({duration}ms)[/dim]{out_str}"
 
         err_text = error or output
@@ -120,11 +152,17 @@ def format_event(ev: dict[str, Any]) -> str | None:
         return f"[dim]— {role} finished —[/dim]"
 
     if etype == "blocker":
-        btype = payload.get("type", "blocker")
         reason = payload.get("reason", "")
+        detail = payload.get("detail", "")
         fatal = payload.get("fatal", False)
-        prefix = "[bold red]FATAL BLOCKER[/bold red]" if fatal else "[bold yellow]BLOCKER[/bold yellow]"
-        return f"[red]⚠[/red] {prefix} ({btype}): {reason}"
+        if detail:
+            detail_str = detail if len(detail) <= 200 else detail[:197] + "..."
+            detail_part = f": {detail_str}"
+        else:
+            detail_part = ""
+        if fatal:
+            return f"[bold red]⚠ {reason}[/bold red]{detail_part}"
+        return f"[yellow]⚠ {reason}[/yellow]{detail_part}"
 
     if etype == "user_message":
         kind = payload.get("kind", "steer")
@@ -136,13 +174,15 @@ def format_event(ev: dict[str, Any]) -> str | None:
         return f"[bold yellow]⏹ Run stopped ({reason})[/bold yellow]"
 
     if etype == "run_finished":
-        stopped = payload.get("stopped", False)
+        if payload.get("error"):
+            err = payload.get("error")
+            return f"[bold red]✗ Run ended with error: {err}[/bold red]"
         pushed = payload.get("pushed")
-        if stopped:
+        if isinstance(pushed, dict) and pushed.get("pushed"):
+            return "[bold green]✓ committed and pushed[/bold green]"
+        if payload.get("stopped"):
             return "[bold yellow]⏹ Run stopped[/bold yellow]"
-        if pushed and pushed.get("pushed"):
-            return "[bold green]✓ Run finished and changes pushed[/bold green]"
-        return "[bold green]✓ Run completed[/bold green]"
+        return None
 
     if etype == "error":
         err = payload.get("error", "")

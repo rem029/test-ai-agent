@@ -28,6 +28,24 @@ _INVOKE_NAME_ATTR_ANY_RE = re.compile(r"invoke\s+name\s*=\s*[\"']([A-Za-z_]\w*)[
 _INVOKE_BARE_NAME_RE = re.compile(r"<[^>]*?invoke[^>]*?>\s*([A-Za-z_]\w*)\s*<", re.IGNORECASE)
 _FUNCTION_SEP_NAME_RE = re.compile(r"function\s*[｜|]\s*sep\s*[｜|]\s*([A-Za-z_]\w*)", re.IGNORECASE)
 
+_STRIP_CLOSED_TOOL_CALL_RE = re.compile(
+    r"<[^>/]*?tool_calls?\b[^>]*>.*?(?:<[^>]*?/[^>]*?(?:tool_calls?|DSML)\b[^>]*>|<[^>]*?(?:tool_calls?|DSML)\b[^>]*?/[^>]*>)",
+    re.DOTALL | re.IGNORECASE,
+)
+_STRIP_UNCLOSED_TOOL_CALL_RE = re.compile(
+    r"<[^>/]*?tool_calls?\b[^>]*>.*$", re.DOTALL | re.IGNORECASE
+)
+_STRIP_CLOSED_INVOKE_RE = re.compile(
+    r"<[^>/]*?invoke\b[^>]*>.*?(?:<[^>]*?/[^>]*?invoke\b[^>]*>|<[^>]*?invoke\b[^>]*?/[^>]*>)",
+    re.DOTALL | re.IGNORECASE,
+)
+_STRIP_FILE_BLOCK_RE = re.compile(r"```FILE:[^\n]*\n.*?(?:```|$)", re.DOTALL)
+_STRIP_LEFTOVER_TAGS_RE = re.compile(
+    r"</?[^>]*?(?:DSML|tool_calls?|invoke|parameter)[^>]*>", re.IGNORECASE
+)
+
+
+
 
 def _extract_balanced_json_objects(text: str) -> list[str]:
     """Find all top-level balanced {...} substrings respecting string quotes and escapes."""
@@ -251,3 +269,47 @@ def parse_tool_requests(text: str) -> list[ParsedToolRequest]:
     if xml_calls:
         return xml_calls
     return _extract_json_tool_calls(text)
+
+
+def strip_tool_blocks(text: str) -> str:
+    """Strip tool-call blocks, DSML tags, standalone JSON tool calls, and FILE blocks from prose text."""
+    if not text:
+        return ""
+
+    # 1. Strip closed tool_call / tool_calls blocks
+    s = _STRIP_CLOSED_TOOL_CALL_RE.sub("", text)
+
+    # 2. Strip unclosed trailing tool_call / tool_calls block
+    s = _STRIP_UNCLOSED_TOOL_CALL_RE.sub("", s)
+
+    # 3. Strip standalone closed invoke blocks
+    s = _STRIP_CLOSED_INVOKE_RE.sub("", s)
+
+    # 4. Strip FILE blocks (closed and trailing unclosed)
+    s = _STRIP_FILE_BLOCK_RE.sub("", s)
+
+    # 5. Filter bare lines that are a single JSON object with valid "name" key, and strip leftover markup tags
+    lines = s.split("\n")
+    kept_lines: list[str] = []
+    for line in lines:
+        trimmed = line.strip()
+        if trimmed.startswith("{") and trimmed.endswith("}"):
+            try:
+                data = json.loads(trimmed)
+                if isinstance(data, dict):
+                    raw_name = data.get("name")
+                    if isinstance(raw_name, str) and _NAME_RE.match(raw_name):
+                        continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Defensive: strip leftover markup tags
+        stripped_line = _STRIP_LEFTOVER_TAGS_RE.sub("", line)
+        if stripped_line.strip() or not line.strip():
+            kept_lines.append(stripped_line)
+
+    result = "\n".join(kept_lines)
+    # Collapse 3+ blank-line runs to max 1 blank line (max 2 consecutive newlines)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+

@@ -41,19 +41,31 @@ MODE_PERMISSION = {
 }
 
 
-def apply_file_blocks(text: str, cwd: str) -> list[str]:
-    """Parse FILE blocks out of text and write them under cwd. Returns paths written."""
+def apply_file_blocks(text: str, cwd: str) -> list[dict[str, Any]]:
+    """Parse FILE blocks out of text and write them under cwd.
+
+    Returns a list of dicts: {"path": str, "previous": str | None, "current": str}
+    for each written file.
+    """
     base = Path(cwd).resolve()
-    written = []
+    written: list[dict[str, Any]] = []
     for match in FILE_BLOCK_RE.finditer(text):
         rel_path = match.group("path").strip()
         target = (base / rel_path).resolve()
         if base not in target.parents and target != base:
             continue  # refuse to write outside cwd
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(match.group("content") + "\n")
-        written.append(rel_path)
+        previous: str | None = None
+        if target.is_file():
+            try:
+                previous = target.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                previous = None
+        new_content = match.group("content") + "\n"
+        target.write_text(new_content, encoding="utf-8")
+        written.append({"path": rel_path, "previous": previous, "current": new_content})
     return written
+
 
 
 @dataclass

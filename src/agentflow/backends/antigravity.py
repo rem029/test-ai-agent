@@ -26,7 +26,7 @@ import os
 import shutil
 import subprocess
 
-from typing import Iterator
+from typing import Any, Iterator
 
 from .base import (
     Event,
@@ -39,6 +39,7 @@ from .base import (
     format_messages_to_prompt,
     run_sync,
 )
+
 
 
 class AntigravityBackend:
@@ -114,13 +115,38 @@ class AntigravityBackend:
         tools: list[dict] | None = None,
     ) -> Iterator[Event]:
         prompt_str = format_messages_to_prompt(prompt)
+        written_diffs: list[dict[str, Any]] = []
         if shutil.which("antigravity"):
             res = self._run_cli(prompt_str, cwd=cwd, mode=mode)
         else:
-            res = self._run_sdk(prompt_str, cwd=cwd, mode=mode)
+            sdk_res = self._run_sdk(prompt_str, cwd=cwd, mode=mode)
+            if isinstance(sdk_res, tuple):
+                res, written_diffs = sdk_res
+            else:
+                res, written_diffs = sdk_res, []
 
         if res.text:
             yield Event.text_delta(res.text)
+        for item in written_diffs:
+            rel_path = item["path"]
+            prev = item["previous"]
+            curr = item["current"]
+            yield Event(
+                type="tool_result",
+                payload={
+                    "step_index": -1,
+                    "tool_name": "WriteFile",
+                    "args": {"path": rel_path},
+                    "result": {
+                        "success": True,
+                        "output": f"Wrote {rel_path}",
+                        "structured": {"path": rel_path, "previous": prev, "current": curr},
+                    },
+                    "status": "OK",
+                    "execution_time_ms": 0,
+                    "error": None,
+                },
+            )
         yield Event.usage(res.usage)
         if not res.success:
             yield Event.error(res.text)
@@ -152,15 +178,20 @@ class AntigravityBackend:
         text = proc.stdout.strip()
         return RunResult(success, text or proc.stderr.strip(), self._empty_usage(), {})
 
-    def _run_sdk(self, prompt: str, *, cwd: str, mode: str) -> RunResult:
+    def _run_sdk(
+        self, prompt: str, *, cwd: str, mode: str
+    ) -> tuple[RunResult, list[dict[str, Any]]]:
         try:
             from google.antigravity import Agent, LocalAgentConfig
         except ImportError as exc:
-            return RunResult(
-                False,
-                f"neither `antigravity` CLI nor google-antigravity SDK usable: {exc}",
-                self._empty_usage(),
-                {},
+            return (
+                RunResult(
+                    False,
+                    f"neither `antigravity` CLI nor google-antigravity SDK usable: {exc}",
+                    self._empty_usage(),
+                    {},
+                ),
+                [],
             )
 
         write = mode == "write"
@@ -175,14 +206,15 @@ class AntigravityBackend:
         try:
             text = asyncio.run(_call())
         except Exception as exc:  # noqa: BLE001
-            return RunResult(False, f"SDK call failed: {exc}", self._empty_usage(), {})
+            return RunResult(False, f"SDK call failed: {exc}", self._empty_usage(), {}), []
 
-        written: list[str] = []
+        written: list[dict[str, Any]] = []
         if write:
             written = apply_file_blocks(text, cwd)
 
-        summary = text if not write else f"wrote {len(written)} file(s): {', '.join(written)}"
-        return RunResult(True, summary, self._empty_usage(), {})
+        written_paths = [w["path"] for w in written]
+        summary = text if not write else f"wrote {len(written)} file(s): {', '.join(written_paths)}"
+        return RunResult(True, summary, self._empty_usage(), {}), written
 
     def _empty_usage(self) -> Usage:
         return Usage(self.name, self.model, None, None, None)
