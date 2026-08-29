@@ -54,6 +54,10 @@ COMMANDS: tuple[CommandSpec, ...] = (
         summary="List available tools",
     ),
     CommandSpec(
+        name="/mcp",
+        summary="Check MCP server connections and list their tools",
+    ),
+    CommandSpec(
         name="/resume",
         summary="Switch to a prior session",
         usage="/resume <session_id>",
@@ -206,6 +210,44 @@ def dispatch(
         if config.mcp_servers:
             n_srv = len(config.mcp_servers)
             lines.append(f"\n[dim](+ MCP tools from {n_srv} configured server(s) - see 'agentflow --mcp-check')[/dim]")
+        return CommandResult("\n".join(lines))
+
+    if cmd == "/mcp":
+        servers = config.mcp_servers or []
+        if not servers:
+            return CommandResult(
+                "[dim]No MCP servers configured.[/dim] Add them under "
+                "[cyan]mcp_servers:[/cyan] in agentflow.config.yaml."
+            )
+        enabled = [s for s in servers if s.enabled]
+        disabled = [s for s in servers if not s.enabled]
+        lines = ["[bold]MCP Servers:[/bold]"]
+        if enabled:
+            from ..mcp import MCPManager
+
+            manager = MCPManager(enabled, cwd=cwd)
+            try:
+                manager.start()
+                tools_by_server: dict[str, list[str]] = {}
+                for t in manager.list_tools():
+                    tools_by_server.setdefault(t.server_name, []).append(t.remote_name)
+                for s in enabled:
+                    if s.name in manager.errors:
+                        lines.append(f"  • [red]✗ {s.name}[/red]: {manager.errors[s.name]}")
+                    else:
+                        tnames = sorted(tools_by_server.get(s.name, []))
+                        aa = "all" if s.auto_approve == ["all"] else (", ".join(s.auto_approve) or "none")
+                        lines.append(
+                            f"  • [green]✓ {s.name}[/green] ({len(tnames)} tool(s), auto-approve: {aa})"
+                        )
+                        for tn in tnames:
+                            lines.append(f"      [dim]mcp__{s.name}__{tn}[/dim]")
+            except Exception as exc:
+                return CommandResult(f"[red]MCP check failed:[/red] {exc}")
+            finally:
+                manager.close()
+        for s in disabled:
+            lines.append(f"  • [dim]- {s.name} (disabled)[/dim]")
         return CommandResult("\n".join(lines))
 
     if cmd == "/resume":
