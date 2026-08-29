@@ -2,14 +2,10 @@
 
 Two ways to reach Antigravity, tried in this order:
 
-1. **CLI, headless mode** — shells out to the `antigravity` binary,
-   authenticated via a cached Google account OAuth session (Google AI
-   Pro/Ultra rate limits apply automatically, no separate API key). This is
-   the preferred path for personal/subscription use (PLAN.md, Findings #2),
-   but the CLI is distributed from antigravity.google and installed via an
-   interactive browser login — it could not be installed or verified in
-   this sandboxed environment, whose network egress to antigravity.google
-   is blocked. Confirm this path on a machine that can actually reach it.
+1. **CLI, headless mode** — shells out to the `agy` binary (or legacy
+   `antigravity`), authenticated via the user's Google account / Antigravity
+   subscription (Google AI Pro/Ultra rate limits apply automatically, no
+   separate API key). This is the preferred path for personal/subscription use.
 
 2. **`google-antigravity` Python SDK fallback** — pip-installable, works in
    any environment including this sandbox, but authenticates with
@@ -23,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 import shutil
 import subprocess
 
@@ -41,6 +38,10 @@ from .base import (
 )
 
 
+def _antigravity_binary() -> str | None:
+    """The Antigravity CLI is `agy` on current installs; `antigravity` is the legacy name."""
+    return shutil.which("agy") or shutil.which("antigravity")
+
 
 class AntigravityBackend:
     name = "antigravity"
@@ -56,28 +57,28 @@ class AntigravityBackend:
 
     def _check_cli(self) -> HealthCheckResult | None:
         """Returns None if the CLI isn't present, so callers fall back to the SDK."""
-        binary = shutil.which("antigravity")
+        binary = _antigravity_binary()
         if not binary:
             return None
 
         try:
             proc = subprocess.run(
-                ["antigravity", "-p", "Reply with exactly one word: pong"],
+                [binary, "-p", "Reply with exactly one word: pong", "--output-format", "text"],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            return HealthCheckResult(self.name, False, "antigravity -p timed out")
+            return HealthCheckResult(self.name, False, "agy -p timed out")
 
         if proc.returncode != 0:
             return HealthCheckResult(
                 self.name,
                 False,
-                f"antigravity -p exited {proc.returncode}: {proc.stderr.strip()}",
+                f"agy -p exited {proc.returncode}: {proc.stderr.strip()}",
             )
 
-        return HealthCheckResult(self.name, True, f"CLI: {proc.stdout.strip()[:200]}")
+        return HealthCheckResult(self.name, True, f"CLI ({Path(binary).name}): {proc.stdout.strip()[:200]}")
 
     def _check_sdk(self) -> HealthCheckResult:
         try:
@@ -95,7 +96,7 @@ class AntigravityBackend:
             return HealthCheckResult(
                 self.name,
                 False,
-                "`antigravity` CLI not found on PATH, and neither GEMINI_API_KEY "
+                "Antigravity CLI (`agy`) not found on PATH, and neither GEMINI_API_KEY "
                 "nor Vertex AI credentials are set for the SDK fallback",
             )
 
@@ -116,7 +117,7 @@ class AntigravityBackend:
     ) -> Iterator[Event]:
         prompt_str = format_messages_to_prompt(prompt)
         written_diffs: list[dict[str, Any]] = []
-        if shutil.which("antigravity"):
+        if _antigravity_binary():
             res = self._run_cli(prompt_str, cwd=cwd, mode=mode)
         else:
             sdk_res = self._run_sdk(prompt_str, cwd=cwd, mode=mode)
@@ -163,16 +164,28 @@ class AntigravityBackend:
         return run_sync(self.run(prompt, cwd=cwd, mode=mode, tools=tools))
 
     def _run_cli(self, prompt: str, *, cwd: str, mode: str) -> RunResult:
+        binary = _antigravity_binary()
+        if not binary:
+            return RunResult(False, "Antigravity CLI (agy) not found on PATH", self._empty_usage(), {})
+
+        # Non-interactive execution; agy lacks per-tool allowlisting, but agentflow's
+        # own permission policy and role tool-gating already govern this.
+        cmd = [binary, "-p", prompt, "--output-format", "text", "--dangerously-skip-permissions"]
+        if mode == "write":
+            cmd += ["--mode", "accept-edits"]
+        if self.model:
+            cmd += ["--model", self.model]
+
         try:
             proc = subprocess.run(
-                ["antigravity", "-p", prompt],
+                cmd,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=900,
             )
         except subprocess.TimeoutExpired:
-            return RunResult(False, "antigravity -p timed out", self._empty_usage(), {})
+            return RunResult(False, "agy -p timed out", self._empty_usage(), {})
 
         success = proc.returncode == 0
         text = proc.stdout.strip()
@@ -218,3 +231,4 @@ class AntigravityBackend:
 
     def _empty_usage(self) -> Usage:
         return Usage(self.name, self.model, None, None, None)
+
