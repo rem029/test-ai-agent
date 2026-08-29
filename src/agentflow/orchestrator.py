@@ -289,6 +289,21 @@ class Toolset:
         aa = srv.auto_approve
         return aa == ["all"] or getattr(tool, "remote_name", name) in aa or name in aa
 
+    def capability_hints(self) -> str:
+        hints: list[str] = []
+        names = set(self._mcp_tools)
+        if any(n.startswith("mcp__playwright__") for n in names):
+            hints.append(
+                "Browser automation tools are available (mcp__playwright__*). When the task "
+                "involves a web page, site, or UI - or when verifying a change to one - use them: "
+                "navigate to the page, take a snapshot or screenshot, and read the console and "
+                "network activity to confirm it actually renders and works. Do not judge web UI "
+                "changes from the source alone."
+            )
+        if not hints:
+            return ""
+        return "\n\nEnvironment capabilities:\n" + "\n".join(f"- {h}" for h in hints)
+
 
 def _tool_schemas_text() -> str:
     return Toolset().schema_text()
@@ -489,7 +504,7 @@ def _run_with_tools(
 ) -> RunResult:
     """Run a backend prompt, executing any requested tools iteratively with structured conversation."""
     ts = toolset or Toolset()
-    initial_content = f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{ts.schema_text()}"
+    initial_content = f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{ts.schema_text()}{ts.capability_hints()}"
     messages: list[Message] = [Message(role="user", content=initial_content)]
     policy = config.permissions if config else "auto"
     max_cost = config.max_cost_usd if config else None

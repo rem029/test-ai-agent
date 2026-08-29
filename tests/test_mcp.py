@@ -336,6 +336,32 @@ def test_toolset_unit():
     ts_all = Toolset(mcp_tools={"mcp__fake__echo": fake_tool}, mcp_servers=[server_all])
     assert ts_all.mcp_auto_approved("mcp__fake__echo") is True
 
+    # capability_hints
+    assert ts.capability_hints() == ""
+    assert Toolset().capability_hints() == ""
+
+
+def test_toolset_capability_hints_playwright():
+    from unittest.mock import MagicMock
+    from agentflow.orchestrator import Toolset
+
+    playwright_tool = MCPTool(
+        manager=MagicMock(),
+        server_name="playwright",
+        remote_name="browser_navigate",
+        description="Navigate to URL",
+        input_schema={},
+    )
+    assert Toolset().capability_hints() == ""
+    assert Toolset(mcp_tools={"mcp__fake__echo": MagicMock()}).capability_hints() == ""
+
+    ts_playwright = Toolset(
+        mcp_tools={"mcp__playwright__browser_navigate": playwright_tool}
+    )
+    hints = ts_playwright.capability_hints()
+    assert "Browser automation tools are available" in hints
+    assert "Environment capabilities:" in hints
+
 
 def test_check_tool_permission_with_toolset():
     from unittest.mock import MagicMock, patch
@@ -471,6 +497,57 @@ def test_mcp_tool_execution_in_run_with_tools(tmp_path):
         second_call_messages = backend.run.call_args_list[1][0][0]
         user_reply = [m for m in second_call_messages if m.role == "user"][-1]
         assert "hello mcp" in user_reply.content
+
+
+def test_run_with_tools_includes_playwright_capability_hints(tmp_path):
+    from unittest.mock import MagicMock
+    from agentflow.backends.base import RunResult, Usage
+    from agentflow.orchestrator import RunState, Toolset, _run_with_tools
+
+    server_cfg = MCPServerConfig(
+        name="playwright",
+        command=sys.executable,
+        args=[FAKE_SERVER_PATH],
+    )
+    playwright_tool = MCPTool(
+        manager=MagicMock(),
+        server_name="playwright",
+        remote_name="browser_navigate",
+        description="Navigate to URL",
+        input_schema={},
+    )
+    toolset = Toolset(
+        {"mcp__playwright__browser_navigate": playwright_tool}, [server_cfg]
+    )
+
+    backend = MagicMock()
+    backend.name = "mock"
+    backend.model = "mock-model"
+    backend.run.return_value = RunResult(
+        success=True,
+        text="All done.",
+        usage=Usage("mock", "mock-model", 10, 10, 0.0),
+        raw={},
+    )
+    state = RunState(
+        run_id="test-hints",
+        goal="Test hints",
+        started_at=1000.0,
+        config={},
+    )
+    _run_with_tools(
+        backend,
+        "Verify web UI",
+        cwd=str(tmp_path),
+        mode="verify",
+        state=state,
+        step_index=1,
+        toolset=toolset,
+    )
+    first_call_messages = backend.run.call_args_list[0][0][0]
+    initial_prompt = first_call_messages[0].content
+    assert "Browser automation tools are available (mcp__playwright__*)" in initial_prompt
+    assert "Environment capabilities:" in initial_prompt
 
 
 def test_mcp_workflow_lifecycle(tmp_path):
