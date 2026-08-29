@@ -430,6 +430,11 @@ def test_js_split_tool_blocks_via_node():
     if (!pastYearRes || !pastYearRes.text.includes('2020') || !pastYearRes.text.includes('Sep 13')) {
         process.exit(13);
     }
+
+    // 14. showTransportFeedback and collectMcpServersFromDOM exports
+    if (typeof app.showTransportFeedback !== 'function' || typeof app.collectMcpServersFromDOM !== 'function') {
+        process.exit(14);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
@@ -1477,6 +1482,65 @@ def test_api_config_mcp_servers_and_max_cost_null_reset(tmp_path):
         },
     )
     assert resp5.status_code == 422
+
+
+def test_api_config_mcp_servers_auto_approve_roundtrip(tmp_path):
+    config_path = tmp_path / "agentflow.config.yaml"
+    client = _make_client(tmp_path, config_path=str(config_path))
+
+    # 1. POST with auto_approve = ["all"]
+    resp1 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "build_backend": "antigravity",
+            "verify_backend": "claude-code",
+            "mcp_servers": [
+                {
+                    "name": "server-all",
+                    "command": sys.executable,
+                    "args": [FAKE_SERVER_PATH],
+                    "enabled": True,
+                    "auto_approve": ["all"],
+                }
+            ],
+        },
+    )
+    assert resp1.status_code == 200
+    cfg1 = load_config(str(config_path))
+    assert len(cfg1.mcp_servers) == 1
+    assert cfg1.mcp_servers[0].auto_approve == ["all"]
+
+    get_resp1 = client.get("/api/config")
+    assert get_resp1.status_code == 200
+    assert get_resp1.json()["mcp_servers"][0]["auto_approve"] == ["all"]
+
+    # 2. POST with auto_approve = ["toolA", "toolB"]
+    resp2 = client.post(
+        "/api/config",
+        json={
+            "review_backend": "claude-code",
+            "build_backend": "antigravity",
+            "verify_backend": "claude-code",
+            "mcp_servers": [
+                {
+                    "name": "server-tools",
+                    "command": sys.executable,
+                    "args": [FAKE_SERVER_PATH],
+                    "enabled": True,
+                    "auto_approve": ["toolA", "toolB"],
+                }
+            ],
+        },
+    )
+    assert resp2.status_code == 200
+    cfg2 = load_config(str(config_path))
+    assert len(cfg2.mcp_servers) == 1
+    assert cfg2.mcp_servers[0].auto_approve == ["toolA", "toolB"]
+
+    get_resp2 = client.get("/api/config")
+    assert get_resp2.status_code == 200
+    assert get_resp2.json()["mcp_servers"][0]["auto_approve"] == ["toolA", "toolB"]
 
 
 def test_api_tools_endpoint(tmp_path):

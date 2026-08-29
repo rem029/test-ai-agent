@@ -1323,18 +1323,36 @@ function updateTransportStatus() {
     }
 }
 
+let isSubmitting = false;
+let feedbackTimer = null;
+
+function showTransportFeedback(message, type = 'info', durationMs = 6000) {
+    const el = document.getElementById('transport-feedback');
+    if (!el) return;
+    el.textContent = message;
+    el.className = `transport-feedback mono ${type}`;
+    el.hidden = false;
+    clearTimeout(feedbackTimer);
+    feedbackTimer = setTimeout(() => {
+        el.hidden = true;
+    }, durationMs);
+}
+
 async function handleTransportSubmit() {
+    if (isSubmitting) return;
+
     const input = document.getElementById('transport-input');
     if (!input) return;
     const text = input.value.trim();
     if (!text) return;
 
     const running = isRunLive();
+    isSubmitting = true;
 
-    if (running) {
-        const pq = projectQuery();
-        const url = `/api/runs/${encodeURIComponent(currentRunId)}/messages` + (pq ? `?${pq}` : '');
-        try {
+    try {
+        if (running) {
+            const pq = projectQuery();
+            const url = `/api/runs/${encodeURIComponent(currentRunId)}/messages` + (pq ? `?${pq}` : '');
             const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1343,34 +1361,50 @@ async function handleTransportSubmit() {
             if (res.ok) {
                 input.value = '';
                 const queuePill = document.getElementById('transport-queue-pill');
-                if (queuePill) queuePill.hidden = false;
+                if (queuePill) {
+                    queuePill.textContent = 'steer queued — applied at the next step';
+                    queuePill.hidden = false;
+                }
+            } else {
+                const data = await res.json().catch(() => ({}));
+                showTransportFeedback(data.detail || 'Failed to send steer message', 'error');
             }
-        } catch (e) {
-            console.error('Failed to send steer message:', e);
-        }
-    } else {
-        const payload = {
-            goal: text,
-            session_id: currentSessionId || null,
-            project: currentProject || null
-        };
+        } else {
+            const payload = {
+                goal: text,
+                session_id: currentSessionId || null,
+                project: currentProject || null
+            };
 
-        try {
             const res = await fetch('/api/runs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            const data = await res.json();
-            if (res.ok && data.run_id) {
-                input.value = '';
-                if (data.session_id) currentSessionId = data.session_id;
-                await loadSessions(false);
-                await selectRun(data.run_id);
+            const data = await res.json().catch(() => ({}));
+
+            if (res.ok) {
+                if (data.run_id) {
+                    input.value = '';
+                    if (data.session_id) currentSessionId = data.session_id;
+                    await loadSessions(false);
+                    await selectRun(data.run_id);
+                } else if (data.status === 'queued') {
+                    input.value = '';
+                    await loadSessions(false);
+                    showTransportFeedback('queued — starts after the current run', 'info');
+                } else {
+                    input.value = '';
+                    await loadSessions(false);
+                }
+            } else {
+                showTransportFeedback(data.detail || 'Failed to create run', 'error');
             }
-        } catch (e) {
-            console.error('Failed to create run:', e);
         }
+    } catch (e) {
+        showTransportFeedback(`Network error: ${e.message}`, 'error');
+    } finally {
+        isSubmitting = false;
     }
 }
 
@@ -1395,7 +1429,18 @@ function handleStopClick() {
 
         const pq = projectQuery();
         const url = `/api/runs/${encodeURIComponent(currentRunId)}/stop` + (pq ? `?${pq}` : '');
-        fetch(url, { method: 'POST' }).catch(err => console.error('Stop error:', err));
+        fetch(url, { method: 'POST' })
+            .then(async (res) => {
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    showTransportFeedback(data.detail || 'Failed to stop run', 'error');
+                    if (stopText) stopText.textContent = 'stop';
+                }
+            })
+            .catch(err => {
+                showTransportFeedback(`Stop error: ${err.message}`, 'error');
+                if (stopText) stopText.textContent = 'stop';
+            });
     }
 }
 
@@ -1408,6 +1453,7 @@ async function loadProjectFiles() {
         const url = pq ? `/api/files?${pq}` : '/api/files';
         const res = await fetch(url);
         if (res.ok) {
+            const data = await res.json();
             projectFiles = data.files || [];
         }
     } catch (e) {
@@ -1969,7 +2015,7 @@ function collectMcpServersFromDOM() {
         }
 
         if (autoApproveRaw.toLowerCase() === 'all') {
-            serverObj.auto_approve = 'all';
+            serverObj.auto_approve = ['all'];
         } else if (autoApproveRaw) {
             serverObj.auto_approve = autoApproveRaw.split(',').map(s => s.trim()).filter(Boolean);
         } else {
@@ -2703,6 +2749,9 @@ if (typeof module !== 'undefined' && module.exports) {
         runStatus,
         formatUnifiedDuration,
         formatSessionDate,
+        showTransportFeedback,
+        collectMcpServersFromDOM,
+        handleTransportSubmit,
         loadMemory,
         submitConfig,
         NOTIFY_KEY,
