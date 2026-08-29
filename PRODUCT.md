@@ -20,7 +20,7 @@ Personal local dev environments and hosted code-server/Coolify setups (reverse-p
 
 ## Capabilities and Constraints
 - Review, build, and verify workflows with auto-iteration on failure.
-- Live run progress in the SPA, polled against the persisted run/event state.
+- Live run progress in the SPA, streamed over SSE from the persisted event log.
 - One-at-a-time task execution with thread concurrency lock.
 - Backend configuration editing with Pydantic validation before writing YAML.
 - Zero client-side build step; hand-written vanilla JS, no framework or CDN.
