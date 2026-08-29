@@ -406,6 +406,86 @@ def test_format_footer():
     assert "$0.0155" in footer
     assert "openrouter:deepseek/deepseek-chat" in footer
     assert "claude-code:claude-3-7-sonnet" in footer
+    assert "Session:" not in footer
+
+
+def test_format_footer_with_session():
+    state = {
+        "started_at": 100.0,
+        "finished_at": 115.5,
+        "stopped": False,
+        "pushed": {"pushed": True},
+        "blockers": [],
+        "steps": [],
+    }
+    # 1. With title
+    sess_with_title = {"session_id": "sess-42-abcd", "title": "Add authentication"}
+    footer1 = format_footer(state, session=sess_with_title)
+    assert 'Session: sess-42-abcd — "Add authentication"' in footer1
+    assert "PUSHED" in footer1
+
+    # 2. With title=None -> (untitled)
+    sess_no_title = {"session_id": "sess-42-abcd", "title": None}
+    footer2 = format_footer(state, session=sess_no_title)
+    assert 'Session: sess-42-abcd — "(untitled)"' in footer2
+
+    # 3. With session=None -> no Session line
+    footer3 = format_footer(state, session=None)
+    assert "Session:" not in footer3
+
+
+def test_session_tag_helper():
+    from agentflow.tui.repl import _session_tag
+
+    assert _session_tag("sess-1234-abcd") == "abcd"
+    assert _session_tag("sess-5678") == "5678"
+    assert _session_tag("1234567890") == "34567890"
+    assert _session_tag("short") == "short"
+    assert _session_tag("") == ""
+
+
+def test_build_toolbar(isolate_database):
+    from agentflow.database import create_session, save_run
+    from agentflow.orchestrator import RunState
+    from agentflow.tui.repl import _build_toolbar
+
+    # Create session with runs and cost
+    create_session("sess-test-9999-wxyz", cwd="/tmp", title="Optimize query", path=isolate_database)
+    state = RunState(
+        run_id="run-t1",
+        goal="Optimize query",
+        started_at=time.time(),
+        config={},
+        session_id="sess-test-9999-wxyz",
+    )
+    state.steps.append(
+        {
+            "role": "build",
+            "usage": {"cost_usd": 0.0345},
+        }
+    )
+    save_run(state, "/tmp", path=isolate_database)
+
+    toolbar_str = _build_toolbar("sess-test-9999-wxyz", database_path=isolate_database)
+    assert 'agentflow · wxyz · "Optimize query" · $0.0345' == toolbar_str
+
+    # Test with untitled session
+    create_session("sess-test-8888-none", cwd="/tmp", title=None, path=isolate_database)
+    toolbar_untitled = _build_toolbar("sess-test-8888-none", database_path=isolate_database)
+    assert 'agentflow · none · "untitled" · $0.0000' == toolbar_untitled
+
+    # Test with non-existent session
+    toolbar_missing = _build_toolbar("sess-nonexistent-1234", database_path=isolate_database)
+    assert 'agentflow · 1234 · "untitled" · $0.0000' == toolbar_missing
+
+
+def test_build_toolbar_error_fallback():
+    from agentflow.tui.repl import _build_toolbar
+
+    with patch("agentflow.database.get_session", side_effect=RuntimeError("DB exploded")):
+        res = _build_toolbar("sess-1")
+        assert res == ""
+
 
 
 # ============================================================================

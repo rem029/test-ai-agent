@@ -12,6 +12,29 @@ from ..config import Config
 from ..tools import strip_tool_blocks
 
 
+def _session_tag(sid: str) -> str:
+    """Return the short display tag for a session ID."""
+    if not sid:
+        return ""
+    return sid.split("-")[-1] if "-" in sid else sid[-8:]
+
+
+def _build_toolbar(active_session_id: str, database_path: Path | None = None) -> str:
+    """Construct the persistent bottom toolbar status string."""
+    try:
+        from ..database import get_session, get_session_runs
+        from .render import session_cost
+
+        sess = get_session(active_session_id, path=database_path)
+        title = sess.get("title") if sess and sess.get("title") else "untitled"
+        tag = _session_tag(active_session_id)
+        runs = get_session_runs(active_session_id, path=database_path)
+        running_cost = session_cost(runs)
+        return f'agentflow · {tag} · "{title}" · ${running_cost:.4f}'
+    except Exception:
+        return ""
+
+
 def _prompt_user_permission(console: Any, tool_name: str, args: dict[str, Any]) -> str:
     """Prompt the user interactively to approve or deny a mutating tool call."""
     console.print(f"\n[bold yellow]Tool Confirmation Required:[/bold yellow] [cyan]{tool_name}[/cyan]")
@@ -48,7 +71,7 @@ def run_repl(
     from rich.console import Console
 
     from ..config import AGENTFLOW_HOME
-    from ..database import add_control_signal, list_events, reconstruct_run
+    from ..database import add_control_signal, get_session, list_events, reconstruct_run
     from ..orchestrator import new_run_id, new_session_id, run_workflow
     from .commands import dispatch, parse_command
     from .completion import SlashCommandCompleter
@@ -57,6 +80,11 @@ def run_repl(
 
     console = Console()
 
+    active_session_id = session_id or new_session_id()
+
+    def _toolbar() -> str:
+        return _build_toolbar(active_session_id, database_path=database_path)
+
     # Configure session history
     history_file = AGENTFLOW_HOME / "repl_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -64,9 +92,8 @@ def run_repl(
         history=FileHistory(str(history_file)),
         completer=SlashCommandCompleter(),
         complete_while_typing=True,
+        bottom_toolbar=lambda: _toolbar(),
     )
-
-    active_session_id = session_id or new_session_id()
 
     # Default REPL permissions to "prompt" unless explicitly set to "deny"
     if config.permissions != "deny":
@@ -95,11 +122,7 @@ def run_repl(
 
     while True:
         try:
-            session_tag = (
-                active_session_id.split("-")[-1]
-                if "-" in active_session_id
-                else active_session_id[-8:]
-            )
+            session_tag = _session_tag(active_session_id)
             line = prompt_session.prompt(f"agentflow [{session_tag}]> ")
         except (EOFError, SystemExit):
             console.print("\n[dim]Goodbye![/dim]")
@@ -301,7 +324,12 @@ def run_repl(
 
         if final_state is not None:
             state_dict = final_state.to_dict() if hasattr(final_state, "to_dict") else final_state
-            console.print(format_footer(state_dict))
+            console.print(
+                format_footer(
+                    state_dict,
+                    session=get_session(active_session_id, path=database_path),
+                )
+            )
         elif run_box["exc"] is not None:
             console.print(f"[bold red]Turn error:[/bold red] {run_box['exc']}")
 

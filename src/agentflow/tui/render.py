@@ -209,7 +209,7 @@ def session_cost(run_states: list[dict[str, Any]]) -> float:
     return total
 
 
-def format_footer(state: dict[str, Any]) -> str:
+def format_footer(state: dict[str, Any], session: dict[str, Any] | None = None) -> str:
     """Format a summary footer from a run state dictionary."""
     steps = state.get("steps", [])
     total_cost = 0.0
@@ -264,9 +264,17 @@ def format_footer(state: dict[str, Any]) -> str:
         )
     backend_summary = " | ".join(backend_parts) if backend_parts else "no token usage"
 
+    session_line = ""
+    if session is not None:
+        sid = session.get("session_id", "")
+        title = session.get("title")
+        title_str = title if title is not None else "(untitled)"
+        session_line = f'Session: {sid} — "{title_str}"\n'
+
     line = "─" * 60
     return (
         f"{line}\n"
+        f"{session_line}"
         f"Status: {status_str} | Elapsed: {elapsed:.1f}s | Total Cost: ${total_cost:.4f}\n"
         f"Usage: {backend_summary}\n"
         f"{line}"

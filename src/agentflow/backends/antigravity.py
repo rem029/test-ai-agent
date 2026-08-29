@@ -18,6 +18,7 @@ Two ways to reach Antigravity, tried in this order:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import shutil
@@ -170,7 +171,7 @@ class AntigravityBackend:
 
         # Non-interactive execution; agy lacks per-tool allowlisting, but agentflow's
         # own permission policy and role tool-gating already govern this.
-        cmd = [binary, "-p", prompt, "--output-format", "text", "--dangerously-skip-permissions"]
+        cmd = [binary, "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"]
         if mode == "write":
             cmd += ["--mode", "accept-edits"]
         if self.model:
@@ -188,8 +189,29 @@ class AntigravityBackend:
             return RunResult(False, "agy -p timed out", self._empty_usage(), {})
 
         success = proc.returncode == 0
-        text = proc.stdout.strip()
-        return RunResult(success, text or proc.stderr.strip(), self._empty_usage(), {})
+        raw_text = proc.stdout.strip()
+        usage = self._empty_usage()
+        text = raw_text
+        payload: dict[str, Any] = {}
+
+        if raw_text:
+            try:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict):
+                    payload = parsed
+                    resp_val = payload.get("response") or payload.get("result") or payload.get("text")
+                    if resp_val is not None:
+                        text = resp_val if isinstance(resp_val, str) else str(resp_val)
+                        text = text.strip()
+                    usage = self._extract_usage(payload)
+            except Exception:
+                text = raw_text
+                usage = self._empty_usage()
+
+        if not text and proc.stderr:
+            text = proc.stderr.strip()
+
+        return RunResult(success, text or proc.stderr.strip(), usage, payload)
 
     def _run_sdk(
         self, prompt: str, *, cwd: str, mode: str
@@ -232,3 +254,35 @@ class AntigravityBackend:
     def _empty_usage(self) -> Usage:
         return Usage(self.name, self.model, None, None, None)
 
+    def _extract_usage(self, payload: dict[str, Any]) -> Usage:
+        model_usage = payload.get("modelUsage") or {}
+        if model_usage:
+            input_tokens = sum(m.get("inputTokens", 0) or m.get("input_tokens", 0) for m in model_usage.values())
+            output_tokens = sum(m.get("outputTokens", 0) or m.get("output_tokens", 0) for m in model_usage.values())
+            model = payload.get("model") or self.model or next(iter(model_usage), None)
+        else:
+            usage = payload.get("usage") or {}
+            input_tokens = usage.get("input_tokens") if usage.get("input_tokens") is not None else usage.get("inputTokens")
+            output_tokens = usage.get("output_tokens") if usage.get("output_tokens") is not None else usage.get("outputTokens")
+            model = payload.get("model") or usage.get("model") or self.model
+
+        cost_val = None
+        for k in ("total_cost_usd", "cost", "cost_usd"):
+            if k in payload and payload[k] is not None:
+                cost_val = payload[k]
+                break
+        if cost_val is None and isinstance(payload.get("usage"), dict):
+            usage_dict = payload["usage"]
+            for k in ("total_cost_usd", "cost", "cost_usd"):
+                if k in usage_dict and usage_dict[k] is not None:
+                    cost_val = usage_dict[k]
+                    break
+        cost_usd = float(cost_val) if cost_val is not None else None
+
+        return Usage(
+            backend=self.name,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
