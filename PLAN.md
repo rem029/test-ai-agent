@@ -477,7 +477,10 @@ projects.
 
 ## Status
 
-Phases A, B, C, D, E, F, G, and J (incl. J.5, J.6) are done.
+Phases A, B, C, D, E, F, G, H, I (incl. I.5), and J (incl. J.5, J.6) are done.
+L1-L5 done. L7.1 + L7.2 done on branch `phase-l7` (MCP client support; L7.3
+web UI deferred to Phase K). Phase K: K1 + K2 done on branch `phase-k`
+(K3-K5 remaining).
 
 ---
 
@@ -1129,6 +1132,65 @@ with the Phase K rewrite).
   schemas are merged into `_tool_schemas_text()`. Permission policy
   (`READ_ONLY_TOOLS` / `_check_tool_permission`) must extend to MCP tools -
   default unknown MCP tools to "prompt/deny", not "auto".
+
+**Design decisions (2026-08-29):**
+- Config store: `agentflow.config.yaml` `mcp_servers:` (user's instruction),
+  same file as backends / `credentials:`. Not a separate `.mcp.json`.
+- Client: the official `mcp` PyPI SDK (v2.0.0, already a transitive dep via
+  `google-antigravity`; promoted to a direct dependency). It's a wire-protocol
+  library, not an agent framework - consistent with the hand-rolled rule, same
+  as using `httpx` for OpenRouter. stdio transport first; HTTP/SSE deferred.
+- The SDK is async; the orchestrator tool loop is sync. `MCPManager` owns a
+  background asyncio loop thread, enters all `stdio_client` + `ClientSession`
+  contexts on `start()`, exposes sync `list_tools()` / `call_tool()` that block
+  on `run_coroutine_threadsafe`, and tears down on `close()`.
+
+**Config shape:**
+```yaml
+mcp_servers:
+  - name: playwright
+    command: npx
+    args: ["-y", "@playwright/mcp@latest"]
+    env: {}
+    enabled: true
+    auto_approve: []          # tool names auto-allowed even under prompt policy; "all" allowed
+```
+`MCPServerConfig`: `name`, `command|url` (exactly one), `args`, `env`,
+`enabled=True`, `auto_approve: list[str] | "all" = []`.
+
+### Sub-phases
+
+- **L7.1 - config + client + adapter (done, branch `phase-l7`, commit after
+  the L7 PLAN commit).** `MCPServerConfig` in `config.py` +
+  `load_config`/`dump_config` round-trip + `AGENTFLOW_MCP_DISABLED=1`
+  kill-switch; `src/agentflow/mcp/` package: `MCPManager` (background
+  asyncio-loop thread, `AsyncExitStack` per run, blocking `list_tools()` /
+  `call_tool() -> MCPCallOutcome`, per-server error isolation via `.errors`,
+  idempotent `close()`), `MCPClientError`, `MCPTool(Tool)` adapter naming
+  remote tools `mcp__<server>__<tool>` with a passthrough param model and the
+  remote `inputSchema` surfaced verbatim, `discover_mcp_tools()`. `mcp>=2.0.0`
+  promoted to a direct dependency. 8 tests drive `tests/fixtures/fake_mcp_server.py`
+  (`MCPServer` from `mcp.server.mcpserver`) - no npx / network. URL/HTTP
+  transport stubbed as unsupported. 346 tests.
+- **L7.2 - orchestrator wiring + CLI (done).** `Toolset` in `orchestrator.py`
+  unifies the built-in registry with a run's live MCP tools
+  (`has`/`get`/`names`/`schema_text`/`is_read_only`/`is_mcp`/`mcp_auto_approved`);
+  `_tool_schemas_text()` delegates to it. `_execute_tool_call` gains an
+  optional trailing `toolset`; `_run_with_tools` a keyword `toolset` (empty
+  default = unchanged behaviour); `_check_tool_permission` a keyword-only
+  `toolset`. MCP tools never read-only; one not in its server's `auto_approve`
+  (or `["all"]`) needs approval even under `auto` - interactive prompts,
+  headless `auto` denies with an actionable message. `run_workflow` starts an
+  `MCPManager` for enabled servers before review, logs `mcp_ready`/`mcp_error`,
+  passes the `Toolset` to all three `_run_with_tools` calls, closes it in
+  `finally`. `--list-tools` also lists live MCP tools + errors; new
+  `--mcp-check` (`[OK] name: N tool(s): ...` / `[ERROR] ...`, exit 1 on any
+  error). `/tools` in the REPL notes the configured server count. 352 tests;
+  `--mcp-check` verified end-to-end.
+- **L7.3 - web config UI for MCP servers.** Deferred - lands with the Phase K
+  web console rewrite (config panel). Backend is ready: `GET/POST /api/config`
+  just needs `mcp_servers` surfaced (the `Config` model already carries it,
+  and `dump_config` persists it).
 
 ### L8 - User-defined skills
 

@@ -203,6 +203,9 @@ def dispatch(
             tool = get_tool(name)
             desc = getattr(tool, "description", "")
             lines.append(f"  • [bold cyan]{name}[/bold cyan]: {desc}")
+        if config.mcp_servers:
+            n_srv = len(config.mcp_servers)
+            lines.append(f"\n[dim](+ MCP tools from {n_srv} configured server(s) - see 'agentflow --mcp-check')[/dim]")
         return CommandResult("\n".join(lines))
 
     if cmd == "/resume":
