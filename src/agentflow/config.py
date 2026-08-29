@@ -21,6 +21,12 @@ BackendName = Literal["claude-code", "antigravity", "openrouter"]
 AGENTFLOW_HOME = Path.home() / ".agentflow"
 DEFAULT_CONFIG_PATH = "agentflow.config.yaml"
 
+_ACTIVE_CONFIG_PATH: str | None = None
+
+
+def active_config_path() -> str | None:
+    return _ACTIVE_CONFIG_PATH
+
 # Not finalized — see PLAN.md "Decide the default backend-per-role mapping".
 DEFAULTS: dict[str, "RoleConfig"] = {}
 
@@ -97,6 +103,8 @@ def _env_override(role: str, data: dict) -> dict:
 
 
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
+    global _ACTIVE_CONFIG_PATH
+    _ACTIVE_CONFIG_PATH = str(path)
     file_data = _from_file(path)
     roles = {}
     for role, default in DEFAULTS.items():

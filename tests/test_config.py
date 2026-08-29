@@ -8,6 +8,7 @@ from agentflow.config import (
     NotificationConfig,
     RoleConfig,
     _from_file,
+    active_config_path,
     dump_config,
     load_config,
 )
@@ -128,3 +129,16 @@ def test_load_config_env_notifications_enabled(tmp_path, monkeypatch):
     loaded = load_config(str(config_file))
     assert loaded.notifications is not None
     assert loaded.notifications.enabled is True
+
+
+def test_active_config_path(tmp_path):
+    config_file = tmp_path / "custom_config.yaml"
+    config_file.write_text("build:\n  backend: claude-code\n")
+
+    load_config(str(config_file))
+    assert active_config_path() == str(config_file)
+
+    # Even for nonexistent file, load_config records the path hint
+    load_config("nonexistent_path.yaml")
+    assert active_config_path() == "nonexistent_path.yaml"
+
