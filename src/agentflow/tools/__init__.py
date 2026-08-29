@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .base import Tool, ToolContext, ToolError, ToolResult
-from .parser import ParsedToolRequest, parse_tool_requests
+from .parser import ParsedToolRequest, parse_tool_requests, strip_tool_blocks
 from .registry import ToolRegistry, get_tool, get_tool_schema, list_tools
 
 # Import built-in tool modules so they self-register.
@@ -20,4 +20,5 @@ __all__ = [
     "get_tool_schema",
     "list_tools",
     "parse_tool_requests",
+    "strip_tool_blocks",
 ]

@@ -184,8 +184,75 @@ def test_antigravity_streaming():
     assert events[2].type == "done"
     assert events[2].payload["success"] is True
 
-    with patch.object(backend, "_run_sdk", return_value=mock_result):
+    with patch.object(backend, "_run_sdk", return_value=(mock_result, [])):
         with patch("shutil.which", return_value=None):
             res = backend.run_sync("test prompt", cwd=".")
             assert res.text == "SDK output"
             assert res.success is True
+
+
+def test_apply_file_blocks(tmp_path):
+    from agentflow.backends.base import apply_file_blocks
+
+    # 1. New file
+    text = "```FILE: src/new.py\ndef new_func():\n    return True\n```"
+    written = apply_file_blocks(text, str(tmp_path))
+    assert len(written) == 1
+    assert written[0]["path"] == "src/new.py"
+    assert written[0]["previous"] is None
+    assert written[0]["current"] == "def new_func():\n    return True\n"
+    assert (tmp_path / "src/new.py").read_text() == "def new_func():\n    return True\n"
+
+    # 2. Existing file overwrite
+    text2 = "```FILE: src/new.py\ndef new_func():\n    return False\n```"
+    written2 = apply_file_blocks(text2, str(tmp_path))
+    assert len(written2) == 1
+    assert written2[0]["path"] == "src/new.py"
+    assert written2[0]["previous"] == "def new_func():\n    return True\n"
+    assert written2[0]["current"] == "def new_func():\n    return False\n"
+
+    # 3. Path escape refused
+    text_escape = "```FILE: ../outside.py\nx = 1\n```"
+    written_escape = apply_file_blocks(text_escape, str(tmp_path / "src"))
+    assert len(written_escape) == 0
+
+
+def test_openrouter_streaming_file_write_emits_tool_result(tmp_path):
+    backend = OpenRouterBackend(model="deepseek/deepseek-v4-flash")
+    sse_lines = [
+        'data: {"choices": [{"delta": {"content": "I will write the file:\\n```FILE: app.py\\nx = 42\\n```"}}]}',
+        'data: {"usage": {"prompt_tokens": 10, "completion_tokens": 20, "cost": 0.0002}}',
+        'data: [DONE]',
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_lines.return_value = iter(sse_lines)
+
+    mock_stream = MagicMock()
+    mock_stream.__enter__.return_value = mock_resp
+    mock_stream.__exit__.return_value = False
+
+    with patch("agentflow.backends.openrouter.openrouter_api_key", return_value="fake-key"):
+        with patch("httpx.stream", return_value=mock_stream):
+            events = list(backend.run("test prompt", cwd=str(tmp_path), mode="write"))
+
+    types = [e.type for e in events]
+    assert "text_delta" in types
+    assert "tool_result" in types
+    assert "usage" in types
+    assert "done" in types
+
+    tr_events = [e for e in events if e.type == "tool_result"]
+    assert len(tr_events) == 1
+    payload = tr_events[0].payload
+    assert payload["tool_name"] == "WriteFile"
+    assert payload["args"] == {"path": "app.py"}
+    assert payload["status"] == "OK"
+    assert payload["result"]["structured"]["path"] == "app.py"
+    assert payload["result"]["structured"]["previous"] is None
+    assert payload["result"]["structured"]["current"] == "x = 42\n"
+
+    done_event = [e for e in events if e.type == "done"][0]
+    assert done_event.payload["text"] == "wrote 1 file(s): app.py"
+

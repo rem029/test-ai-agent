@@ -141,6 +141,7 @@ def _finalize_stopped(
     cwd: str,
     database_path: Path | None = None,
     log_stop_event: bool = True,
+    quiet: bool = False,
 ) -> RunState:
     """Mark a run stopped, consume control signals, log finish, and persist."""
     drain_pending_messages(state.run_id, kinds=("control",), path=database_path)
@@ -158,7 +159,7 @@ def _finalize_stopped(
         database_path=database_path,
     )
     state.save(cwd, database_path=database_path)
-    _print_summary(state)
+    _print_summary(state, quiet=quiet)
     return state
 
 
@@ -492,6 +493,22 @@ def _run_with_tools(
             state.log_event(event.type, event.payload, database_path=database_path)
             if event.type == "text_delta":
                 accumulated_text.append(event.payload.get("delta", ""))
+            elif event.type == "tool_result":
+                p = event.payload
+                tool_name = p.get("tool_name") or p.get("name") or "unknown"
+                t_args = p.get("args") or {}
+                t_res = p.get("result")
+                if not isinstance(t_res, dict):
+                    t_res = {
+                        "output": str(t_res),
+                        "success": p.get("status") == "OK" if "status" in p else p.get("success", True),
+                    }
+                state.add_tool_call(
+                    step_index=step_index,
+                    tool_name=tool_name,
+                    args=t_args,
+                    result=t_res,
+                )
             elif event.type == "usage":
                 p = event.payload
                 usage = Usage(
@@ -823,6 +840,7 @@ def run_workflow(
     database_path: Path | None = None,
     require_lock: bool = True,
     permission_handler: Callable[[str, dict], str] | None = None,
+    quiet: bool = False,
 ) -> RunState:
     resolved_cwd = str(Path(cwd).resolve())
     lock = _get_run_lock(resolved_cwd)
@@ -847,6 +865,10 @@ def run_workflow(
 
     state: RunState | None = None
     exc_to_record: BaseException | None = None
+
+    def _say(*args: Any, **kwargs: Any) -> None:
+        if not quiet:
+            print(*args, **kwargs)
 
     def _notify(ev: str) -> None:
         if state is not None:
@@ -956,7 +978,7 @@ def run_workflow(
         build_backend = _build_backend(config.build)
         verify_backend = _build_backend(config.verify)
 
-        print(f"[review] planning for goal: {goal}")
+        _say(f"[review] planning for goal: {goal}")
         state.log_event(
             "step_started",
             {"role": "review", "mode": "read", "iteration": 0},
@@ -996,12 +1018,12 @@ def run_workflow(
         state.save(cwd, database_path=database_path)
 
         if review_result.stopped or has_stop_signal(state.run_id, database_path):
-            return _finalize_stopped(state, cwd, database_path, log_stop_event=not review_result.stopped)
+            return _finalize_stopped(state, cwd, database_path, log_stop_event=not review_result.stopped, quiet=quiet)
 
         # Check budget guardrail
         budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
         if not budget_ok:
-            print(f"[budget] ABORTED: {budget_err}")
+            _say(f"[budget] ABORTED: {budget_err}")
             state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
             _notify("blocked")
             state.finished_at = time.time()
@@ -1012,11 +1034,11 @@ def run_workflow(
                 database_path=database_path,
             )
             state.save(cwd, database_path=database_path)
-            _print_summary(state)
+            _print_summary(state, quiet=quiet)
             return state
 
         if not review_result.success:
-            print(f"[review] FAILED: {review_result.text[:300]}")
+            _say(f"[review] FAILED: {review_result.text[:300]}")
             state.add_blocker(
                 "backend_error",
                 review_result.text,
@@ -1032,11 +1054,11 @@ def run_workflow(
                 database_path=database_path,
             )
             state.save(cwd, database_path=database_path)
-            _print_summary(state)
+            _print_summary(state, quiet=quiet)
             return state
 
         plan = review_result.text
-        print(f"[review] plan:\n{plan}\n")
+        _say(f"[review] plan:\n{plan}\n")
 
         feedback = leftover_steer_text if leftover_steer_text else ""
         steer_text = _drain_steer(state, database_path=database_path)
@@ -1045,7 +1067,7 @@ def run_workflow(
 
         verified = False
         for iteration in range(1, config.max_iterations + 1):
-            print(f"[build] iteration {iteration}/{config.max_iterations}")
+            _say(f"[build] iteration {iteration}/{config.max_iterations}")
             state.log_event(
                 "step_started",
                 {"role": "build", "mode": "write", "iteration": iteration},
@@ -1098,11 +1120,11 @@ def run_workflow(
             state.save(cwd, database_path=database_path)
 
             if build_result.stopped or has_stop_signal(state.run_id, database_path):
-                return _finalize_stopped(state, cwd, database_path, log_stop_event=not build_result.stopped)
+                return _finalize_stopped(state, cwd, database_path, log_stop_event=not build_result.stopped, quiet=quiet)
 
             budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
             if not budget_ok:
-                print(f"[budget] ABORTED: {budget_err}")
+                _say(f"[budget] ABORTED: {budget_err}")
                 state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
                 _notify("blocked")
                 state.finished_at = time.time()
@@ -1113,11 +1135,11 @@ def run_workflow(
                     database_path=database_path,
                 )
                 state.save(cwd, database_path=database_path)
-                _print_summary(state)
+                _print_summary(state, quiet=quiet)
                 return state
 
             if not build_result.success:
-                print(f"[build] FAILED: {build_result.text[:300]}")
+                _say(f"[build] FAILED: {build_result.text[:300]}")
                 state.add_blocker(
                     "backend_error",
                     build_result.text,
@@ -1128,7 +1150,7 @@ def run_workflow(
                 feedback = build_result.text
                 continue
 
-            print(f"[verify] iteration {iteration}/{config.max_iterations}")
+            _say(f"[verify] iteration {iteration}/{config.max_iterations}")
             state.log_event(
                 "step_started",
                 {"role": "verify", "mode": "verify", "iteration": iteration},
@@ -1164,11 +1186,11 @@ def run_workflow(
             state.save(cwd, database_path=database_path)
 
             if verify_result.stopped or has_stop_signal(state.run_id, database_path):
-                return _finalize_stopped(state, cwd, database_path, log_stop_event=not verify_result.stopped)
+                return _finalize_stopped(state, cwd, database_path, log_stop_event=not verify_result.stopped, quiet=quiet)
 
             budget_ok, budget_err = _check_budget(state, config.max_cost_usd)
             if not budget_ok:
-                print(f"[budget] ABORTED: {budget_err}")
+                _say(f"[budget] ABORTED: {budget_err}")
                 state.add_blocker("budget", budget_err or "", fatal=True, database_path=database_path)
                 _notify("blocked")
                 state.finished_at = time.time()
@@ -1179,7 +1201,7 @@ def run_workflow(
                     database_path=database_path,
                 )
                 state.save(cwd, database_path=database_path)
-                _print_summary(state)
+                _print_summary(state, quiet=quiet)
                 return state
 
             steer_text = _drain_steer(state, database_path=database_path)
@@ -1187,7 +1209,7 @@ def run_workflow(
                 feedback = f"{feedback}\n\n{steer_text}".strip() if feedback else steer_text
 
             verified = verify_result.success and _parse_verify_result(verify_result.text)
-            print(f"[verify] {'PASS' if verified else 'FAIL'}: {verify_result.text[:300]}")
+            _say(f"[verify] {'PASS' if verified else 'FAIL'}: {verify_result.text[:300]}")
 
             if verified:
                 break
@@ -1196,12 +1218,12 @@ def run_workflow(
         state.finished_at = time.time()
 
         if has_stop_signal(state.run_id, database_path):
-            return _finalize_stopped(state, cwd, database_path, log_stop_event=True)
+            return _finalize_stopped(state, cwd, database_path, log_stop_event=True, quiet=quiet)
 
         if verified:
-            state.pushed = _commit_and_push(goal, plan, cwd)
+            state.pushed = _commit_and_push(goal, plan, cwd, quiet=quiet)
         else:
-            print(f"[iterate] gave up after {config.max_iterations} iteration(s) without passing verify")
+            _say(f"[iterate] gave up after {config.max_iterations} iteration(s) without passing verify")
 
         state.log_event(
             "run_finished",
@@ -1209,7 +1231,7 @@ def run_workflow(
             database_path=database_path,
         )
         state.save(cwd, database_path=database_path)
-        _print_summary(state)
+        _print_summary(state, quiet=quiet)
         return state
     except BaseException as exc:
         exc_to_record = exc
@@ -1236,12 +1258,13 @@ def run_workflow(
             _spawn_next_queued_run(resolved_cwd, database_path=database_path)
 
 
-def _commit_and_push(goal: str, plan: str, cwd: str) -> dict | None:
+def _commit_and_push(goal: str, plan: str, cwd: str, quiet: bool = False) -> dict | None:
     status = subprocess.run(
         ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True
     )
     if not status.stdout.strip():
-        print("[push] no changes to commit")
+        if not quiet:
+            print("[push] no changes to commit")
         return None
 
     subject = goal.strip().splitlines()[0][:72]
@@ -1255,14 +1278,16 @@ def _commit_and_push(goal: str, plan: str, cwd: str) -> dict | None:
 
     add = subprocess.run(["git", "add", "-A"], cwd=cwd, capture_output=True, text=True)
     if add.returncode != 0:
-        print(f"[push] git add failed: {add.stderr.strip()}")
+        if not quiet:
+            print(f"[push] git add failed: {add.stderr.strip()}")
         return {"pushed": False, "error": f"git add failed: {add.stderr.strip()}"}
 
     commit = subprocess.run(
         ["git", "commit", "-m", message], cwd=cwd, capture_output=True, text=True
     )
     if commit.returncode != 0:
-        print(f"[push] git commit failed: {commit.stderr.strip()}")
+        if not quiet:
+            print(f"[push] git commit failed: {commit.stderr.strip()}")
         return {"pushed": False, "error": f"git commit failed: {commit.stderr.strip()}"}
 
     branch = subprocess.run(
@@ -1276,14 +1301,18 @@ def _commit_and_push(goal: str, plan: str, cwd: str) -> dict | None:
     )
 
     if push.returncode != 0:
-        print(f"[push] commit created ({sha[:8]}) but push failed: {push.stderr.strip()}")
+        if not quiet:
+            print(f"[push] commit created ({sha[:8]}) but push failed: {push.stderr.strip()}")
         return {"branch": branch, "commit": sha, "pushed": False, "error": push.stderr.strip()}
 
-    print(f"[push] committed and pushed {sha[:8]} to {branch}")
+    if not quiet:
+        print(f"[push] committed and pushed {sha[:8]} to {branch}")
     return {"branch": branch, "commit": sha, "pushed": True}
 
 
-def _print_summary(state: RunState) -> None:
+def _print_summary(state: RunState, quiet: bool = False) -> None:
+    if quiet:
+        return
     print("\n=== agentflow run summary ===")
     print(f"run_id: {state.run_id}")
     if state.session_id:

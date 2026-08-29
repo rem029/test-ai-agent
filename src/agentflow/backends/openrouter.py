@@ -167,14 +167,35 @@ class OpenRouterBackend:
             return
 
         full_text = "".join(accumulated_text)
-        written: list[str] = []
+        written: list[dict[str, Any]] = []
         if write:
             written = apply_file_blocks(full_text, cwd)
+            for item in written:
+                rel_path = item["path"]
+                prev = item["previous"]
+                curr = item["current"]
+                yield Event(
+                    type="tool_result",
+                    payload={
+                        "step_index": -1,
+                        "tool_name": "WriteFile",
+                        "args": {"path": rel_path},
+                        "result": {
+                            "success": True,
+                            "output": f"Wrote {rel_path}",
+                            "structured": {"path": rel_path, "previous": prev, "current": curr},
+                        },
+                        "status": "OK",
+                        "execution_time_ms": 0,
+                        "error": None,
+                    },
+                )
 
         if not usage_found:
             yield Event.usage(self._empty_usage())
 
-        summary = full_text if not write else f"wrote {len(written)} file(s): {', '.join(written)}"
+        written_paths = [w["path"] for w in written]
+        summary = full_text if not write else f"wrote {len(written)} file(s): {', '.join(written_paths)}"
         yield Event.done(success=True, text=summary, raw=last_chunk)
 
     def run_sync(

@@ -97,17 +97,29 @@ def test_format_event_step_started():
     rendered = format_event(ev)
     assert rendered is not None
     assert "review" in rendered
+    assert "iteration" not in rendered
 
-    ev_iter = {
+    ev_iter1 = {
         "seq": 3,
         "type": "step_started",
-        "payload": {"role": "build", "iteration": 2},
+        "payload": {"role": "build", "iteration": 1},
         "ts": 1002.0,
     }
-    rendered_iter = format_event(ev_iter)
-    assert rendered_iter is not None
-    assert "build" in rendered_iter
-    assert "iteration 2" in rendered_iter
+    rendered_iter1 = format_event(ev_iter1)
+    assert rendered_iter1 is not None
+    assert "build" in rendered_iter1
+    assert "iteration" not in rendered_iter1
+
+    ev_iter2 = {
+        "seq": 4,
+        "type": "step_started",
+        "payload": {"role": "build", "iteration": 2},
+        "ts": 1003.0,
+    }
+    rendered_iter2 = format_event(ev_iter2)
+    assert rendered_iter2 is not None
+    assert "build" in rendered_iter2
+    assert "iteration 2" in rendered_iter2
 
 
 def test_format_event_text_delta():
@@ -139,9 +151,10 @@ def test_format_event_tool_result_plain():
         "type": "tool_result",
         "payload": {
             "tool_name": "ReadFile",
+            "args": {"path": "src/auth.py"},
             "status": "OK",
             "execution_time_ms": 42,
-            "result": {"output": "def login(): pass"},
+            "result": {"output": "def login(): pass\nreturn True\n"},
         },
         "ts": 1005.0,
     }
@@ -149,8 +162,8 @@ def test_format_event_tool_result_plain():
     assert rendered_ok is not None
     assert "✓" in rendered_ok
     assert "ReadFile" in rendered_ok
-    assert "42ms" in rendered_ok
-    assert "def login(): pass" in rendered_ok
+    assert "src/auth.py" in rendered_ok
+    assert "(3 lines)" in rendered_ok
 
     ev_err = {
         "seq": 7,
@@ -167,6 +180,53 @@ def test_format_event_tool_result_plain():
     assert rendered_err is not None
     assert "✗" in rendered_err
     assert "File not found" in rendered_err
+
+    # Generic tool output
+    ev_gen = {
+        "type": "tool_result",
+        "payload": {
+            "tool_name": "CodeSearch",
+            "status": "OK",
+            "execution_time_ms": 25,
+            "result": {"output": "found auth in src/auth.py"},
+        },
+    }
+    rendered_gen = format_event(ev_gen)
+    assert "CodeSearch" in rendered_gen
+    assert "25ms" in rendered_gen
+    assert "found auth in src/auth.py" in rendered_gen
+
+
+def test_format_event_tool_result_list_directory():
+    ev = {
+        "type": "tool_result",
+        "payload": {
+            "tool_name": "ListDirectory",
+            "status": "OK",
+            "execution_time_ms": 12,
+            "result": {
+                "output": "\n".join([
+                    "[dir] .git",
+                    "[file] .git/config",
+                    "[file] a.py",
+                    "[file] b.py",
+                    "[file] c.py",
+                    "[file] d.py",
+                    "[file] e.py",
+                    "[file] f.py",
+                    "[file] g.py",
+                    "[file] h.py",
+                    "[file] i.py",
+                ])
+            },
+        },
+    }
+    rendered = format_event(ev)
+    assert rendered is not None
+    assert ".git" not in rendered
+    assert "a.py" in rendered
+    assert "h.py" in rendered
+    assert "… (+1 more)" in rendered
 
 
 def test_format_event_tool_result_diff():
@@ -211,23 +271,23 @@ def test_format_event_blocker():
     ev_fatal = {
         "seq": 10,
         "type": "blocker",
-        "payload": {"type": "budget", "reason": "Exceeded $5.00 limit", "fatal": True},
+        "payload": {"reason": "budget", "detail": "Exceeded $5.00 limit", "fatal": True},
         "ts": 1009.0,
     }
     rendered_fatal = format_event(ev_fatal)
     assert rendered_fatal is not None
-    assert "FATAL BLOCKER" in rendered_fatal
+    assert "⚠ budget" in rendered_fatal
     assert "Exceeded $5.00 limit" in rendered_fatal
 
     ev_warn = {
         "seq": 11,
         "type": "blocker",
-        "payload": {"type": "permission", "reason": "Denied tool WriteFile", "fatal": False},
+        "payload": {"reason": "permission", "detail": "Denied tool WriteFile", "fatal": False},
         "ts": 1010.0,
     }
     rendered_warn = format_event(ev_warn)
     assert rendered_warn is not None
-    assert "BLOCKER" in rendered_warn
+    assert "⚠ permission" in rendered_warn
     assert "Denied tool WriteFile" in rendered_warn
 
 
@@ -259,15 +319,23 @@ def test_format_event_run_stopped_and_finished():
         "payload": {"pushed": {"pushed": True}},
         "ts": 1013.0,
     }
-    assert "pushed" in (format_event(ev_fin_pushed) or "")
+    assert "committed and pushed" in (format_event(ev_fin_pushed) or "")
 
-    ev_fin_ok = {
+    ev_fin_err = {
         "seq": 15,
         "type": "run_finished",
-        "payload": {"pushed": None},
+        "payload": {"error": "API error 500"},
         "ts": 1014.0,
     }
-    assert "Run completed" in (format_event(ev_fin_ok) or "")
+    assert "✗ Run ended with error: API error 500" in (format_event(ev_fin_err) or "")
+
+    ev_fin_ok = {
+        "seq": 16,
+        "type": "run_finished",
+        "payload": {"pushed": None},
+        "ts": 1015.0,
+    }
+    assert format_event(ev_fin_ok) is None
 
 
 def test_format_event_error_and_skipped():
@@ -641,7 +709,7 @@ def test_repl_scripted_session(isolate_database, capsys):
         except StopIteration:
             raise EOFError
 
-    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None):
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
         # Emit representative events
         append_event(
             run_id,
@@ -724,15 +792,73 @@ def test_repl_scripted_session(isolate_database, capsys):
 
     with (
         patch("prompt_toolkit.PromptSession.prompt", side_effect=fake_prompt, autospec=True),
-        patch("agentflow.orchestrator.run_workflow", side_effect=fake_workflow),
+        patch("agentflow.orchestrator.run_workflow", side_effect=fake_workflow) as mock_wf,
     ):
         ret = run_repl(config, cwd="/tmp/repo", session_id="test-repl-session", database_path=isolate_database)
 
     assert ret == 0
+    assert mock_wf.call_args[1].get("quiet") is True
     captured = capsys.readouterr()
     assert "implement greeting feature" in captured.out
     assert "ReadFile" in captured.out
     assert "✓" in captured.out
     assert "PUSHED" in captured.out
     assert "$0.0010" in captured.out
+
+
+def test_repl_dedup_consecutive_tools(isolate_database, capsys):
+    """Test that immediately consecutive identical tool calls render '(same as above)'."""
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+
+    prompts = iter(["check duplicates", ""])
+
+    def fake_prompt(self, message=""):
+        try:
+            val = next(prompts)
+            if not val:
+                raise EOFError
+            return val
+        except StopIteration:
+            raise EOFError
+
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+        append_event(run_id, 1, "run_started", {"run_id": run_id, "session_id": session_id, "goal": goal}, path=database_path)
+        append_event(run_id, 2, "step_started", {"role": "build", "iteration": 1}, path=database_path)
+        # First call
+        append_event(run_id, 3, "tool_call", {"tool_name": "ReadFile", "args": {"path": "a.py"}}, path=database_path)
+        append_event(run_id, 4, "tool_result", {"tool_name": "ReadFile", "args": {"path": "a.py"}, "status": "OK", "result": {"output": "1\n2\n"}}, path=database_path)
+        # Duplicate consecutive call
+        append_event(run_id, 5, "tool_call", {"tool_name": "ReadFile", "args": {"path": "a.py"}}, path=database_path)
+        append_event(run_id, 6, "tool_result", {"tool_name": "ReadFile", "args": {"path": "a.py"}, "status": "OK", "result": {"output": "1\n2\n"}}, path=database_path)
+        # Different call
+        append_event(run_id, 7, "tool_call", {"tool_name": "ReadFile", "args": {"path": "b.py"}}, path=database_path)
+        append_event(run_id, 8, "tool_result", {"tool_name": "ReadFile", "args": {"path": "b.py"}, "status": "OK", "result": {"output": "3\n"}}, path=database_path)
+        append_event(run_id, 9, "run_finished", {"finished_at": time.time(), "pushed": {"pushed": True}}, path=database_path)
+
+        state = RunState(
+            run_id=run_id,
+            goal=goal,
+            started_at=time.time() - 1.0,
+            config={},
+            session_id=session_id,
+            finished_at=time.time(),
+        )
+        state.pushed = {"pushed": True}
+        save_run(state, cwd, path=database_path)
+        return state
+
+    with (
+        patch("prompt_toolkit.PromptSession.prompt", side_effect=fake_prompt, autospec=True),
+        patch("agentflow.orchestrator.run_workflow", side_effect=fake_workflow),
+    ):
+        ret = run_repl(config, cwd="/tmp/repo", session_id="test-repl-session", database_path=isolate_database)
+
+    assert ret == 0
+    captured = capsys.readouterr()
+    assert "(same as above)" in captured.out
+
 

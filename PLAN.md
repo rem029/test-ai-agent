@@ -823,6 +823,16 @@ interactive REPL (the one-shot `agentflow "<goal>"` form stays).
 - CLI wiring in `src/agentflow/cli.py`: bare invocation or `--resume <session>` without goal launches the REPL, preserving one-shot goal execution.
 - 263 tests pass (`+35` tests in `test_tui.py`, `test_cli.py`, `test_sessions_events.py`).
 
+**Polish (2026-08-29):** implemented on branch `phase-j-repl-polish`.
+- Added `quiet: bool = False` to `orchestrator.run_workflow` and threaded to status prints / `_print_summary` / `_commit_and_push`, silencing duplicate prints during REPL turns while leaving CLI/web behavior unchanged.
+- Added `strip_tool_blocks` to `src/agentflow/tools/parser.py` (and exported from `agentflow.tools`), stripping closed/unclosed `<tool_call>`, DSML delimiters, standalone `<invoke>`, bare tool JSON lines, leftover tags, and ```` ```FILE: ```` blocks before printing text deltas.
+- Updated `apply_file_blocks` in `backends/base.py` to return diff structures (`path`, `previous`, `current`), and wired `openrouter.py` / `antigravity.py` to emit structured `tool_result` events for inline diff rendering in REPL and web UI.
+- Corrected `render.py`: `run_finished` handles error/push/silent states cleanly; `blocker` renders formatted `reason` and truncated `detail`; `step_started` only shows iteration when `N > 1`.
+- Collapsed verbose tool outputs in `render.py`: single-line `ReadFile` summary, `.git`-filtered `ListDirectory` display (capped at 8), tighter generic tool truncation (12 lines), and immediate consecutive identical tool call deduplication in `repl.py`.
+- Integrated `rich` console status spinner in `repl.py` poll loop during backend wait intervals with clean pause/resume around event renders and prompts.
+- Cleaned up REPL banner formatting with `~` home directory abbreviation and single-line soft wrapping.
+- 277 tests pass (`+14` tests in `test_parser_strip.py`, `test_streaming.py`, `test_tui.py`).
+
 
 ## Phase K - Web console rewrite (OpenCode-like)
 
