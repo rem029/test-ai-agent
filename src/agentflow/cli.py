@@ -113,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
         help="List available tools that agents can invoke",
     )
     parser.add_argument(
+        "--mcp-check",
+        action="store_true",
+        help="Connect to each configured MCP server and report its tools",
+    )
+    parser.add_argument(
         "--list-sessions",
         action="store_true",
         help="List active sessions for the current repository",
@@ -253,7 +258,68 @@ def main(argv: list[str] | None = None) -> int:
         print("=== Available Tools ===")
         for name in list_tools():
             print(f"  • {name}")
+        try:
+            cfg = None
+            try:
+                cfg = load_config(args.config or DEFAULT_CONFIG_PATH)
+            except Exception:
+                cfg = None
+            if cfg and cfg.mcp_servers:
+                enabled_servers = [s for s in cfg.mcp_servers if s.enabled]
+                if enabled_servers:
+                    from .mcp import MCPManager, discover_mcp_tools
+
+                    manager = MCPManager(enabled_servers, cwd=os.getcwd())
+                    try:
+                        manager.start()
+                        mcp_tools = discover_mcp_tools(manager)
+                        print("\n=== MCP Tools ===")
+                        for name in sorted(mcp_tools):
+                            print(f"  • {name}")
+                        if manager.errors:
+                            print("\n=== MCP Errors ===")
+                            for sname, err in manager.errors.items():
+                                print(f"  • {sname}: {err}")
+                    finally:
+                        manager.close()
+        except Exception:
+            pass
         return 0
+
+    if args.mcp_check:
+        try:
+            config = load_config(config_path)
+        except Exception as exc:
+            print(f"Error loading config: {exc}", file=sys.stderr)
+            return 1
+
+        if not config.mcp_servers:
+            print("No MCP servers configured.")
+            return 0
+
+        enabled_servers = [s for s in config.mcp_servers if s.enabled]
+        from .mcp import MCPManager
+
+        manager = MCPManager(enabled_servers, cwd=os.getcwd())
+        try:
+            manager.start()
+            tools_by_server: dict[str, list[str]] = {s.name: [] for s in enabled_servers}
+            for tool in manager.list_tools():
+                tools_by_server.setdefault(tool.server_name, []).append(tool.remote_name)
+
+            for s in config.mcp_servers:
+                if not s.enabled:
+                    continue
+                if s.name in manager.errors:
+                    print(f"[ERROR] {s.name}: {manager.errors[s.name]}")
+                else:
+                    remote_tools = tools_by_server.get(s.name, [])
+                    tools_str = f": {', '.join(remote_tools)}" if remote_tools else ""
+                    print(f"[OK] {s.name}: {len(remote_tools)} tool(s){tools_str}")
+        finally:
+            manager.close()
+
+        return 1 if any(s.name in manager.errors for s in enabled_servers) else 0
 
     if args.list_sessions:
         import time

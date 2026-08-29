@@ -282,3 +282,341 @@ def test_mcp_manager_close_idempotent():
     manager.close()
     # Calling close again should not raise or error
     manager.close()
+
+
+def test_toolset_unit():
+    server_cfg = MCPServerConfig(
+        name="fake",
+        command=sys.executable,
+        args=[FAKE_SERVER_PATH],
+        auto_approve=["echo"],
+    )
+    from unittest.mock import MagicMock
+    from agentflow.orchestrator import Toolset
+
+    fake_tool = MCPTool(
+        manager=MagicMock(),
+        server_name="fake",
+        remote_name="echo",
+        description="Echo the input text",
+        input_schema={"type": "object", "properties": {"text": {"type": "string", "description": "text to echo"}}},
+    )
+    ts = Toolset(mcp_tools={"mcp__fake__echo": fake_tool}, mcp_servers=[server_cfg])
+
+    # has / get / names
+    assert ts.has("ReadFile") is True
+    assert ts.has("mcp__fake__echo") is True
+    assert ts.has("nonexistent_xyz") is False
+    assert ts.get("mcp__fake__echo") == fake_tool
+    assert ts.get("ReadFile") is not None
+    assert "ReadFile" in ts.names()
+    assert "mcp__fake__echo" in ts.names()
+
+    # schema_text
+    st = ts.schema_text()
+    assert "- ReadFile:" in st
+    assert "- mcp__fake__echo: Echo the input text" in st
+    assert "• text: text to echo" in st
+
+    # is_read_only
+    assert ts.is_read_only("ReadFile") is True
+    assert ts.is_read_only("WriteFile") is False
+    assert ts.is_read_only("mcp__fake__echo") is False
+
+    # is_mcp
+    assert ts.is_mcp("mcp__fake__echo") is True
+    assert ts.is_mcp("ReadFile") is False
+
+    # mcp_auto_approved
+    assert ts.mcp_auto_approved("mcp__fake__echo") is True
+    assert ts.mcp_auto_approved("mcp__fake__add") is False
+
+    # auto_approve=["all"]
+    server_all = MCPServerConfig(name="fake", command=sys.executable, auto_approve=["all"])
+    ts_all = Toolset(mcp_tools={"mcp__fake__echo": fake_tool}, mcp_servers=[server_all])
+    assert ts_all.mcp_auto_approved("mcp__fake__echo") is True
+
+
+def test_check_tool_permission_with_toolset():
+    from unittest.mock import MagicMock, patch
+    from agentflow.orchestrator import Toolset, _check_tool_permission
+
+    server_cfg = MCPServerConfig(
+        name="fake",
+        command=sys.executable,
+        args=[FAKE_SERVER_PATH],
+        auto_approve=["echo"],
+    )
+    echo_tool = MCPTool(
+        manager=MagicMock(),
+        server_name="fake",
+        remote_name="echo",
+        description="Echo the input text",
+        input_schema={},
+    )
+    add_tool = MCPTool(
+        manager=MagicMock(),
+        server_name="fake",
+        remote_name="add",
+        description="Add two integers",
+        input_schema={},
+    )
+    ts = Toolset(
+        mcp_tools={"mcp__fake__echo": echo_tool, "mcp__fake__add": add_tool},
+        mcp_servers=[server_cfg],
+    )
+
+    # 1. Unapproved MCP tool under "auto" policy + no handler (non-interactive in tests) -> denied with reason mentioning approval
+    with patch("sys.stdin.isatty", return_value=False):
+        allowed, reason = _check_tool_permission(
+            "mcp__fake__add", {"a": 1, "b": 2}, "auto", toolset=ts
+        )
+        assert allowed is False
+        assert reason is not None
+        assert "needs approval" in reason or "approval" in reason
+
+    # 2. Auto-approved MCP tool under "auto" policy -> allowed
+    allowed, reason = _check_tool_permission(
+        "mcp__fake__echo", {"text": "hello"}, "auto", toolset=ts
+    )
+    assert allowed is True
+    assert reason is None
+
+    # 3. Unapproved MCP tool with permission_handler returning "allow" -> allowed
+    allowed, reason = _check_tool_permission(
+        "mcp__fake__add",
+        {"a": 1, "b": 2},
+        "auto",
+        permission_handler=lambda tool, args: "allow",
+        toolset=ts,
+    )
+    assert allowed is True
+    assert reason is None
+
+    # 4. Unapproved MCP tool with permission_handler returning "deny" -> denied
+    allowed, reason = _check_tool_permission(
+        "mcp__fake__add",
+        {"a": 1, "b": 2},
+        "auto",
+        permission_handler=lambda tool, args: "deny",
+        toolset=ts,
+    )
+    assert allowed is False
+    assert "Permission denied by user" in reason
+
+
+def test_mcp_tool_execution_in_run_with_tools(tmp_path):
+    from unittest.mock import MagicMock
+    from agentflow.backends.base import RunResult, Usage
+    from agentflow.orchestrator import RunState, Toolset, _run_with_tools
+
+    server_cfg = MCPServerConfig(
+        name="fake",
+        command=sys.executable,
+        args=[FAKE_SERVER_PATH],
+        auto_approve=["echo"],
+    )
+    db_path = tmp_path / "test.db"
+    run_id = "test-mcp-e2e"
+    state = RunState(
+        run_id=run_id,
+        goal="Test MCP execution",
+        started_at=1000.0,
+        config={},
+    )
+
+    with MCPManager([server_cfg], cwd=str(tmp_path)) as manager:
+        mcp_tools = discover_mcp_tools(manager)
+        toolset = Toolset(mcp_tools, [server_cfg])
+
+        backend = MagicMock()
+        backend.name = "mock"
+        backend.model = "mock-model"
+        backend.run.side_effect = [
+            RunResult(
+                success=True,
+                text='<tool_call>{"name": "mcp__fake__echo", "args": {"text": "hello mcp"}}</tool_call>',
+                usage=Usage("mock", "mock-model", 10, 10, 0.0),
+                raw={},
+            ),
+            RunResult(
+                success=True,
+                text="The echo tool replied successfully.",
+                usage=Usage("mock", "mock-model", 10, 10, 0.0),
+                raw={},
+            ),
+        ]
+
+        result = _run_with_tools(
+            backend,
+            "Please echo 'hello mcp'",
+            cwd=str(tmp_path),
+            mode="write",
+            state=state,
+            step_index=1,
+            toolset=toolset,
+            database_path=db_path,
+        )
+
+        assert result.success is True
+        assert "echo tool replied successfully" in result.text
+        assert len(state.tool_calls) == 1
+        call = state.tool_calls[0]
+        assert call["tool_name"] == "mcp__fake__echo"
+        assert call["args"] == {"text": "hello mcp"}
+        assert call["status"] == "success"
+        assert "hello mcp" in call["result"]["output"]
+
+        # Check conversation history received the tool result
+        second_call_messages = backend.run.call_args_list[1][0][0]
+        user_reply = [m for m in second_call_messages if m.role == "user"][-1]
+        assert "hello mcp" in user_reply.content
+
+
+def test_mcp_workflow_lifecycle(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from agentflow.backends.base import RunResult, Usage
+    from agentflow.orchestrator import run_workflow
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    db_path = tmp_path / "test.db"
+
+    config = Config(
+        review=RoleConfig(backend="openrouter"),
+        build=RoleConfig(backend="openrouter"),
+        verify=RoleConfig(backend="openrouter"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=["echo"],
+            )
+        ],
+    )
+
+    review_text = '<tool_call>{"name": "mcp__fake__echo", "args": {"text": "review echo"}}</tool_call>'
+    review_final = "Plan: done"
+    build_text = "Built"
+    verify_text = "VERIFY_RESULT: PASS"
+
+    backend = MagicMock()
+    backend.name = "mock"
+    backend.model = "m"
+    backend.run.side_effect = [
+        RunResult(success=True, text=review_text, usage=Usage("mock", "m", 1, 1, 0.0), raw={}),
+        RunResult(success=True, text=review_final, usage=Usage("mock", "m", 1, 1, 0.0), raw={}),
+        RunResult(success=True, text=build_text, usage=Usage("mock", "m", 1, 1, 0.0), raw={}),
+        RunResult(success=True, text=verify_text, usage=Usage("mock", "m", 1, 1, 0.0), raw={}),
+    ]
+
+    with patch("agentflow.orchestrator.BACKENDS") as mock_backends, \
+         patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
+        mock_backends.__getitem__ = MagicMock(return_value=lambda model: backend)
+        state = run_workflow(
+            "MCP workflow goal",
+            config,
+            str(repo),
+            database_path=db_path,
+        )
+
+    assert state.finished_at is not None
+    assert any(c["tool_name"] == "mcp__fake__echo" for c in state.tool_calls)
+    from agentflow.database import list_events
+    events = list_events(state.run_id, path=db_path)
+    ready_events = [e for e in events if e["type"] == "mcp_ready"]
+    assert len(ready_events) == 1
+    assert ready_events[0]["payload"]["servers"] == ["fake"]
+
+
+def test_cli_mcp_check_and_list_tools(tmp_path, capsys):
+    from agentflow.cli import main as cli_main
+
+    config_file = tmp_path / "agentflow.config.yaml"
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+            )
+        ],
+    )
+    dump_config(cfg, str(config_file))
+
+    # 1. --mcp-check with working server
+    ret = cli_main(["--config", str(config_file), "--mcp-check"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "[OK] fake: 2 tool(s)" in out
+    assert "echo" in out
+    assert "add" in out
+
+    # 2. --list-tools with MCP servers
+    ret = cli_main(["--config", str(config_file), "--list-tools"])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "=== Available Tools ===" in out
+    assert "=== MCP Tools ===" in out
+    assert "mcp__fake__echo" in out
+    assert "mcp__fake__add" in out
+
+    # 3. --mcp-check with failing server
+    bad_config_file = tmp_path / "bad.yaml"
+    bad_cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="bad_binary",
+                command="nonexistent_binary_xyz_99999",
+                args=[],
+            )
+        ],
+    )
+    dump_config(bad_cfg, str(bad_config_file))
+    ret_bad = cli_main(["--config", str(bad_config_file), "--mcp-check"])
+    assert ret_bad == 1
+    out_bad = capsys.readouterr().out
+    assert "[ERROR] bad_binary:" in out_bad
+
+    # 4. --mcp-check with no servers
+    no_mcp_config = tmp_path / "none.yaml"
+    dump_config(
+        Config(
+            review=RoleConfig(backend="claude-code"),
+            build=RoleConfig(backend="antigravity"),
+            verify=RoleConfig(backend="claude-code"),
+        ),
+        str(no_mcp_config),
+    )
+    ret_none = cli_main(["--config", str(no_mcp_config), "--mcp-check"])
+    assert ret_none == 0
+    out_none = capsys.readouterr().out
+    assert "No MCP servers configured." in out_none
+
+
+def test_tui_tools_command_with_mcp():
+    from agentflow.tui.commands import dispatch as tui_dispatch
+
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+            )
+        ],
+    )
+    res = tui_dispatch("/tools", [], cfg, cwd=".", session_id="s1")
+    assert "Available Tools:" in res.output
+    assert "(+ MCP tools from 1 configured server(s) - see 'agentflow --mcp-check')" in res.output
+

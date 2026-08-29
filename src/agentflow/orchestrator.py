@@ -33,7 +33,7 @@ from .backends.base import (
     format_messages_to_prompt,
     run_sync,
 )
-from .config import AGENTFLOW_HOME, Config, RoleConfig
+from .config import AGENTFLOW_HOME, Config, MCPServerConfig, RoleConfig
 from .database import (
     append_event,
     create_session,
@@ -46,7 +46,7 @@ from .database import (
 )
 from .memory import compose_memory, read_global_memory, read_project_memory
 from .tools import ToolContext, get_tool, list_tools, parse_tool_requests
-from .tools.base import ToolResult
+from .tools.base import Tool, ToolResult
 
 MAX_TOOL_CALLS_PER_STEP = 10
 
@@ -215,16 +215,83 @@ Available tools:
 """
 
 
+READ_ONLY_TOOLS = frozenset({
+    "ReadFile",
+    "ListDirectory",
+    "SearchFiles",
+    "CodeSearch",
+    "WebFetch",
+    "DocumentationSearch",
+    "Lint",
+    "TypeCheck",
+    "ImportAnalysis",
+    "GitStatus",
+    "GitDiff",
+    "GitCommitSimulation",
+})
+
+
+class Toolset:
+    def __init__(
+        self,
+        mcp_tools: dict[str, Tool] | None = None,
+        mcp_servers: list[MCPServerConfig] | None = None,
+    ) -> None:
+        self._mcp_tools = dict(mcp_tools or {})
+        self._servers = {s.name: s for s in (mcp_servers or [])}
+
+    def has(self, name: str) -> bool:
+        return name in self._mcp_tools or name in set(list_tools())
+
+    def get(self, name: str) -> Tool:
+        if name in self._mcp_tools:
+            return self._mcp_tools[name]
+        return get_tool(name)  # raises ToolError if unknown
+
+    def names(self) -> list[str]:
+        return list(list_tools()) + sorted(self._mcp_tools)
+
+    def schema_text(self) -> str:
+        lines = []
+        for name in list_tools():
+            tool = get_tool(name)
+            schema = tool.schema()
+            lines.append(f"- {name}: {schema['description']}")
+            params = schema.get("parameters", {}).get("properties", {})
+            for param_name, info in params.items():
+                desc = info.get("description", "") if isinstance(info, dict) else ""
+                lines.append(f"    • {param_name}: {desc}")
+        for name in sorted(self._mcp_tools):
+            tool = self._mcp_tools[name]
+            schema = tool.schema()
+            desc = schema.get("description", "")
+            lines.append(f"- {name}: {desc}")
+            params = schema.get("parameters", {}).get("properties", {})
+            for param_name, info in params.items():
+                p_desc = info.get("description", "") if isinstance(info, dict) else ""
+                lines.append(f"    • {param_name}: {p_desc}")
+        return "\n".join(lines)
+
+    def is_read_only(self, name: str) -> bool:
+        return name in READ_ONLY_TOOLS  # MCP tools are never read-only
+
+    def is_mcp(self, name: str) -> bool:
+        return name in self._mcp_tools
+
+    def mcp_auto_approved(self, name: str) -> bool:
+        # name looks like mcp__<server>__<tool>
+        if name not in self._mcp_tools:
+            return False
+        tool = self._mcp_tools[name]
+        srv = self._servers.get(getattr(tool, "server_name", ""))
+        if srv is None:
+            return False
+        aa = srv.auto_approve
+        return aa == ["all"] or getattr(tool, "remote_name", name) in aa or name in aa
+
+
 def _tool_schemas_text() -> str:
-    lines = []
-    for name in list_tools():
-        tool = get_tool(name)
-        schema = tool.schema()
-        lines.append(f"- {name}: {schema['description']}")
-        params = schema["parameters"].get("properties", {})
-        for param_name, info in params.items():
-            lines.append(f"    • {param_name}: {info.get('description', '')}")
-    return "\n".join(lines)
+    return Toolset().schema_text()
 
 
 REVIEW_PROMPT = """You are the reviewer/planner for a coding task in this repository.
@@ -274,21 +341,6 @@ VERIFY_RESULT: FAIL"""
 NO_NATIVE_TOOLS_BACKENDS = {"openrouter"}
 MAX_CONTEXT_BYTES = 60_000
 
-READ_ONLY_TOOLS = frozenset({
-    "ReadFile",
-    "ListDirectory",
-    "SearchFiles",
-    "CodeSearch",
-    "WebFetch",
-    "DocumentationSearch",
-    "Lint",
-    "TypeCheck",
-    "ImportAnalysis",
-    "GitStatus",
-    "GitDiff",
-    "GitCommitSimulation",
-})
-
 
 def _repo_context(cwd: str) -> str:
     """Dump current contents of tracked source files, for backends with no Read tool."""
@@ -319,10 +371,10 @@ def _build_backend(role_config: RoleConfig):
     return BACKENDS[role_config.backend](model=role_config.model)
 
 
-def _execute_tool_call(name: str, args: dict, cwd: str) -> ToolResult:
+def _execute_tool_call(name: str, args: dict, cwd: str, toolset: Toolset | None = None) -> ToolResult:
     """Execute a single parsed tool call and return its result."""
     try:
-        tool = get_tool(name)
+        tool = toolset.get(name) if toolset is not None else get_tool(name)
         return tool.run(args, context=ToolContext(cwd=cwd))
     except Exception as exc:  # noqa: BLE001
         return ToolResult(success=False, error=f"Tool execution failed: {exc}")
@@ -333,18 +385,26 @@ def _check_tool_permission(
     args: dict,
     permissions_policy: str,
     permission_handler: Callable[[str, dict], str] | None = None,
+    *,
+    toolset: Toolset | None = None,
 ) -> tuple[bool, str | None]:
     """Check tool execution against permission policy.
 
     Read-only tools are always auto-allowed.
-    If permission_handler is provided and the tool is mutating:
+    MCP tools that are auto-approved on their server config are auto-allowed.
+    If permission_handler is provided and the tool is mutating or unapproved MCP:
       permission_handler(tool_name, args) is called.
       "allow" and "allow_session" return (True, None).
       "deny" returns (False, f"Permission denied by user for tool '{tool_name}'.").
     Otherwise follows permissions_policy ('auto' | 'prompt' | 'deny').
+    For unapproved MCP tools, 'auto' policy forces prompt semantics.
     In non-interactive environments, 'prompt' acts as 'deny'.
     """
     if tool_name in READ_ONLY_TOOLS:
+        return True, None
+
+    is_mcp = toolset is not None and toolset.is_mcp(tool_name)
+    if is_mcp and toolset.mcp_auto_approved(tool_name):
         return True, None
 
     if permission_handler is not None:
@@ -359,10 +419,16 @@ def _check_tool_permission(
             f"Permission denied: tool '{tool_name}' is blocked by permissions policy ('deny').",
         )
 
-    if permissions_policy == "prompt":
+    effective_policy = "prompt" if (is_mcp and permissions_policy == "auto") else permissions_policy
+    if effective_policy == "prompt":
         import sys
 
         if not sys.stdin.isatty():
+            if is_mcp:
+                return (
+                    False,
+                    f"Permission denied: MCP tool '{tool_name}' needs approval: add it to the server's auto_approve list or run interactively.",
+                )
             return (
                 False,
                 f"Permission denied: tool '{tool_name}' requires confirmation, but running in non-interactive mode.",
@@ -419,9 +485,11 @@ def _run_with_tools(
     config: Config | None = None,
     database_path: Path | None = None,
     permission_handler: Callable[[str, dict], str] | None = None,
+    toolset: Toolset | None = None,
 ) -> RunResult:
     """Run a backend prompt, executing any requested tools iteratively with structured conversation."""
-    initial_content = f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{_tool_schemas_text()}"
+    ts = toolset or Toolset()
+    initial_content = f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{ts.schema_text()}"
     messages: list[Message] = [Message(role="user", content=initial_content)]
     policy = config.permissions if config else "auto"
     max_cost = config.max_cost_usd if config else None
@@ -592,13 +660,13 @@ def _run_with_tools(
             )
 
             allowed, reason = _check_tool_permission(
-                req.name, req.args, policy, permission_handler=permission_handler
+                req.name, req.args, policy, permission_handler=permission_handler, toolset=ts
             )
             if not allowed:
                 state.add_blocker("permission", reason or "", fatal=False, step_index=step_index, database_path=database_path)
                 tool_result = ToolResult(success=False, error=reason)
             else:
-                tool_result = _execute_tool_call(req.name, req.args, cwd)
+                tool_result = _execute_tool_call(req.name, req.args, cwd, toolset=ts)
 
             state.add_tool_call(
                 step_index=step_index,
@@ -865,6 +933,7 @@ def run_workflow(
 
     state: RunState | None = None
     exc_to_record: BaseException | None = None
+    mcp_manager: Any = None
 
     def _say(*args: Any, **kwargs: Any) -> None:
         if not quiet:
@@ -974,6 +1043,32 @@ def run_workflow(
                     database_path=database_path,
                 )
 
+        toolset = Toolset()
+        enabled_servers = [s for s in config.mcp_servers if s.enabled] if config.mcp_servers else []
+        if enabled_servers:
+            from .mcp import MCPManager, discover_mcp_tools
+
+            mcp_manager = MCPManager(enabled_servers, cwd=resolved_cwd)
+            try:
+                mcp_manager.start()
+            except Exception as exc:  # never fatal
+                state.log_event("mcp_error", {"error": f"MCP startup failed: {exc}"}, database_path=database_path)
+            mcp_tools = discover_mcp_tools(mcp_manager)
+            toolset = Toolset(mcp_tools, config.mcp_servers)
+            state.log_event(
+                "mcp_ready",
+                {
+                    "servers": [s.name for s in enabled_servers],
+                    "tools": sorted(mcp_tools),
+                    "errors": mcp_manager.errors,
+                },
+                database_path=database_path,
+            )
+            _say(
+                f"MCP: {len(mcp_tools)} tool(s) from {len(enabled_servers)} server(s)"
+                + (f", {len(mcp_manager.errors)} error(s)" if mcp_manager.errors else "")
+            )
+
         review_backend = _build_backend(config.review)
         build_backend = _build_backend(config.build)
         verify_backend = _build_backend(config.verify)
@@ -1003,6 +1098,7 @@ def run_workflow(
             config=config,
             database_path=database_path,
             permission_handler=permission_handler,
+            toolset=toolset,
         )
         tool_count, tool_names = _step_tool_summary(state, 0)
         rec_review = _record(
@@ -1105,6 +1201,7 @@ def run_workflow(
                 config=config,
                 database_path=database_path,
                 permission_handler=permission_handler,
+                toolset=toolset,
             )
             tool_count, tool_names = _step_tool_summary(state, iteration)
             rec_build = _record(
@@ -1171,6 +1268,7 @@ def run_workflow(
                 config=config,
                 database_path=database_path,
                 permission_handler=permission_handler,
+                toolset=toolset,
             )
             tool_count, tool_names = _step_tool_summary(state, iteration)
             rec_verify = _record(
@@ -1249,6 +1347,12 @@ def run_workflow(
 
         if state is not None:
             _notify("finished")
+
+        if mcp_manager is not None:
+            try:
+                mcp_manager.close()
+            except Exception:
+                pass
 
         if acquired_thread_lock:
             with _RUN_LOCKS_LOCK:
