@@ -48,6 +48,61 @@ class ToolResult(BaseModel):
         return data
 
 
+def _format_validation_error(
+    tool_name: str, param_model: type[BaseModel], exc: ValidationError
+) -> str:
+    """Format a pydantic ValidationError into a concise, model-actionable message."""
+    errors = exc.errors()
+    error_clauses: list[str] = []
+    for err in errors[:3]:
+        loc = err.get("loc", ())
+        loc_name = ".".join(str(x) for x in loc) if loc else ""
+        err_type = err.get("type", "")
+        msg = err.get("msg", "")
+        if err_type == "missing" and loc_name:
+            error_clauses.append(f"missing required argument '{loc_name}'")
+        elif loc_name:
+            error_clauses.append(f"'{loc_name}' - {msg}")
+        elif msg:
+            error_clauses.append(msg)
+
+    if len(errors) > 3:
+        error_clauses.append(f"(+{len(errors) - 3} more)")
+
+    clauses_text = ", ".join(error_clauses) if error_clauses else str(exc)
+
+    accepted_items: list[str] = []
+    if hasattr(param_model, "model_fields"):
+        for fname, field in param_model.model_fields.items():
+            if field.is_required():
+                accepted_items.append(f"{fname} (required)")
+            else:
+                accepted_items.append(fname)
+    accepted_text = f"Accepted: {', '.join(accepted_items)}." if accepted_items else ""
+
+    provided_text = ""
+    if errors:
+        first_input = errors[0].get("input")
+        if isinstance(first_input, dict) and first_input:
+            keys = list(first_input.keys())
+            if len(keys) > 10:
+                k_str = ", ".join(str(k) for k in keys[:10]) + f" (+{len(keys) - 10} more)"
+            else:
+                k_str = ", ".join(str(k) for k in keys)
+            provided_text = f"You provided: {k_str}."
+
+    lead = f"Invalid parameters for {tool_name}: {clauses_text}"
+    if not lead.endswith("."):
+        lead += "."
+    parts = [lead]
+    if accepted_text:
+        parts.append(accepted_text)
+    if provided_text:
+        parts.append(provided_text)
+
+    return " ".join(parts)
+
+
 class Tool(ABC):
     """Base class for all agentflow tools.
 
@@ -81,7 +136,7 @@ class Tool(ABC):
         except ValidationError as exc:
             return ToolResult(
                 success=False,
-                error=f"Invalid parameters for {self.name}: {exc}",
+                error=_format_validation_error(self.name, self.param_model, exc),
             )
 
         try:
