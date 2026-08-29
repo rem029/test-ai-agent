@@ -214,11 +214,13 @@ def test_cli_resume_validation(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "session not found" in captured.err.lower()
 
-    # Missing goal
-    rc2 = cli_main(["--resume", "some-session"])
-    assert rc2 == 1
-    captured2 = capsys.readouterr()
-    assert "goal is required" in captured2.err.lower()
+    # Resume without goal enters REPL for valid session
+    create_session("some-session", cwd=str(Path.cwd()), title="Some task")
+    with patch("agentflow.tui.run_repl", return_value=0) as mock_repl:
+        rc2 = cli_main(["--resume", "some-session"])
+        assert rc2 == 0
+        mock_repl.assert_called_once()
+
 
 
 def test_cli_list_sessions(tmp_path, capsys):
