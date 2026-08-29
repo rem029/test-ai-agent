@@ -185,7 +185,7 @@ def _list_project_files(cwd: str) -> list[str]:
         }
         cwd_path = Path(cwd).resolve()
         for root, dirs, filenames in os.walk(cwd_path):
-            dirs[:] = [d for d in dirs if d not in noise_dirs and not d.startswith(".git")]
+            dirs[:] = [d for d in dirs if d not in noise_dirs]
             for filename in filenames:
                 full_path = Path(root) / filename
                 try:
@@ -267,16 +267,25 @@ class FileMentionCompleter(Completer):
             if not matching_paths:
                 return
 
-            def _score(path: str) -> tuple[int, int, int, str]:
+            def _score(path: str) -> tuple[int, int, str]:
                 path_lower = path.lower()
                 basename_lower = os.path.basename(path).lower()
-                contiguous_path = 0 if query_lower in path_lower else 1
-                in_basename = (
-                    0
-                    if query_lower in basename_lower
-                    else (0 if _is_subsequence(query_lower, basename_lower) else 1)
-                )
-                return (contiguous_path, in_basename, len(path), path)
+                if basename_lower == query_lower:
+                    tier = 0
+                elif basename_lower.startswith(query_lower):
+                    tier = 1
+                elif any(
+                    seg.startswith(query_lower)
+                    for seg in path_lower.replace("\\", "/").split("/")
+                ):
+                    tier = 2
+                elif query_lower in basename_lower:
+                    tier = 3
+                elif query_lower in path_lower:
+                    tier = 4
+                else:
+                    tier = 5
+                return (tier, len(path), path)
 
             matching_paths.sort(key=_score)
 
