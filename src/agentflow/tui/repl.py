@@ -2,40 +2,118 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import select
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..config import Config
-from ..tools import strip_tool_blocks
+if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
+    from rich.console import Console
+
+    from ..config import Config
+    from ..orchestrator import RunState
+    from .permissions import SessionPermissionBroker
 
 _SAFE_DURING_RUN = frozenset({"/config", "/model", "/cost", "/help", "/tools", "/?"})
+FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_WAKE = object()
 
 
-def _read_pending_line() -> str | None:
-    """Non-blocking read of one line from stdin. None if nothing is ready or stdin isn't a tty."""
-    try:
-        if not sys.stdin.isatty():
-            return None
-        ready, _, _ = select.select([sys.stdin], [], [], 0)
-        if not ready:
-            return None
-        line = sys.stdin.readline()
-        if not line:
-            return None
-        return line.strip() or None
-    except Exception:
-        return None
+def _flush_deltas(accumulated_deltas: list[str], console: Any) -> None:
+    if accumulated_deltas:
+        from ..tools import strip_tool_blocks
+
+        raw_text = "".join(accumulated_deltas)
+        accumulated_deltas.clear()
+        cleaned = strip_tool_blocks(raw_text)
+        if cleaned:
+            console.print(cleaned)
+
+
+def _process_new_events(
+    run_id: str,
+    database_path: Path | None,
+    console: Any,
+    state: dict[str, Any],
+) -> None:
+    from ..database import list_events
+    from .render import format_event
+
+    events = list_events(run_id, path=database_path)
+    for ev in events:
+        if ev["seq"] > state["last_seq"]:
+            state["last_seq"] = ev["seq"]
+            etype = ev["type"]
+            payload = ev.get("payload", {})
+
+            if etype == "text_delta":
+                delta = payload.get("delta", "")
+                state["accumulated_deltas"].append(delta)
+            elif etype == "step_started":
+                state["last_rendered_tool_sig"] = None
+                state["last_role"] = payload.get("role", "agent")
+                _flush_deltas(state["accumulated_deltas"], console)
+                rendered = format_event(ev)
+                if rendered is not None:
+                    console.print(rendered)
+            elif etype == "tool_call":
+                tool_name = payload.get("tool_name", "")
+                args = payload.get("args", {})
+                args_repr = json.dumps(args, sort_keys=True)
+                state["current_call_sig"] = (tool_name, args_repr)
+                _flush_deltas(state["accumulated_deltas"], console)
+                rendered = format_event(ev)
+                if rendered is not None:
+                    console.print(rendered)
+            elif etype == "tool_result":
+                _flush_deltas(state["accumulated_deltas"], console)
+                tool_name = payload.get("tool_name", "")
+                args = payload.get("args", {})
+                current_call_sig = state.get("current_call_sig")
+                args_repr = (
+                    json.dumps(args, sort_keys=True)
+                    if args
+                    else (current_call_sig[1] if current_call_sig else "")
+                )
+                res_sig = (tool_name, args_repr)
+                status_val = payload.get("status", "OK")
+                is_error = status_val != "OK" or bool(payload.get("error"))
+
+                if not is_error and res_sig == state.get("last_rendered_tool_sig"):
+                    console.print(f"[dim]✓ {tool_name} (same as above)[/dim]")
+                else:
+                    rendered = format_event(ev)
+                    if rendered is not None:
+                        console.print(rendered)
+                    if not is_error:
+                        state["last_rendered_tool_sig"] = res_sig
+                    else:
+                        state["last_rendered_tool_sig"] = None
+            elif etype == "step_finished":
+                _flush_deltas(state["accumulated_deltas"], console)
+                step_data = payload.get("step") or {}
+                usage = step_data.get("usage") or {}
+                cost = usage.get("cost_usd")
+                if cost is not None:
+                    state["cost"] = state.get("cost", 0.0) + float(cost)
+                rendered = format_event(ev)
+                if rendered is not None:
+                    console.print(rendered)
+            else:
+                _flush_deltas(state["accumulated_deltas"], console)
+                rendered = format_event(ev)
+                if rendered is not None:
+                    console.print(rendered)
 
 
 def _handle_mid_run_input(
     text: str,
     run_id: str,
-    config: Config,
+    config: Any,
     cwd: str,
     session_id: str,
     database_path: Path | None,
@@ -89,6 +167,38 @@ def _build_toolbar(active_session_id: str, database_path: Path | None = None) ->
         return ""
 
 
+def _perm_prompt_message(req: Any) -> str:
+    tool_name = getattr(req, "tool_name", "") if req else ""
+    return f"allow {tool_name}? [a]llow once / [s]ession / [d]eny › "
+
+
+def _parse_perm_answer(ans: str | None) -> str:
+    s = (ans or "").strip().lower()
+    if s in ("a", "allow", "y", "yes"):
+        return "allow"
+    if s in ("s", "session", "allow_session", "allow for session"):
+        return "allow_session"
+    return "deny"
+
+
+def _turn_toolbar(tstate: dict[str, Any], worker: Any) -> str:
+    if not worker.is_alive():
+        return ""
+    frame = FRAMES[int(time.time() * 8) % len(FRAMES)]
+    role = tstate.get("last_role", "agent")
+    cost = tstate.get("cost", 0.0)
+    return f"{frame} {role} working · ${cost:.4f} · Ctrl+C stop"
+
+
+def _wake(prompt_session: Any, sentinel: Any) -> None:
+    try:
+        app = getattr(prompt_session, "app", None)
+        if app is not None and app.is_running:
+            app.exit(result=sentinel)
+    except Exception:
+        pass
+
+
 def _prompt_user_permission(console: Any, tool_name: str, args: dict[str, Any]) -> str:
     """Prompt the user interactively to approve or deny a mutating tool call."""
     console.print(f"\n[bold yellow]Tool Confirmation Required:[/bold yellow] [cyan]{tool_name}[/cyan]")
@@ -104,11 +214,268 @@ def _prompt_user_permission(console: Any, tool_name: str, args: dict[str, Any]) 
         except (EOFError, KeyboardInterrupt):
             return "deny"
 
-    if ans in ("a", "allow", "y", "yes"):
-        return "allow"
-    if ans in ("s", "session", "allow_session", "allow for session"):
-        return "allow_session"
-    return "deny"
+    return _parse_perm_answer(ans)
+
+
+async def _drain_async(
+    run_id: str,
+    database_path: Path | None,
+    turn_console: Any,
+    broker: Any,
+    worker: threading.Thread,
+    done: dict[str, bool],
+    pending_perm: dict[str, Any],
+    tstate: dict[str, Any],
+    prompt_session: Any,
+    wake_sentinel: Any,
+    run_box: dict[str, Any] | None = None,
+) -> None:
+    from ..database import list_events
+
+    state: dict[str, Any] = {
+        "last_seq": -1,
+        "accumulated_deltas": [],
+        "last_role": tstate.get("last_role", "agent"),
+        "last_rendered_tool_sig": None,
+        "current_call_sig": None,
+        "cost": tstate.get("cost", 0.0),
+    }
+    while not done["v"]:
+        events = list_events(run_id, path=database_path)
+        _process_new_events(run_id, database_path, turn_console, state)
+        tstate["last_role"] = state["last_role"]
+        tstate["cost"] = state["cost"]
+
+        req = broker.poll()
+        if req is not None and pending_perm["req"] is None:
+            _flush_deltas(state["accumulated_deltas"], turn_console)
+            turn_console.print(f"\n[bold yellow]Tool Confirmation Required:[/bold yellow] [cyan]{req.tool_name}[/cyan]")
+            for k, v in req.args.items():
+                turn_console.print(f"  [dim]{k}:[/dim] {v}")
+            pending_perm["req"] = req
+            _wake(prompt_session, wake_sentinel)
+
+        finished = any(e["type"] in ("run_finished", "run_stopped") for e in events)
+        has_exc = run_box is not None and run_box.get("exc") is not None
+        if not worker.is_alive() and (finished or has_exc or not events):
+            _flush_deltas(state["accumulated_deltas"], turn_console)
+            done["v"] = True
+            _wake(prompt_session, wake_sentinel)
+            return
+        await asyncio.sleep(0.15)
+
+
+async def _turn_interactive(
+    run_id: str,
+    config: Any,
+    cwd: str,
+    session_id: str,
+    database_path: Path | None,
+    broker: Any,
+    worker: threading.Thread,
+    prompt_session: Any,
+    run_box: dict[str, Any] | None = None,
+) -> None:
+    from prompt_toolkit.patch_stdout import patch_stdout
+    from rich.console import Console
+
+    from ..database import add_control_signal
+
+    done = {"v": False}
+    pending_perm: dict[str, Any] = {"req": None}
+    tstate: dict[str, Any] = {"last_role": "agent", "cost": 0.0}
+    with patch_stdout():
+        turn_console = Console()
+        drain = asyncio.create_task(
+            _drain_async(
+                run_id,
+                database_path,
+                turn_console,
+                broker,
+                worker,
+                done,
+                pending_perm,
+                tstate,
+                prompt_session,
+                _WAKE,
+                run_box=run_box,
+            )
+        )
+        stop_sent = False
+        while not done["v"]:
+            req = pending_perm["req"]
+            msg = _perm_prompt_message(req) if req else "steer › "
+            try:
+                ans = await prompt_session.prompt_async(
+                    msg,
+                    bottom_toolbar=lambda: _turn_toolbar(tstate, worker),
+                    refresh_interval=0.5,
+                )
+            except KeyboardInterrupt:
+                if not stop_sent:
+                    stop_sent = True
+                    add_control_signal(run_id, "stop", path=database_path)
+                    turn_console.print("\n[yellow]stopping after the current step…[/yellow]")
+                    continue
+                broker.cancel_all()
+                add_control_signal(run_id, "abort", path=database_path)
+                break
+            except EOFError:
+                add_control_signal(run_id, "stop", path=database_path)
+                break
+            if ans is _WAKE:
+                continue
+            ans = (ans or "").strip()
+            if not ans:
+                continue
+            if pending_perm["req"] is not None:
+                req = pending_perm["req"]
+                pending_perm["req"] = None
+                broker.respond(req, _parse_perm_answer(ans))
+            else:
+                _handle_mid_run_input(
+                    ans,
+                    run_id,
+                    config,
+                    cwd,
+                    session_id,
+                    database_path,
+                    turn_console,
+                )
+        drain.cancel()
+        try:
+            await drain
+        except asyncio.CancelledError:
+            pass
+
+
+def _turn_drain_only(
+    run_id: str,
+    database_path: Path | None,
+    broker: Any,
+    worker: threading.Thread,
+    console: Any,
+    run_box: dict[str, Any] | None = None,
+) -> None:
+    from ..database import add_control_signal, list_events
+
+    state: dict[str, Any] = {
+        "last_seq": -1,
+        "accumulated_deltas": [],
+        "last_role": "agent",
+        "last_rendered_tool_sig": None,
+        "current_call_sig": None,
+        "cost": 0.0,
+    }
+    stop_signal_sent = False
+
+    while True:
+        try:
+            events = list_events(run_id, path=database_path)
+            _process_new_events(run_id, database_path, console, state)
+
+            req = broker.poll()
+            if req is not None:
+                _flush_deltas(state["accumulated_deltas"], console)
+                ans = _prompt_user_permission(console, req.tool_name, req.args)
+                broker.respond(req, ans)
+
+            finished = any(ev["type"] in ("run_finished", "run_stopped") for ev in events)
+            has_exc = run_box is not None and run_box.get("exc") is not None
+            if not worker.is_alive() and (finished or has_exc or not events):
+                _flush_deltas(state["accumulated_deltas"], console)
+                break
+
+            time.sleep(0.15)
+        except KeyboardInterrupt:
+            _flush_deltas(state["accumulated_deltas"], console)
+            if not stop_signal_sent:
+                stop_signal_sent = True
+                add_control_signal(run_id, "stop", path=database_path)
+                console.print("\n[yellow]stopping after the current step…[/yellow]")
+            else:
+                console.print("\n[red]aborting turn…[/red]")
+                broker.cancel_all()
+                add_control_signal(run_id, "abort", path=database_path)
+                break
+
+
+def _execute_turn(
+    goal: str,
+    run_id: str,
+    config: Any,
+    cwd: str,
+    session_id: str,
+    database_path: Path | None,
+    broker: Any,
+    console: Any,
+    prompt_session: Any,
+) -> Any:
+    from ..database import get_session, reconstruct_run
+    from ..orchestrator import run_workflow
+    from .render import format_footer
+
+    run_box: dict[str, Any] = {"state": None, "exc": None}
+
+    def _run_turn() -> None:
+        try:
+            run_box["state"] = run_workflow(
+                goal=goal,
+                config=config,
+                cwd=cwd,
+                run_id=run_id,
+                session_id=session_id,
+                database_path=database_path,
+                permission_handler=broker.handler,
+                quiet=True,
+            )
+        except Exception as exc:
+            run_box["exc"] = exc
+
+    worker = threading.Thread(target=_run_turn, daemon=True)
+    worker.start()
+    console.print("[dim](type to steer · /config /model /cost /help /tools work · Ctrl+C to stop)[/dim]")
+
+    if sys.stdin.isatty():
+        asyncio.run(
+            _turn_interactive(
+                run_id=run_id,
+                config=config,
+                cwd=cwd,
+                session_id=session_id,
+                database_path=database_path,
+                broker=broker,
+                worker=worker,
+                prompt_session=prompt_session,
+                run_box=run_box,
+            )
+        )
+    else:
+        _turn_drain_only(
+            run_id=run_id,
+            database_path=database_path,
+            broker=broker,
+            worker=worker,
+            console=console,
+            run_box=run_box,
+        )
+
+    final_state = run_box["state"]
+    if final_state is None:
+        final_state = reconstruct_run(run_id, path=database_path)
+
+    if final_state is not None:
+        state_dict = final_state.to_dict() if hasattr(final_state, "to_dict") else final_state
+        console.print(
+            format_footer(
+                state_dict,
+                session=get_session(session_id, path=database_path),
+            )
+        )
+    elif run_box["exc"] is not None:
+        console.print(f"[bold red]Turn error:[/bold red] {run_box['exc']}")
+
+    return final_state
 
 
 def run_repl(
@@ -119,22 +486,18 @@ def run_repl(
     database_path: Path | None = None,
 ) -> int:
     """Run the interactive Claude Code-like REPL."""
-    # Lazy-import presentation dependencies
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import merge_completers
     from prompt_toolkit.history import FileHistory
     from rich.console import Console
 
     from ..config import AGENTFLOW_HOME
-    from ..database import add_control_signal, get_session, list_events, reconstruct_run
-    from ..orchestrator import new_run_id, new_session_id, run_workflow
+    from ..orchestrator import new_run_id, new_session_id
     from .commands import dispatch, parse_command
     from .completion import FileMentionCompleter, SlashCommandCompleter
     from .permissions import SessionPermissionBroker
-    from .render import format_event, format_footer
 
     console = Console()
-
     active_session_id = session_id or new_session_id()
 
     def _toolbar() -> str:
@@ -218,194 +581,16 @@ def run_repl(
             continue
 
         # Positional goal turn
-        goal = stripped
-        run_id = new_run_id()
-        run_box: dict[str, Any] = {"state": None, "exc": None}
-
-        def _run_turn() -> None:
-            try:
-                run_box["state"] = run_workflow(
-                    goal=goal,
-                    config=config,
-                    cwd=cwd,
-                    run_id=run_id,
-                    session_id=active_session_id,
-                    database_path=database_path,
-                    permission_handler=broker.handler,
-                    quiet=True,
-                )
-            except Exception as exc:
-                run_box["exc"] = exc
-
-        worker = threading.Thread(target=_run_turn, daemon=True)
-        worker.start()
-        console.print("[dim](type to steer · /config /model /cost /help /tools work · Ctrl+C to stop)[/dim]")
-
-        last_seq = -1
-        accumulated_deltas: list[str] = []
-        stop_signal_sent = False
-        last_role = "agent"
-        last_rendered_tool_sig: tuple[str, str] | None = None
-        current_call_sig: tuple[str, str] | None = None
-
-        status = console.status(f"[dim]{last_role} working…[/dim]")
-        status_running = False
-
-        def _stop_status() -> None:
-            nonlocal status_running
-            if status_running:
-                try:
-                    status.stop()
-                except Exception:
-                    pass
-                status_running = False
-
-        def _start_status() -> None:
-            nonlocal status_running
-            if not status_running and worker.is_alive():
-                try:
-                    status.update(f"[dim]{last_role} working…[/dim]")
-                    status.start()
-                    status_running = True
-                except Exception:
-                    status_running = False
-
-        def _flush_deltas() -> None:
-            if accumulated_deltas:
-                raw_text = "".join(accumulated_deltas)
-                accumulated_deltas.clear()
-                cleaned = strip_tool_blocks(raw_text)
-                if cleaned:
-                    _stop_status()
-                    console.print(cleaned)
-
-        try:
-            while True:
-                try:
-                    # 1. Drain new events
-                    events = list_events(run_id, path=database_path)
-                    for ev in events:
-                        if ev["seq"] > last_seq:
-                            last_seq = ev["seq"]
-                            etype = ev["type"]
-                            payload = ev.get("payload", {})
-
-                            if etype == "text_delta":
-                                delta = payload.get("delta", "")
-                                accumulated_deltas.append(delta)
-                            elif etype == "step_started":
-                                last_rendered_tool_sig = None
-                                last_role = payload.get("role", "agent")
-                                _flush_deltas()
-                                rendered = format_event(ev)
-                                if rendered is not None:
-                                    _stop_status()
-                                    console.print(rendered)
-                            elif etype == "tool_call":
-                                tool_name = payload.get("tool_name", "")
-                                args = payload.get("args", {})
-                                args_repr = json.dumps(args, sort_keys=True)
-                                current_call_sig = (tool_name, args_repr)
-                                _flush_deltas()
-                                rendered = format_event(ev)
-                                if rendered is not None:
-                                    _stop_status()
-                                    console.print(rendered)
-                            elif etype == "tool_result":
-                                _flush_deltas()
-                                tool_name = payload.get("tool_name", "")
-                                args = payload.get("args", {})
-                                args_repr = (
-                                    json.dumps(args, sort_keys=True)
-                                    if args
-                                    else (current_call_sig[1] if current_call_sig else "")
-                                )
-                                res_sig = (tool_name, args_repr)
-                                status_val = payload.get("status", "OK")
-                                is_error = status_val != "OK" or bool(payload.get("error"))
-
-                                if not is_error and res_sig == last_rendered_tool_sig:
-                                    _stop_status()
-                                    console.print(f"[dim]✓ {tool_name} (same as above)[/dim]")
-                                else:
-                                    rendered = format_event(ev)
-                                    if rendered is not None:
-                                        _stop_status()
-                                        console.print(rendered)
-                                    if not is_error:
-                                        last_rendered_tool_sig = res_sig
-                                    else:
-                                        last_rendered_tool_sig = None
-                            else:
-                                _flush_deltas()
-                                rendered = format_event(ev)
-                                if rendered is not None:
-                                    _stop_status()
-                                    console.print(rendered)
-
-                    # 2. Service broker permission requests
-                    req = broker.poll()
-                    if req is not None:
-                        _flush_deltas()
-                        _stop_status()
-                        ans = _prompt_user_permission(console, req.tool_name, req.args)
-                        broker.respond(req, ans)
-
-                    # 3. Check for mid-run typed input
-                    if worker.is_alive():
-                        typed = _read_pending_line()
-                        if typed:
-                            _flush_deltas()
-                            _stop_status()
-                            _handle_mid_run_input(
-                                typed,
-                                run_id,
-                                config,
-                                cwd,
-                                active_session_id,
-                                database_path,
-                                console,
-                            )
-
-                    # 4. Check loop completion
-                    finished = any(ev["type"] in ("run_finished", "run_stopped") for ev in events)
-                    if not worker.is_alive() and (finished or run_box["exc"] is not None or not events):
-                        _flush_deltas()
-                        break
-
-                    if worker.is_alive() and not finished:
-                        _start_status()
-
-                    time.sleep(0.15)
-
-                except KeyboardInterrupt:
-                    _flush_deltas()
-                    _stop_status()
-                    if not stop_signal_sent:
-                        stop_signal_sent = True
-                        add_control_signal(run_id, "stop", path=database_path)
-                        console.print("\n[yellow]stopping after the current step…[/yellow]")
-                    else:
-                        console.print("\n[red]aborting turn…[/red]")
-                        broker.cancel_all()
-                        break
-        finally:
-            _stop_status()
-
-        # Render final footer or error
-        final_state = run_box["state"]
-        if final_state is None:
-            final_state = reconstruct_run(run_id, path=database_path)
-
-        if final_state is not None:
-            state_dict = final_state.to_dict() if hasattr(final_state, "to_dict") else final_state
-            console.print(
-                format_footer(
-                    state_dict,
-                    session=get_session(active_session_id, path=database_path),
-                )
-            )
-        elif run_box["exc"] is not None:
-            console.print(f"[bold red]Turn error:[/bold red] {run_box['exc']}")
+        _execute_turn(
+            goal=stripped,
+            run_id=new_run_id(),
+            config=config,
+            cwd=cwd,
+            session_id=active_session_id,
+            database_path=database_path,
+            broker=broker,
+            console=console,
+            prompt_session=prompt_session,
+        )
 
     return 0
