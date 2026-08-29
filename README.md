@@ -92,7 +92,12 @@ uv tool install -e .
 
 ## Configure
 
-The CLI reads `agentflow.config.yaml` from the current directory by default.
+The CLI reads `agentflow.config.yaml` from the **current working directory**
+by default (like `claude`: you `cd` into a project and run it there), or from
+the path given to `--config`. It is per-project — there is no global config
+file. What *is* global lives in `~/.agentflow/`: the run/session history
+database and cross-process run locks.
+
 Each workflow role can use a different backend and model:
 
 ```yaml
@@ -155,6 +160,37 @@ uv run agentflow --list-tools
 
 Agentflow includes file, shell, code-analysis, search, and git tools. See
 [`TOOLS.md`](TOOLS.md) for the full list and developer guide.
+
+### MCP servers
+
+Agent roles can also call tools from [Model Context Protocol](https://modelcontextprotocol.io)
+servers. Declare them in `agentflow.config.yaml` under `mcp_servers:` — they
+appear to agents as `mcp__<server>__<tool>`:
+
+```yaml
+mcp_servers:
+  - name: playwright
+    command: npx
+    args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated", "--no-sandbox"]
+    auto_approve: [browser_navigate, browser_snapshot, browser_take_screenshot]
+  - name: context7
+    command: npx
+    args: ["-y", "@upstash/context7-mcp"]
+    auto_approve: ["all"]        # pre-approve every tool on this server
+```
+
+An MCP tool is treated as mutating: unless it is listed in that server's
+`auto_approve` (or `auto_approve: ["all"]`), it needs confirmation — an
+interactive run prompts, a headless `auto` run denies it. Each server needs
+its `command` on `PATH` (e.g. `npx` from Node). `stdio` transport only for
+now. Connect to every configured server and list its tools:
+
+```bash
+uv run agentflow --mcp-check
+```
+
+`mcp_servers` lives in the per-project `agentflow.config.yaml`, so each
+project has its own set. `AGENTFLOW_MCP_DISABLED=1` disables all of them.
 
 List saved sessions:
 
