@@ -477,7 +477,22 @@ projects.
 
 ## Status
 
-Phases A, B, C, D, E, F, G, and J (incl. J.5, J.6) are done.
+Phases A, B, C, D, E, F, G, H, I (incl. I.5), and J (incl. J.5, J.6) are done.
+L1-L5 done. L7 (MCP client support) done and merged to `dev`: L7.1 config +
+client, L7.2 orchestrator wiring + `--list-tools`/`--mcp-check`, L7.2a `/mcp`
+REPL command. L7.3 (web MCP config UI) deferred to Phase K. Phase K: K1 + K2
+done on branch `phase-k` (K3-K5 remaining).
+
+Also merged to `dev` this session (not part of a numbered phase):
+- Readable tool-arg validation errors + `file_path`/`filepath`/`filename`
+  aliases for `path` on the file tools; `Toolset.capability_hints()` nudging
+  the agent to use `mcp__playwright__*` for web-UI work.
+- `/serve [<port>] [<host>]` REPL command - starts the web console
+  (`src/agentflow/tui/webserver.py`) in a uvicorn daemon thread against the
+  REPL's cwd + DB, works mid-run, so a running session can be watched in the
+  browser. Defaults 127.0.0.1:8420.
+
+`dev` is ahead of `origin/dev` - nothing pushed yet this session.
 
 ---
 
@@ -1051,6 +1066,15 @@ contents-expansion as a follow-up if the agent needs it.
 - Model/backend picker per session; config panel continues to write
   `agentflow.config.yaml`.
 - Restore the single-run worktree lock.
+- **TUI/web parity (user, 2026-08-29):** everything the terminal REPL can do
+  should be reachable from the web console too. Concretely, that means web
+  equivalents of the slash commands: `/model` + `/config` (config panel,
+  incl. `mcp_servers` - the deferred L7.3), `/tools` + `/mcp` (a tools/MCP
+  panel showing built-ins and live MCP connection status), `/resume` +
+  `/cost` (session sidebar + per-session cost), `/clear` (new session),
+  mid-run steer + stop (composer + stop button, already scoped above), and
+  the `@`-file mention picker (J.6) in the composer. Track this as an
+  explicit checklist item when K3 starts.
 
 ### Sub-phases
 
@@ -1151,6 +1175,71 @@ with the Phase K rewrite).
   (`READ_ONLY_TOOLS` / `_check_tool_permission`) must extend to MCP tools -
   default unknown MCP tools to "prompt/deny", not "auto".
 
+**Design decisions (2026-08-29):**
+- Config store: `agentflow.config.yaml` `mcp_servers:` (user's instruction),
+  same file as backends / `credentials:`. Not a separate `.mcp.json`.
+- Client: the official `mcp` PyPI SDK (v2.0.0, already a transitive dep via
+  `google-antigravity`; promoted to a direct dependency). It's a wire-protocol
+  library, not an agent framework - consistent with the hand-rolled rule, same
+  as using `httpx` for OpenRouter. stdio transport first; HTTP/SSE deferred.
+- The SDK is async; the orchestrator tool loop is sync. `MCPManager` owns a
+  background asyncio loop thread, enters all `stdio_client` + `ClientSession`
+  contexts on `start()`, exposes sync `list_tools()` / `call_tool()` that block
+  on `run_coroutine_threadsafe`, and tears down on `close()`.
+
+**Config shape:**
+```yaml
+mcp_servers:
+  - name: playwright
+    command: npx
+    args: ["-y", "@playwright/mcp@latest"]
+    env: {}
+    enabled: true
+    auto_approve: []          # tool names auto-allowed even under prompt policy; "all" allowed
+```
+`MCPServerConfig`: `name`, `command|url` (exactly one), `args`, `env`,
+`enabled=True`, `auto_approve: list[str] | "all" = []`.
+
+### Sub-phases
+
+- **L7.1 - config + client + adapter (done, branch `phase-l7`, commit after
+  the L7 PLAN commit).** `MCPServerConfig` in `config.py` +
+  `load_config`/`dump_config` round-trip + `AGENTFLOW_MCP_DISABLED=1`
+  kill-switch; `src/agentflow/mcp/` package: `MCPManager` (background
+  asyncio-loop thread, `AsyncExitStack` per run, blocking `list_tools()` /
+  `call_tool() -> MCPCallOutcome`, per-server error isolation via `.errors`,
+  idempotent `close()`), `MCPClientError`, `MCPTool(Tool)` adapter naming
+  remote tools `mcp__<server>__<tool>` with a passthrough param model and the
+  remote `inputSchema` surfaced verbatim, `discover_mcp_tools()`. `mcp>=2.0.0`
+  promoted to a direct dependency. 8 tests drive `tests/fixtures/fake_mcp_server.py`
+  (`MCPServer` from `mcp.server.mcpserver`) - no npx / network. URL/HTTP
+  transport stubbed as unsupported. 346 tests.
+- **L7.2 - orchestrator wiring + CLI (done).** `Toolset` in `orchestrator.py`
+  unifies the built-in registry with a run's live MCP tools
+  (`has`/`get`/`names`/`schema_text`/`is_read_only`/`is_mcp`/`mcp_auto_approved`);
+  `_tool_schemas_text()` delegates to it. `_execute_tool_call` gains an
+  optional trailing `toolset`; `_run_with_tools` a keyword `toolset` (empty
+  default = unchanged behaviour); `_check_tool_permission` a keyword-only
+  `toolset`. MCP tools never read-only; one not in its server's `auto_approve`
+  (or `["all"]`) needs approval even under `auto` - interactive prompts,
+  headless `auto` denies with an actionable message. `run_workflow` starts an
+  `MCPManager` for enabled servers before review, logs `mcp_ready`/`mcp_error`,
+  passes the `Toolset` to all three `_run_with_tools` calls, closes it in
+  `finally`. `--list-tools` also lists live MCP tools + errors; new
+  `--mcp-check` (`[OK] name: N tool(s): ...` / `[ERROR] ...`, exit 1 on any
+  error). `/tools` in the REPL notes the configured server count. 352 tests;
+  `--mcp-check` verified end-to-end.
+- **L7.2a - `/mcp` REPL command (user, 2026-08-29).** A `/mcp` slash command
+  in the TUI that connects to each configured server and reports its tools /
+  errors (the `--mcp-check` equivalent, rich-formatted, shows disabled
+  servers too). Not in `_SAFE_DURING_RUN` - rejected mid-run (a run already
+  holds its own `MCPManager`; a second would spawn duplicate server procs).
+  Added to the `COMMANDS` registry so `/help` + completion pick it up.
+- **L7.3 - web config UI for MCP servers.** Deferred - lands with the Phase K
+  web console rewrite (config panel). Backend is ready: `GET/POST /api/config`
+  just needs `mcp_servers` surfaced (the `Config` model already carries it,
+  and `dump_config` persists it).
+
 ### L8 - User-defined skills
 
 - A skill = a named, versioned instruction bundle (like this repo's
@@ -1159,6 +1248,121 @@ with the Phase K rewrite).
   orchestrator exposes `agentflow --list-skills` and injects a chosen
   skill's instructions into the relevant step's prompt. Keep it
   hand-rolled - no third-party skill runtime.
+
+## Phase M - Release & distribution (Linux only, for now)
+
+**Requested 2026-08-29. Not yet implemented.**
+
+**Goal:** a one-liner install on Linux -
+`curl -fsSL https://rem029.agentflow.com/install.sh | sh` - plus tagged
+GitHub Releases with downloadable artifacts. Linux `x86_64` + `aarch64` only
+for the first release; macOS/Windows later.
+
+**Why it's feasible cheaply:** every dependency (`google-antigravity`, `mcp`,
+`fastapi`, `pydantic`, `rich`, `prompt_toolkit`, `pyyaml`, `httpx`,
+`uvicorn`) ships as a pure-Python wheel - no compiled extensions - so a
+single built wheel runs on any Linux with a Python 3.11+ runtime. The heavy
+lifting (Python provisioning, isolated env, dependency resolution, PATH
+shim) is all handled by `uv tool install`, which the script just bootstraps.
+The actual LLM backends (`claude`, `agy`) are the user's own separate
+installs and out of scope here.
+
+### M1 - Packaging
+
+- `pyproject.toml` for real distribution: confirm the project `name`
+  (PyPI-safe; `agentflow` if the name is free, else `rem029-agentflow` -
+  affects every install URL), single-source `version`, `license`, `readme`,
+  classifiers, `requires-python = ">=3.11"`. The `[project.scripts]`
+  `agentflow = "agentflow:main"` entry point already exists.
+- Verify `uv build` includes the vendored web assets
+  (`src/agentflow/web/static/*`) and `tests/fixtures/fake_mcp_server.py` is
+  NOT shipped. `uv_build` is already the backend; check the wheel contents
+  (`unzip -l dist/*.whl`).
+- `uv build` -> `dist/agentflow-<v>-py3-none-any.whl` + `dist/*.tar.gz`.
+- Decide: publish to PyPI as well? Not required for the `install.sh` path
+  (which pulls the wheel straight from the GitHub Release), but it makes
+  `uv tool install agentflow` / `pipx install agentflow` work for everyone.
+  If yes, reserve the name now.
+
+### M2 - GitHub Release automation
+
+- `.github/workflows/release.yml`: trigger on pushing a `v*` tag.
+  Steps: checkout, `astral-sh/setup-uv`, `uv build`, generate `SHA256SUMS`,
+  `gh release create v<x> dist/* SHA256SUMS install.sh --generate-notes`.
+- Guard: fail the job if the tag != `project.version` in `pyproject.toml`.
+- Release notes: `--generate-notes` plus a hand-curated summary pulled from
+  the PLAN "Phase N done" lines since the last tag.
+- Artifacts on the release: the wheel, the sdist, `SHA256SUMS`, and a copy
+  of `install.sh` (so a release-pinned script URL exists).
+
+### M3 - `install.sh` (repo root)
+
+POSIX `sh`, `set -eu`, no bashisms. Flow:
+
+1. `uname -s` must be `Linux` (else print "only Linux is supported right
+   now" and exit 1). `uname -m` -> `x86_64` | `aarch64`; anything else exits
+   with a clear message. (The wheel is arch-independent, but the check keeps
+   the promise honest and lets a future arch-specific asset slot in.)
+2. Need one of `curl` / `wget`, plus `sh`, `uname`, `mktemp` - all base.
+3. Ensure `uv`: if absent, install via `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   (or honour `AGENTFLOW_NO_UV_BOOTSTRAP=1` and error out). `uv` provides its
+   own Python, so that's the only prerequisite.
+4. Resolve the version: `AGENTFLOW_VERSION` env if set, else the latest tag
+   from `https://api.github.com/repos/<owner>/<repo>/releases/latest`.
+5. `uv tool install --force agentflow \
+     --from https://github.com/<owner>/<repo>/releases/download/v<v>/agentflow-<v>-py3-none-any.whl`
+   (`--force` makes re-runs an upgrade). Optionally verify the wheel against
+   `SHA256SUMS` first.
+6. Check `~/.local/bin` (or `uv tool dir`'s bin) is on `PATH`; if not, print
+   the exact `export PATH=...` line and the shell-rc snippet.
+7. `agentflow --version` sanity check; then print "next: `agentflow --check`".
+
+- Idempotent, safe to pipe from `curl`. Keep it short and auditable.
+- `agentflow --version` already exists and prints
+  `importlib.metadata.version("agentflow")` (so the packaged dist name is
+  `agentflow` - if that's taken on PyPI and we publish there, this call and
+  the dist name both change together).
+
+### M4 - Where to host `install.sh`
+
+- **Source of truth:** `install.sh` in the repo root - versioned, code-reviewed,
+  attached to each release by M2.
+- **Served at `https://rem029.agentflow.com/install.sh` via, in order of
+  preference:**
+  1. **GitHub Pages** on this repo (a `/docs` dir or a `gh-pages` branch)
+     with a `CNAME` file containing `rem029.agentflow.com`, and a DNS
+     `CNAME rem029 -> <owner>.github.io`. Free, automatic HTTPS, no server to
+     run, updates on push. The release job copies the tagged `install.sh` to
+     the Pages source so the hosted script is always a released version.
+     **Recommended.**
+  2. **The existing Coolify host** (already serving `agentui.app.rem029.com`
+     for this project) - add a tiny static route / nginx container serving
+     `install.sh` from a checkout. Uses infra already operated; good if the
+     script should track a branch without a Pages deploy. Second choice.
+  3. **Cloudflare Pages / Workers** if `agentflow.com` DNS is already on
+     Cloudflare - same upsides as GitHub Pages plus redirect control.
+  4. **No custom domain / zero setup:** document
+     `https://raw.githubusercontent.com/<owner>/<repo>/v<v>/install.sh`
+     directly - works today, just an uglier URL.
+- **Release artifacts** (wheel, sdist, checksums) are always hosted by
+  GitHub Releases - no decision needed there.
+
+### M5 - Docs
+
+- README "Install" section: the `curl | sh` one-liner, the manual
+  `uv tool install` path, and the "grab the wheel from Releases" path.
+- Security note: reading the script before piping to `sh`, verifying
+  `SHA256SUMS`, and pinning `AGENTFLOW_VERSION`.
+
+### Open questions for the user
+
+- Do you control `agentflow.com` / the `rem029.agentflow.com` DNS record?
+  (Decides M4: option 1/3 need it, option 2 can use `*.rem029.com`.)
+- Publish to PyPI too, or GitHub Releases only?
+- Will the repo stay `rem029/test-ai-agent` or be renamed to
+  `rem029/agentflow` before the first release? Every install URL depends on
+  this - worth settling first.
+- Confirm `aarch64` matters for v1, or is `x86_64`-only fine to start?
 
 ## Housekeeping
 

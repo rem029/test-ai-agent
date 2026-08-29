@@ -116,3 +116,48 @@ def test_read_file_outside_cwd_rejected(ctx):
     result = ReadFileTool().run({"path": "../outside.txt"}, context=ctx)
     assert result.success is False
     assert "escapes" in result.error.lower()
+
+
+def test_read_file_alias_file_path(ctx):
+    file = ctx.cwd_path / "hello.txt"
+    file.write_text("hello alias")
+    result = ReadFileTool().run({"file_path": "hello.txt"}, context=ctx)
+    assert result.success is True
+    assert result.output == "hello alias"
+
+
+def test_read_file_invalid_params_readable_error(ctx):
+    result = ReadFileTool().run({"nonsense": "x"}, context=ctx)
+    assert result.success is False
+    assert "Invalid parameters for ReadFile:" in result.error
+    assert "missing required argument 'path'" in result.error
+    assert "Accepted:" in result.error
+    assert "You provided: nonsense" in result.error
+    assert "errors.pydantic.dev" not in result.error
+
+
+def test_write_file_alias_file_path(ctx):
+    result = WriteFileTool().run(
+        {"file_path": "new.txt", "content": "hi"}, context=ctx
+    )
+    assert result.success is True
+    assert (ctx.cwd_path / "new.txt").read_text() == "hi"
+
+
+def test_list_directory_alias_dir(ctx):
+    (ctx.cwd_path / "sub").mkdir()
+    (ctx.cwd_path / "sub" / "file.txt").write_text("ok")
+    result = ListDirectoryTool().run({"dir": "sub"}, context=ctx)
+    assert result.success is True
+    assert "[file] file.txt" in result.output
+
+
+def test_search_files_alias_directory(ctx):
+    (ctx.cwd_path / "sub").mkdir()
+    (ctx.cwd_path / "sub" / "target.py").write_text("matched_text")
+    result = SearchFilesTool().run(
+        {"pattern": "matched_text", "directory": "sub"}, context=ctx
+    )
+    assert result.success is True
+    assert "target.py:1: matched_text" in result.output
+

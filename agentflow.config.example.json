@@ -11,5 +11,19 @@
     "backend": "openrouter",
     "model": "deepseek/deepseek-chat"
   },
-  "max_iterations": 3
+  "max_iterations": 3,
+  "mcp_servers": [
+    {
+      "name": "playwright",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated", "--no-sandbox"],
+      "auto_approve": ["browser_navigate", "browser_snapshot", "browser_take_screenshot", "browser_console_messages", "browser_network_requests"]
+    },
+    {
+      "name": "context7",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "auto_approve": ["all"]
+    }
+  ]
 }

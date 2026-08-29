@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from ..orchestrator import RunState
     from .permissions import SessionPermissionBroker
 
-_SAFE_DURING_RUN = frozenset({"/config", "/model", "/cost", "/help", "/tools", "/?"})
+_SAFE_DURING_RUN = frozenset({"/config", "/model", "/cost", "/serve", "/help", "/tools", "/?"})
 FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _WAKE = object()
 
@@ -470,7 +470,7 @@ def _execute_turn(
 
     worker = threading.Thread(target=_run_turn, daemon=True)
     worker.start()
-    console.print("[dim](type to steer · /config /model /cost /help /tools work · Ctrl+C to stop)[/dim]")
+    console.print("[dim](type to steer · /config /model /cost /serve /help /tools work · Ctrl+C to stop)[/dim]")
 
     if sys.stdin.isatty():
         asyncio.run(

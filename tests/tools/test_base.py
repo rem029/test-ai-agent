@@ -116,3 +116,27 @@ def test_registry_list_and_schemas():
 def test_register_tool_global():
     tool = register_tool(AddTool())
     assert tool.name == "add"
+
+
+def test_tool_run_many_invalid_params():
+    class MultiParams(BaseModel):
+        f1: int
+        f2: int
+        f3: int
+        f4: int
+        f5: int
+
+    class MultiTool(Tool):
+        name = "multi"
+        description = "Tool with many fields"
+        param_model = MultiParams
+
+        def execute(self, context: ToolContext, **params) -> ToolResult:
+            return ToolResult(success=True)
+
+    tool = MultiTool()
+    result = tool.run({})
+    assert result.success is False
+    assert "(+2 more)" in result.error
+    assert "Accepted: f1 (required), f2 (required), f3 (required), f4 (required), f5 (required)." in result.error
+

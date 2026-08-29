@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from .base import Tool, ToolContext, ToolError, ToolResult
 from .registry import register_tool
@@ -23,7 +23,13 @@ def _resolve_path(cwd: str, rel_path: str) -> Path:
 
 
 class ReadFileParams(BaseModel):
-    path: str = Field(..., description="Relative path to the file to read.")
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str = Field(
+        ...,
+        validation_alias=AliasChoices("path", "file_path", "filepath", "filename"),
+        description="Relative path to the file to read.",
+    )
     start_line: int | None = Field(None, ge=1, description="Optional 1-based start line.")
     end_line: int | None = Field(None, ge=1, description="Optional 1-based end line.")
 
@@ -62,7 +68,13 @@ class ReadFileTool(Tool):
 
 
 class WriteFileParams(BaseModel):
-    path: str = Field(..., description="Relative path where the file should be written.")
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str = Field(
+        ...,
+        validation_alias=AliasChoices("path", "file_path", "filepath", "filename"),
+        description="Relative path where the file should be written.",
+    )
     content: str = Field(..., description="Full content to write to the file.")
 
 
@@ -92,7 +104,13 @@ class WriteFileTool(Tool):
 
 
 class ListDirectoryParams(BaseModel):
-    path: str = Field(default=".", description="Relative directory path to list.")
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str = Field(
+        default=".",
+        validation_alias=AliasChoices("path", "dir", "directory"),
+        description="Relative directory path to list.",
+    )
     recursive: bool = Field(default=False, description="List recursively.")
 
 
@@ -126,8 +144,14 @@ class ListDirectoryTool(Tool):
 
 
 class SearchFilesParams(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     pattern: str = Field(..., description="Regex or glob pattern to search for.")
-    path: str = Field(default=".", description="Relative directory to search under.")
+    path: str = Field(
+        default=".",
+        validation_alias=AliasChoices("path", "dir", "directory"),
+        description="Relative directory to search under.",
+    )
     glob: str | None = Field(None, description="Optional glob filter for files, e.g. '*.py'.")
     regex: bool = Field(default=True, description="Treat pattern as regex if true, otherwise glob.")
 

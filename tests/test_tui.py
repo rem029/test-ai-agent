@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agentflow.backends.base import RunResult, Usage
-from agentflow.config import Config, RoleConfig
+from agentflow.config import Config, MCPServerConfig, RoleConfig
 from agentflow.database import append_event, create_session, save_run
 from agentflow.orchestrator import RunState, _check_tool_permission
 from agentflow.tui.commands import CommandResult, dispatch, parse_command
@@ -25,9 +26,20 @@ from agentflow.tui.render import (
     truncate_output,
 )
 from agentflow.tui.repl import (
+    _SAFE_DURING_RUN,
     _handle_mid_run_input,
     run_repl,
 )
+from agentflow.tui.webserver import ServeState
+
+FAKE_SERVER_PATH = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
+
+try:
+    import mcp
+    import mcp.server.mcpserver  # noqa: F401
+    HAS_MCP_SERVER = True
+except Exception:  # pragma: no cover
+    HAS_MCP_SERVER = False
 
 
 # ============================================================================
@@ -594,6 +606,9 @@ def test_dispatch_help():
     res = dispatch("/help", [], config, cwd="/tmp", session_id="s1")
     assert "/model" in res.output
     assert "/config" in res.output
+    assert "/tools" in res.output
+    assert "/mcp" in res.output
+    assert "/serve" in res.output
     assert "/resume" in res.output
 
 
@@ -662,6 +677,104 @@ def test_dispatch_tools():
     assert "WriteFile" in res.output
 
 
+def test_dispatch_mcp_no_servers():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[],
+    )
+    res = dispatch("/mcp", [], config, cwd="/tmp", session_id="s1")
+    assert "No MCP servers configured." in res.output
+    assert "mcp_servers:" in res.output
+
+
+@pytest.mark.skipif(not HAS_MCP_SERVER, reason="mcp server SDK not available")
+def test_dispatch_mcp_lists_tools():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=["echo"],
+            )
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "✓ fake" in res.output
+    assert "2 tool(s)" in res.output
+    assert "mcp__fake__echo" in res.output
+    assert "mcp__fake__add" in res.output
+    assert "auto-approve: echo" in res.output
+
+
+def test_dispatch_mcp_disabled_server():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake_disabled",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                enabled=False,
+            )
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "- fake_disabled (disabled)" in res.output
+
+
+@pytest.mark.skipif(not HAS_MCP_SERVER, reason="mcp server SDK not available")
+def test_dispatch_mcp_bad_binary():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="bad",
+                command="nonexistent_xyz_123",
+            )
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "✗ bad" in res.output
+
+
+@pytest.mark.skipif(not HAS_MCP_SERVER, reason="mcp server SDK not available")
+def test_dispatch_mcp_auto_approve_modes():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake1",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=["all"],
+            ),
+            MCPServerConfig(
+                name="fake2",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=[],
+            ),
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "✓ fake1" in res.output
+    assert "auto-approve: all" in res.output
+    assert "✓ fake2" in res.output
+    assert "auto-approve: none" in res.output
+
+
 def test_dispatch_resume_and_clear(isolate_database):
     config = Config(
         review=RoleConfig(backend="claude-code"),
@@ -727,6 +840,187 @@ def test_dispatch_exit():
     assert res_exit.should_exit is True
     res_quit = dispatch("/quit", [], config, cwd="/tmp", session_id="s1")
     assert res_quit.should_exit is True
+
+
+def test_dispatch_serve_starts(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+    monkeypatch.setattr(
+        "agentflow.tui.webserver.start_web_server",
+        lambda **kwargs: (
+            ServeState(
+                host="127.0.0.1",
+                port=8420,
+                url="http://localhost:8420",
+                thread=fake_thread,
+            ),
+            False,
+        ),
+    )
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+    res = dispatch("/serve", [], config, cwd=".", session_id="s")
+    assert "✓" in res.output
+    assert "http://localhost:8420" in res.output
+
+
+def test_dispatch_serve_custom_port(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    captured = {}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return (
+            ServeState(
+                host=kwargs.get("host", "127.0.0.1"),
+                port=kwargs["port"],
+                url=f"http://localhost:{kwargs['port']}",
+                thread=fake_thread,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr("agentflow.tui.webserver.start_web_server", fake_start)
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", ["9999"], config, cwd=".", session_id="s")
+    assert captured.get("port") == 9999
+    assert "http://localhost:9999" in res.output
+
+
+def test_dispatch_serve_custom_port_and_host(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    captured = {}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return (
+            ServeState(
+                host=kwargs["host"],
+                port=kwargs["port"],
+                url=f"http://localhost:{kwargs['port']}",
+                thread=fake_thread,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr("agentflow.tui.webserver.start_web_server", fake_start)
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", ["9999", "0.0.0.0"], config, cwd=".", session_id="s")
+    assert captured.get("port") == 9999
+    assert captured.get("host") == "0.0.0.0"
+    assert "reachable from other hosts" in res.output
+
+
+def test_dispatch_serve_bad_port(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    called = []
+    monkeypatch.setattr(
+        "agentflow.tui.webserver.start_web_server",
+        lambda **kwargs: called.append(kwargs),
+    )
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", ["70000"], config, cwd=".", session_id="s")
+    assert "invalid port" in res.output
+    assert len(called) == 0
+
+
+def test_dispatch_serve_already_running(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+    monkeypatch.setattr(
+        "agentflow.tui.webserver.current",
+        lambda: ServeState(
+            host="127.0.0.1",
+            port=8420,
+            url="http://localhost:8420",
+            thread=fake_thread,
+        ),
+    )
+    res = dispatch("/serve", [], config, cwd=".", session_id="s")
+    assert "already running" in res.output
+    assert "http://localhost:8420" in res.output
+
+
+def test_dispatch_serve_start_error(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+
+    def fake_start(**kwargs):
+        raise RuntimeError("port already in use?")
+
+    monkeypatch.setattr("agentflow.tui.webserver.start_web_server", fake_start)
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", [], config, cwd=".", session_id="s")
+    assert "Could not start web console" in res.output
+    assert "port already in use" in res.output
+
+
+def test_safe_during_run_includes_serve():
+    assert "/serve" in _SAFE_DURING_RUN
+
+
+def test_start_web_server_integration(tmp_path, monkeypatch):
+    import socket
+    import httpx
+    import agentflow.tui.webserver as webserver
+    from agentflow.tui.webserver import start_web_server
+
+    monkeypatch.setattr(webserver, "_STATE", None)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+
+    cfg_file = tmp_path / "agentflow.config.yaml"
+    cfg_file.write_text(
+        "review:\n  backend: claude-code\nbuild:\n  backend: claude-code\nverify:\n  backend: claude-code\n"
+    )
+    db_file = tmp_path / "test.db"
+
+    state, already = start_web_server(
+        cwd=str(tmp_path),
+        config_path=str(cfg_file),
+        database_path=db_file,
+        port=free_port,
+    )
+    assert already is False
+    assert state.port == free_port
+    assert state.thread.is_alive()
+
+    resp = httpx.get(f"{state.url}/", timeout=5.0)
+    assert resp.status_code == 200
 
 
 # ============================================================================
@@ -970,6 +1264,9 @@ def test_slash_command_completer():
 
     # "/co" -> yields exactly /config and /cost
     assert complete("/co") == ["/config", "/cost"]
+
+    # "/mc" -> yields exactly /mcp
+    assert complete("/mc") == ["/mcp"]
 
     # "/config " -> yields permissions, max-cost, review, build, verify
     assert complete("/config ") == ["permissions", "max-cost", "review", "build", "verify"]
@@ -1441,6 +1738,29 @@ def test_handle_mid_run_input_unsafe_command(isolate_database):
         mock_add.assert_not_called()
         mock_console.print.assert_called_once_with(
             "[yellow]/clear is not available during a run.[/yellow] It will not be queued."
+        )
+
+
+def test_handle_mid_run_input_unsafe_command_mcp(isolate_database):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    mock_console = MagicMock()
+    with patch("agentflow.database.add_pending_message") as mock_add:
+        _handle_mid_run_input(
+            "/mcp",
+            "run-123",
+            config,
+            "/tmp",
+            "sess-1",
+            isolate_database,
+            mock_console,
+        )
+        mock_add.assert_not_called()
+        mock_console.print.assert_called_once_with(
+            "[yellow]/mcp is not available during a run.[/yellow] It will not be queued."
         )
 
 
