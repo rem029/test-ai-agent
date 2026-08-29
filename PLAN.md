@@ -908,6 +908,19 @@ workflow); other slash commands rejected. `_read_pending_line` /
 line-editing/history for mid-run input (raw tty line discipline for now),
 and queuing a *separate* run mid-build (steer only).
 
+**Follow-up (2026-08-29, branch `phase-j.5a-async-input`):** the deferred
+prompt_toolkit item is now done — the mid-run `select`/`readline` poll (and
+the Rich `console.status` spinner that clobbered typed echo) is replaced by
+a real always-open input line. `_execute_turn` runs the workflow in a worker
+thread and, on a tty, drives `asyncio.run(_turn_interactive(...))`:
+`patch_stdout()` pins a `prompt_async` input at the bottom while
+`_drain_async` streams events above it; progress shows in a `bottom_toolbar`
+(`⠋ <role> working · $<cost> · Ctrl+C stop`). Tool-permission confirmations
+reuse the same input line modally. Non-tty / tests use `_turn_drain_only`
+(the old synchronous loop, spinner removed). Event rendering is factored
+into `_process_new_events`. `_read_pending_line` removed. 330 tests pass
+(`-5` read-pending, `+6` async-turn).
+
 ### J.5b - Persistent bottom status bar + richer footer
 
 `format_footer()` (`render.py:212`) already computes per-backend

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import threading
 import time
@@ -25,7 +26,6 @@ from agentflow.tui.render import (
 )
 from agentflow.tui.repl import (
     _handle_mid_run_input,
-    _read_pending_line,
     run_repl,
 )
 
@@ -1032,50 +1032,195 @@ def test_help_contains_all_commands():
 # ============================================================================
 
 
-def test_read_pending_line_non_tty(monkeypatch):
-    import sys
+def test_process_new_events_renders_tool_calls(isolate_database):
+    from agentflow.tui.repl import _process_new_events
 
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    assert _read_pending_line() is None
+    run_id = "test-proc-run"
+    append_event(
+        run_id,
+        1,
+        "step_started",
+        {"role": "build", "iteration": 1},
+        path=isolate_database,
+    )
+    append_event(
+        run_id,
+        2,
+        "text_delta",
+        {"delta": "Writing code..."},
+        path=isolate_database,
+    )
+    append_event(
+        run_id,
+        3,
+        "tool_call",
+        {"tool_name": "WriteFile", "args": {"path": "test.py"}},
+        path=isolate_database,
+    )
+    append_event(
+        run_id,
+        4,
+        "tool_result",
+        {
+            "tool_name": "WriteFile",
+            "status": "OK",
+            "execution_time_ms": 20,
+            "result": {"output": "ok"},
+        },
+        path=isolate_database,
+    )
+    append_event(
+        run_id,
+        5,
+        "step_finished",
+        {"step": {"role": "build", "usage": {"cost_usd": 0.0125}}},
+        path=isolate_database,
+    )
+
+    fake_console = MagicMock()
+    state = {
+        "last_seq": -1,
+        "accumulated_deltas": [],
+        "last_role": "agent",
+        "last_rendered_tool_sig": None,
+        "current_call_sig": None,
+        "cost": 0.0,
+    }
+
+    _process_new_events(run_id, isolate_database, fake_console, state)
+
+    assert state["last_seq"] == 5
+    assert state["last_role"] == "build"
+    assert pytest.approx(state["cost"], 1e-6) == 0.0125
+    printed_calls = [call[0][0] for call in fake_console.print.call_args_list]
+    full_printed = "\n".join(printed_calls)
+    assert "Writing code..." in full_printed
+    assert "WriteFile" in full_printed
+    assert "test.py" in full_printed
+    assert "build finished" in full_printed
 
 
-def test_read_pending_line_tty_not_ready(monkeypatch):
-    import select
-    import sys
+def test_parse_perm_answer():
+    from agentflow.tui.repl import _parse_perm_answer
 
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([], [], []))
-    assert _read_pending_line() is None
-
-
-def test_read_pending_line_tty_with_content(monkeypatch):
-    import select
-    import sys
-
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([sys.stdin], [], []))
-    monkeypatch.setattr(sys.stdin, "readline", lambda: "focus on tests\n")
-    assert _read_pending_line() == "focus on tests"
-
-
-def test_read_pending_line_tty_empty_or_whitespace(monkeypatch):
-    import select
-    import sys
-
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([sys.stdin], [], []))
-    monkeypatch.setattr(sys.stdin, "readline", lambda: "   \n")
-    assert _read_pending_line() is None
+    assert _parse_perm_answer("a") == "allow"
+    assert _parse_perm_answer("A") == "allow"
+    assert _parse_perm_answer("allow") == "allow"
+    assert _parse_perm_answer("y") == "allow"
+    assert _parse_perm_answer("yes") == "allow"
+    assert _parse_perm_answer("s") == "allow_session"
+    assert _parse_perm_answer("S") == "allow_session"
+    assert _parse_perm_answer("session") == "allow_session"
+    assert _parse_perm_answer("allow_session") == "allow_session"
+    assert _parse_perm_answer("allow for session") == "allow_session"
+    assert _parse_perm_answer("d") == "deny"
+    assert _parse_perm_answer("deny") == "deny"
+    assert _parse_perm_answer("n") == "deny"
+    assert _parse_perm_answer("no") == "deny"
+    assert _parse_perm_answer("") == "deny"
+    assert _parse_perm_answer(None) == "deny"
+    assert _parse_perm_answer("random_garbage") == "deny"
 
 
-def test_read_pending_line_exception(monkeypatch):
-    import sys
+def test_turn_toolbar_hidden_when_worker_done():
+    from agentflow.tui.repl import _turn_toolbar
 
-    def broken_isatty():
-        raise OSError("device error")
+    fake_worker = MagicMock()
+    fake_worker.is_alive.return_value = False
+    tstate = {"last_role": "build", "cost": 0.042}
 
-    monkeypatch.setattr(sys.stdin, "isatty", broken_isatty)
-    assert _read_pending_line() is None
+    assert _turn_toolbar(tstate, fake_worker) == ""
+
+
+def test_turn_toolbar_shows_role_when_alive():
+    from agentflow.tui.repl import _turn_toolbar
+
+    fake_worker = MagicMock()
+    fake_worker.is_alive.return_value = True
+    tstate = {"last_role": "build", "cost": 0.042}
+
+    bar = _turn_toolbar(tstate, fake_worker)
+    assert "build working" in bar
+    assert "$0.0420" in bar
+    assert "Ctrl+C stop" in bar
+
+
+def test_perm_prompt_message():
+    from agentflow.tui.permissions import PermissionRequest
+    from agentflow.tui.repl import _perm_prompt_message
+
+    req = PermissionRequest(tool_name="WriteFile", args={"path": "main.py"})
+    msg = _perm_prompt_message(req)
+    assert "WriteFile" in msg
+    assert "allow" in msg
+    assert "[d]eny" in msg
+
+
+def test_turn_interactive_steer(isolate_database):
+    from prompt_toolkit import PromptSession
+    from rich.console import Console
+
+    from agentflow.config import Config, RoleConfig
+    from agentflow.database import get_pending_messages
+    from agentflow.tui.permissions import SessionPermissionBroker
+    from agentflow.tui.repl import _execute_turn
+
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+
+    prompt_responses = ["please write tests first"]
+
+    async def fake_prompt_async(*args, **kwargs):
+        if prompt_responses:
+            return prompt_responses.pop(0)
+        raise EOFError
+
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+        append_event(run_id, 1, "run_started", {"run_id": run_id, "session_id": session_id, "goal": goal}, path=database_path)
+        append_event(run_id, 2, "step_started", {"role": "build", "iteration": 1}, path=database_path)
+        time.sleep(0.05)
+        append_event(run_id, 3, "run_finished", {"finished_at": time.time()}, path=database_path)
+        state = RunState(
+            run_id=run_id,
+            goal=goal,
+            started_at=time.time() - 1.0,
+            config={},
+            session_id=session_id,
+            finished_at=time.time(),
+        )
+        save_run(state, cwd, path=database_path)
+        return state
+
+    broker = SessionPermissionBroker()
+    console = Console(file=io.StringIO())
+    session = PromptSession()
+
+    with (
+        patch("sys.stdin.isatty", return_value=True),
+        patch("prompt_toolkit.patch_stdout.patch_stdout", contextlib.nullcontext),
+        patch.object(PromptSession, "prompt_async", side_effect=fake_prompt_async),
+        patch("agentflow.orchestrator.run_workflow", side_effect=fake_workflow),
+    ):
+        state = _execute_turn(
+            goal="write a module",
+            run_id="run-interactive-steer",
+            config=config,
+            cwd="/tmp",
+            session_id="sess-interactive",
+            database_path=isolate_database,
+            broker=broker,
+            console=console,
+            prompt_session=session,
+        )
+
+    assert state is not None
+    pending = get_pending_messages("run-interactive-steer", kind="steer", path=isolate_database)
+    assert len(pending) == 1
+    assert pending[0]["body"] == "please write tests first"
+    assert pending[0]["kind"] == "steer"
 
 
 def test_handle_mid_run_input_steer_plain_text(isolate_database):
