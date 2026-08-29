@@ -1054,6 +1054,15 @@ contents-expansion as a follow-up if the agent needs it.
 - Model/backend picker per session; config panel continues to write
   `agentflow.config.yaml`.
 - Restore the single-run worktree lock.
+- **TUI/web parity (user, 2026-08-29):** everything the terminal REPL can do
+  should be reachable from the web console too. Concretely, that means web
+  equivalents of the slash commands: `/model` + `/config` (config panel,
+  incl. `mcp_servers` - the deferred L7.3), `/tools` + `/mcp` (a tools/MCP
+  panel showing built-ins and live MCP connection status), `/resume` +
+  `/cost` (session sidebar + per-session cost), `/clear` (new session),
+  mid-run steer + stop (composer + stop button, already scoped above), and
+  the `@`-file mention picker (J.6) in the composer. Track this as an
+  explicit checklist item when K3 starts.
 
 ## Phase L - Projects, memory, extensibility, notifications (user backlog, 2026-08-28)
 
@@ -1187,6 +1196,12 @@ mcp_servers:
   `--mcp-check` (`[OK] name: N tool(s): ...` / `[ERROR] ...`, exit 1 on any
   error). `/tools` in the REPL notes the configured server count. 352 tests;
   `--mcp-check` verified end-to-end.
+- **L7.2a - `/mcp` REPL command (user, 2026-08-29).** A `/mcp` slash command
+  in the TUI that connects to each configured server and reports its tools /
+  errors (the `--mcp-check` equivalent, rich-formatted, shows disabled
+  servers too). Not in `_SAFE_DURING_RUN` - rejected mid-run (a run already
+  holds its own `MCPManager`; a second would spawn duplicate server procs).
+  Added to the `COMMANDS` registry so `/help` + completion pick it up.
 - **L7.3 - web config UI for MCP servers.** Deferred - lands with the Phase K
   web console rewrite (config panel). Backend is ready: `GET/POST /api/config`
   just needs `mcp_servers` surfaced (the `Config` model already carries it,
