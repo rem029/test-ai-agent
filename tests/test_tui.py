@@ -26,9 +26,11 @@ from agentflow.tui.render import (
     truncate_output,
 )
 from agentflow.tui.repl import (
+    _SAFE_DURING_RUN,
     _handle_mid_run_input,
     run_repl,
 )
+from agentflow.tui.webserver import ServeState
 
 FAKE_SERVER_PATH = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
 
@@ -606,6 +608,7 @@ def test_dispatch_help():
     assert "/config" in res.output
     assert "/tools" in res.output
     assert "/mcp" in res.output
+    assert "/serve" in res.output
     assert "/resume" in res.output
 
 
@@ -837,6 +840,187 @@ def test_dispatch_exit():
     assert res_exit.should_exit is True
     res_quit = dispatch("/quit", [], config, cwd="/tmp", session_id="s1")
     assert res_quit.should_exit is True
+
+
+def test_dispatch_serve_starts(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+    monkeypatch.setattr(
+        "agentflow.tui.webserver.start_web_server",
+        lambda **kwargs: (
+            ServeState(
+                host="127.0.0.1",
+                port=8420,
+                url="http://localhost:8420",
+                thread=fake_thread,
+            ),
+            False,
+        ),
+    )
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+    res = dispatch("/serve", [], config, cwd=".", session_id="s")
+    assert "✓" in res.output
+    assert "http://localhost:8420" in res.output
+
+
+def test_dispatch_serve_custom_port(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    captured = {}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return (
+            ServeState(
+                host=kwargs.get("host", "127.0.0.1"),
+                port=kwargs["port"],
+                url=f"http://localhost:{kwargs['port']}",
+                thread=fake_thread,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr("agentflow.tui.webserver.start_web_server", fake_start)
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", ["9999"], config, cwd=".", session_id="s")
+    assert captured.get("port") == 9999
+    assert "http://localhost:9999" in res.output
+
+
+def test_dispatch_serve_custom_port_and_host(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    captured = {}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return (
+            ServeState(
+                host=kwargs["host"],
+                port=kwargs["port"],
+                url=f"http://localhost:{kwargs['port']}",
+                thread=fake_thread,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr("agentflow.tui.webserver.start_web_server", fake_start)
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", ["9999", "0.0.0.0"], config, cwd=".", session_id="s")
+    assert captured.get("port") == 9999
+    assert captured.get("host") == "0.0.0.0"
+    assert "reachable from other hosts" in res.output
+
+
+def test_dispatch_serve_bad_port(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    called = []
+    monkeypatch.setattr(
+        "agentflow.tui.webserver.start_web_server",
+        lambda **kwargs: called.append(kwargs),
+    )
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", ["70000"], config, cwd=".", session_id="s")
+    assert "invalid port" in res.output
+    assert len(called) == 0
+
+
+def test_dispatch_serve_already_running(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+    monkeypatch.setattr(
+        "agentflow.tui.webserver.current",
+        lambda: ServeState(
+            host="127.0.0.1",
+            port=8420,
+            url="http://localhost:8420",
+            thread=fake_thread,
+        ),
+    )
+    res = dispatch("/serve", [], config, cwd=".", session_id="s")
+    assert "already running" in res.output
+    assert "http://localhost:8420" in res.output
+
+
+def test_dispatch_serve_start_error(monkeypatch):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+
+    def fake_start(**kwargs):
+        raise RuntimeError("port already in use?")
+
+    monkeypatch.setattr("agentflow.tui.webserver.start_web_server", fake_start)
+    monkeypatch.setattr("agentflow.tui.webserver.current", lambda: None)
+
+    res = dispatch("/serve", [], config, cwd=".", session_id="s")
+    assert "Could not start web console" in res.output
+    assert "port already in use" in res.output
+
+
+def test_safe_during_run_includes_serve():
+    assert "/serve" in _SAFE_DURING_RUN
+
+
+def test_start_web_server_integration(tmp_path, monkeypatch):
+    import socket
+    import httpx
+    import agentflow.tui.webserver as webserver
+    from agentflow.tui.webserver import start_web_server
+
+    monkeypatch.setattr(webserver, "_STATE", None)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+
+    cfg_file = tmp_path / "agentflow.config.yaml"
+    cfg_file.write_text(
+        "review:\n  backend: claude-code\nbuild:\n  backend: claude-code\nverify:\n  backend: claude-code\n"
+    )
+    db_file = tmp_path / "test.db"
+
+    state, already = start_web_server(
+        cwd=str(tmp_path),
+        config_path=str(cfg_file),
+        database_path=db_file,
+        port=free_port,
+    )
+    assert already is False
+    assert state.port == free_port
+    assert state.thread.is_alive()
+
+    resp = httpx.get(f"{state.url}/", timeout=5.0)
+    assert resp.status_code == 200
 
 
 # ============================================================================

@@ -58,6 +58,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         summary="Check MCP server connections and list their tools",
     ),
     CommandSpec(
+        name="/serve",
+        summary="Start the web console for this session in the background",
+        usage="/serve [<port>] [<host>]",
+    ),
+    CommandSpec(
         name="/resume",
         summary="Switch to a prior session",
         usage="/resume <session_id>",
@@ -249,6 +254,56 @@ def dispatch(
         for s in disabled:
             lines.append(f"  • [dim]- {s.name} (disabled)[/dim]")
         return CommandResult("\n".join(lines))
+
+    if cmd == "/serve":
+        from ..config import DEFAULT_CONFIG_PATH, active_config_path
+        from .webserver import (
+            DEFAULT_SERVE_HOST,
+            DEFAULT_SERVE_PORT,
+            current,
+            start_web_server,
+        )
+
+        existing = current()
+        if existing is not None and existing.thread.is_alive():
+            return CommandResult(
+                f"[dim]Web console already running at[/dim] [cyan]{existing.url}[/cyan]"
+            )
+
+        port = DEFAULT_SERVE_PORT
+        host = DEFAULT_SERVE_HOST
+        # args: [port] [host]  (port must be an int; host is anything else)
+        for a in args:
+            if a.isdigit():
+                port = int(a)
+            else:
+                host = a
+        if not (1 <= port <= 65535):
+            return CommandResult(f"[red]Error:[/red] invalid port: {port}")
+
+        cfg_path = active_config_path() or DEFAULT_CONFIG_PATH
+        try:
+            state, already = start_web_server(
+                cwd=cwd,
+                config_path=cfg_path,
+                database_path=database_path,
+                host=host,
+                port=port,
+            )
+        except Exception as exc:
+            return CommandResult(f"[red]Could not start web console:[/red] {exc}")
+
+        note = (
+            "already running"
+            if already
+            else "shares this session's runs - it keeps running until you exit the REPL"
+        )
+        hint = ""
+        if host not in ("127.0.0.1", "localhost"):
+            hint = f"\n[dim]Bound to {host} - reachable from other hosts on the network.[/dim]"
+        return CommandResult(
+            f"[green]✓[/green] Web console at [cyan]{state.url}[/cyan] [dim]({note})[/dim]{hint}"
+        )
 
     if cmd == "/resume":
         if not args:
