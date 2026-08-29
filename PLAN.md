@@ -478,9 +478,21 @@ projects.
 ## Status
 
 Phases A, B, C, D, E, F, G, H, I (incl. I.5), and J (incl. J.5, J.6) are done.
-L1-L5 done. L7.1 + L7.2 done on branch `phase-l7` (MCP client support; L7.3
-web UI deferred to Phase K). Phase K: K1 + K2 done on branch `phase-k`
-(K3-K5 remaining).
+L1-L5 done. L7 (MCP client support) done and merged to `dev`: L7.1 config +
+client, L7.2 orchestrator wiring + `--list-tools`/`--mcp-check`, L7.2a `/mcp`
+REPL command. L7.3 (web MCP config UI) deferred to Phase K. Phase K: K1 + K2
+done on branch `phase-k` (K3-K5 remaining).
+
+Also merged to `dev` this session (not part of a numbered phase):
+- Readable tool-arg validation errors + `file_path`/`filepath`/`filename`
+  aliases for `path` on the file tools; `Toolset.capability_hints()` nudging
+  the agent to use `mcp__playwright__*` for web-UI work.
+- `/serve [<port>] [<host>]` REPL command - starts the web console
+  (`src/agentflow/tui/webserver.py`) in a uvicorn daemon thread against the
+  REPL's cwd + DB, works mid-run, so a running session can be watched in the
+  browser. Defaults 127.0.0.1:8420.
+
+`dev` is ahead of `origin/dev` - nothing pushed yet this session.
 
 ---
 
