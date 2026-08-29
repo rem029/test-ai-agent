@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 import threading
 import time
@@ -284,8 +285,8 @@ async def _turn_interactive(
     done = {"v": False}
     pending_perm: dict[str, Any] = {"req": None}
     tstate: dict[str, Any] = {"last_role": "agent", "cost": 0.0}
-    with patch_stdout():
-        turn_console = Console()
+    with patch_stdout(raw=True):
+        turn_console = Console(width=shutil.get_terminal_size(fallback=(100, 24)).columns)
         drain = asyncio.create_task(
             _drain_async(
                 run_id,
