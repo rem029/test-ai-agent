@@ -23,7 +23,11 @@ from agentflow.tui.render import (
     session_cost,
     truncate_output,
 )
-from agentflow.tui.repl import run_repl
+from agentflow.tui.repl import (
+    _handle_mid_run_input,
+    _read_pending_line,
+    run_repl,
+)
 
 
 # ============================================================================
@@ -1021,6 +1025,155 @@ def test_help_contains_all_commands():
     res = dispatch("/help", [], config, cwd="/tmp", session_id="s1")
     for spec in COMMANDS:
         assert spec.name in res.output
+
+
+# ============================================================================
+# 9. Mid-Run Input & Steer Tests (Phase J.5a)
+# ============================================================================
+
+
+def test_read_pending_line_non_tty(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    assert _read_pending_line() is None
+
+
+def test_read_pending_line_tty_not_ready(monkeypatch):
+    import select
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([], [], []))
+    assert _read_pending_line() is None
+
+
+def test_read_pending_line_tty_with_content(monkeypatch):
+    import select
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([sys.stdin], [], []))
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "focus on tests\n")
+    assert _read_pending_line() == "focus on tests"
+
+
+def test_read_pending_line_tty_empty_or_whitespace(monkeypatch):
+    import select
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([sys.stdin], [], []))
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "   \n")
+    assert _read_pending_line() is None
+
+
+def test_read_pending_line_exception(monkeypatch):
+    import sys
+
+    def broken_isatty():
+        raise OSError("device error")
+
+    monkeypatch.setattr(sys.stdin, "isatty", broken_isatty)
+    assert _read_pending_line() is None
+
+
+def test_handle_mid_run_input_steer_plain_text(isolate_database):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    mock_console = MagicMock()
+    with patch("agentflow.database.add_pending_message") as mock_add:
+        _handle_mid_run_input(
+            "focus on tests",
+            "run-123",
+            config,
+            "/tmp",
+            "sess-1",
+            isolate_database,
+            mock_console,
+        )
+        mock_add.assert_called_once_with(
+            "run-123", "focus on tests", kind="steer", path=isolate_database
+        )
+        mock_console.print.assert_called_once_with(
+            "[dim]↳ queued — will steer at the next phase boundary.[/dim]"
+        )
+
+
+def test_handle_mid_run_input_safe_command_config(isolate_database):
+    config = Config(
+        permissions="auto",
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    mock_console = MagicMock()
+    with patch("agentflow.database.add_pending_message") as mock_add:
+        _handle_mid_run_input(
+            "/config permissions deny",
+            "run-123",
+            config,
+            "/tmp",
+            "sess-1",
+            isolate_database,
+            mock_console,
+        )
+        assert config.permissions == "deny"
+        mock_add.assert_not_called()
+        assert mock_console.print.called
+        printed = mock_console.print.call_args[0][0]
+        assert "deny" in printed
+
+
+def test_handle_mid_run_input_safe_command_model(isolate_database):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    mock_console = MagicMock()
+    with patch("agentflow.database.add_pending_message") as mock_add:
+        _handle_mid_run_input(
+            "/model review claude-3-7-sonnet",
+            "run-123",
+            config,
+            "/tmp",
+            "sess-1",
+            isolate_database,
+            mock_console,
+        )
+        assert config.review.model == "claude-3-7-sonnet"
+        mock_add.assert_not_called()
+        assert mock_console.print.called
+        printed = mock_console.print.call_args[0][0]
+        assert "claude-3-7-sonnet" in printed
+
+
+def test_handle_mid_run_input_unsafe_command(isolate_database):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    mock_console = MagicMock()
+    with patch("agentflow.database.add_pending_message") as mock_add:
+        _handle_mid_run_input(
+            "/clear",
+            "run-123",
+            config,
+            "/tmp",
+            "sess-1",
+            isolate_database,
+            mock_console,
+        )
+        mock_add.assert_not_called()
+        mock_console.print.assert_called_once_with(
+            "[yellow]/clear is not available during a run.[/yellow] It will not be queued."
+        )
+
 
 
 

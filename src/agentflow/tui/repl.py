@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import select
+import sys
 import threading
 import time
 from pathlib import Path
@@ -10,6 +12,58 @@ from typing import Any
 
 from ..config import Config
 from ..tools import strip_tool_blocks
+
+_SAFE_DURING_RUN = frozenset({"/config", "/model", "/cost", "/help", "/tools", "/?"})
+
+
+def _read_pending_line() -> str | None:
+    """Non-blocking read of one line from stdin. None if nothing is ready or stdin isn't a tty."""
+    try:
+        if not sys.stdin.isatty():
+            return None
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if not ready:
+            return None
+        line = sys.stdin.readline()
+        if not line:
+            return None
+        return line.strip() or None
+    except Exception:
+        return None
+
+
+def _handle_mid_run_input(
+    text: str,
+    run_id: str,
+    config: Config,
+    cwd: str,
+    session_id: str,
+    database_path: Path | None,
+    console: Any,
+) -> None:
+    from ..database import add_pending_message
+    from .commands import dispatch, parse_command
+
+    parsed = parse_command(text)
+    if parsed is not None:
+        cmd, args = parsed
+        if cmd in _SAFE_DURING_RUN:
+            result = dispatch(
+                cmd,
+                args,
+                config,
+                cwd=cwd,
+                session_id=session_id,
+                database_path=database_path,
+            )
+            if result.output:
+                console.print(result.output)
+        else:
+            console.print(f"[yellow]{cmd} is not available during a run.[/yellow] It will not be queued.")
+        return
+    # plain text -> steer
+    add_pending_message(run_id, text, kind="steer", path=database_path)
+    console.print("[dim]↳ queued — will steer at the next phase boundary.[/dim]")
 
 
 def _session_tag(sid: str) -> str:
@@ -181,6 +235,7 @@ def run_repl(
 
         worker = threading.Thread(target=_run_turn, daemon=True)
         worker.start()
+        console.print("[dim](type to steer · /config /model /cost /help /tools work · Ctrl+C to stop)[/dim]")
 
         last_seq = -1
         accumulated_deltas: list[str] = []
@@ -292,7 +347,23 @@ def run_repl(
                         ans = _prompt_user_permission(console, req.tool_name, req.args)
                         broker.respond(req, ans)
 
-                    # 3. Check loop completion
+                    # 3. Check for mid-run typed input
+                    if worker.is_alive():
+                        typed = _read_pending_line()
+                        if typed:
+                            _flush_deltas()
+                            _stop_status()
+                            _handle_mid_run_input(
+                                typed,
+                                run_id,
+                                config,
+                                cwd,
+                                active_session_id,
+                                database_path,
+                                console,
+                            )
+
+                    # 4. Check loop completion
                     finished = any(ev["type"] in ("run_finished", "run_stopped") for ev in events)
                     if not worker.is_alive() and (finished or run_box["exc"] is not None or not events):
                         _flush_deltas()
