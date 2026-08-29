@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agentflow.backends.base import RunResult, Usage
-from agentflow.config import Config, RoleConfig
+from agentflow.config import Config, MCPServerConfig, RoleConfig
 from agentflow.database import append_event, create_session, save_run
 from agentflow.orchestrator import RunState, _check_tool_permission
 from agentflow.tui.commands import CommandResult, dispatch, parse_command
@@ -28,6 +29,15 @@ from agentflow.tui.repl import (
     _handle_mid_run_input,
     run_repl,
 )
+
+FAKE_SERVER_PATH = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
+
+try:
+    import mcp
+    import mcp.server.mcpserver  # noqa: F401
+    HAS_MCP_SERVER = True
+except Exception:  # pragma: no cover
+    HAS_MCP_SERVER = False
 
 
 # ============================================================================
@@ -594,6 +604,8 @@ def test_dispatch_help():
     res = dispatch("/help", [], config, cwd="/tmp", session_id="s1")
     assert "/model" in res.output
     assert "/config" in res.output
+    assert "/tools" in res.output
+    assert "/mcp" in res.output
     assert "/resume" in res.output
 
 
@@ -660,6 +672,104 @@ def test_dispatch_tools():
     res = dispatch("/tools", [], config, cwd="/tmp", session_id="s1")
     assert "ReadFile" in res.output
     assert "WriteFile" in res.output
+
+
+def test_dispatch_mcp_no_servers():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[],
+    )
+    res = dispatch("/mcp", [], config, cwd="/tmp", session_id="s1")
+    assert "No MCP servers configured." in res.output
+    assert "mcp_servers:" in res.output
+
+
+@pytest.mark.skipif(not HAS_MCP_SERVER, reason="mcp server SDK not available")
+def test_dispatch_mcp_lists_tools():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=["echo"],
+            )
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "✓ fake" in res.output
+    assert "2 tool(s)" in res.output
+    assert "mcp__fake__echo" in res.output
+    assert "mcp__fake__add" in res.output
+    assert "auto-approve: echo" in res.output
+
+
+def test_dispatch_mcp_disabled_server():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake_disabled",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                enabled=False,
+            )
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "- fake_disabled (disabled)" in res.output
+
+
+@pytest.mark.skipif(not HAS_MCP_SERVER, reason="mcp server SDK not available")
+def test_dispatch_mcp_bad_binary():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="bad",
+                command="nonexistent_xyz_123",
+            )
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "✗ bad" in res.output
+
+
+@pytest.mark.skipif(not HAS_MCP_SERVER, reason="mcp server SDK not available")
+def test_dispatch_mcp_auto_approve_modes():
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+        mcp_servers=[
+            MCPServerConfig(
+                name="fake1",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=["all"],
+            ),
+            MCPServerConfig(
+                name="fake2",
+                command=sys.executable,
+                args=[FAKE_SERVER_PATH],
+                auto_approve=[],
+            ),
+        ],
+    )
+    res = dispatch("/mcp", [], config, cwd=".", session_id="s1")
+    assert "✓ fake1" in res.output
+    assert "auto-approve: all" in res.output
+    assert "✓ fake2" in res.output
+    assert "auto-approve: none" in res.output
 
 
 def test_dispatch_resume_and_clear(isolate_database):
@@ -970,6 +1080,9 @@ def test_slash_command_completer():
 
     # "/co" -> yields exactly /config and /cost
     assert complete("/co") == ["/config", "/cost"]
+
+    # "/mc" -> yields exactly /mcp
+    assert complete("/mc") == ["/mcp"]
 
     # "/config " -> yields permissions, max-cost, review, build, verify
     assert complete("/config ") == ["permissions", "max-cost", "review", "build", "verify"]
@@ -1441,6 +1554,29 @@ def test_handle_mid_run_input_unsafe_command(isolate_database):
         mock_add.assert_not_called()
         mock_console.print.assert_called_once_with(
             "[yellow]/clear is not available during a run.[/yellow] It will not be queued."
+        )
+
+
+def test_handle_mid_run_input_unsafe_command_mcp(isolate_database):
+    config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    mock_console = MagicMock()
+    with patch("agentflow.database.add_pending_message") as mock_add:
+        _handle_mid_run_input(
+            "/mcp",
+            "run-123",
+            config,
+            "/tmp",
+            "sess-1",
+            isolate_database,
+            mock_console,
+        )
+        mock_add.assert_not_called()
+        mock_console.print.assert_called_once_with(
+            "[yellow]/mcp is not available during a run.[/yellow] It will not be queued."
         )
 
 
