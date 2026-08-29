@@ -844,6 +844,79 @@ interactive REPL (the one-shot `agentflow "<goal>"` form stays).
 - Cleaned up REPL banner formatting with `~` home directory abbreviation and single-line soft wrapping.
 - 277 tests pass (`+14` tests in `test_parser_strip.py`, `test_streaming.py`, `test_tui.py`).
 
+**Follow-up (2026-08-29):**
+- Slash-command autocomplete: `commands.py` gained a declarative `COMMANDS`
+  registry (single source of truth for `/help` + completion); new
+  `tui/completion.py` `SlashCommandCompleter` wired into the `PromptSession`
+  with `complete_while_typing=True`. Completes command names and argument
+  positions (`/config` sub-commands, role -> backend, permission values,
+  role model ids from `CURATED_MODELS`). Commit `73d86b5`. 297 tests pass.
+- Antigravity backend now resolves the `agy` binary (Antigravity CLI's
+  current name; falls back to `antigravity`) so `verify` runs on the Google
+  subscription. Commit `fb3c5a1`.
+
+
+## Phase J.5 - REPL: concurrent input & live status (do next)
+
+Follow-on polish to Phase J. Feasibility checked 2026-08-29; not yet started.
+
+### J.5a - Accept input while a run is executing (Claude Code style)
+
+Today `repl.py` runs the workflow in a daemon thread (`_run_turn`) while the
+main thread sits in the event-drain loop (`while True` ... `time.sleep(0.15)`),
+reading the keyboard only via `except KeyboardInterrupt` (stop). You cannot
+type during a build.
+
+**The backend for this already exists** (built for the web UI):
+- `pending_messages` table, kinds `steer` / `note` / `control`
+  (`database.py`); `add_pending_message` / `drain_pending_messages`.
+- `_drain_steer()` runs at every phase boundary (`orchestrator.py:1064,
+  1077, 1207`) and folds queued steer text into the next phase's prompt.
+- `add_control_signal(run_id, "stop"|"abort")` + `has_pending_control`
+  (`orchestrator.py:453, 625`).
+- `add_queued_run()` / `pop_next_queued_run()` / `_spawn_next_queued_run()`
+  (`orchestrator.py:1258`) - the next queued goal auto-starts on completion.
+- Web already exposes all of it (`POST /api/runs/{id}/messages`, `/stop`,
+  auto-queue when `get_active_run` is set).
+
+**Work required (CLI only):**
+- Restructure the run loop to accept a line without blocking event
+  rendering - cleanest is `prompt_toolkit` async (`prompt_async()` + the
+  drain loop as a coroutine); a second input thread feeding a
+  `queue.Queue` is the fallback but fights the spinner/print for the tty.
+- Route input typed during a run:
+  - `/config`, `/model`, `/cost` -> safe to run live; `/clear`,
+    `/resume`, `/exit` -> defer or reject mid-run.
+  - plain text -> `add_pending_message(run_id, text, "steer")`.
+  - a second goal while one runs -> `add_queued_run(...)`.
+- Show a "queued" indicator for pending steer / queued runs.
+
+**Caveat:** steer granularity is per phase (review -> build -> verify), not
+per tool-call like Claude Code - a queued message lands at the next phase
+boundary, which during a long build can be minutes away.
+
+Estimate: ~half a day (state/DB layer is done; this is a REPL input-loop
+rewrite).
+
+### J.5b - Persistent bottom status bar + richer footer
+
+`format_footer()` (`render.py:212`) already computes per-backend
+`in / out / cost`, total cost, status, elapsed - printed once per turn.
+Missing: session id and title.
+
+- Add a `Session: <id> "<title>"` line to `format_footer` (pass the
+  session dict in). Title is set to the first goal at
+  `orchestrator.py:887`.
+- Add a persistent bottom toolbar: `PromptSession(bottom_toolbar=...)`
+  showing `session - "title" - $running_cost`
+  (`session_cost(get_session_runs(sid))`). Nothing uses `bottom_toolbar`
+  yet.
+
+**Prerequisite for showing agy usage:** `AntigravityBackend._run_cli`
+currently returns `_empty_usage()` (`antigravity.py`), so agy runs record
+zero tokens/cost. Parse `agy -p --output-format json` for its usage block
+first (claude-code and openrouter usage already flow through).
+
 
 ## Phase K - Web console rewrite (OpenCode-like)
 
