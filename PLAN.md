@@ -1052,6 +1052,27 @@ contents-expansion as a follow-up if the agent needs it.
   `agentflow.config.yaml`.
 - Restore the single-run worktree lock.
 
+### Sub-phases
+
+- **K1 - Dead-code cleanup (done, branch `phase-k`).** Deleted the orphaned
+  Jinja `templates/` dir (`base`, `dashboard`, `run_detail`, `_run_fragment`,
+  `config_edit`, `login`), `static/auth.css`, `static/style.css` (Phase E,
+  superseded by `styles.css`), and the unused vendored `static/htmx.min.js`.
+  Dropped the now-unused `jinja2` dependency from `pyproject.toml`. Updated
+  `AGENTS.md`, `.github/copilot-instructions.md`, `PRODUCT.md` stack
+  descriptions (SPA, not Jinja/htmx). 338 tests still pass. Note: the
+  single-run worktree lock is **not** a regression — Phase I.5 added a per-cwd
+  `threading.Lock` + `fcntl.flock` inside `run_workflow` and `create_run`
+  already routes a submission during an active run to `queued_runs`.
+- **K2 - SSE live event stream (next).** `GET /api/runs/{id}/stream` (SSE)
+  replaying the persisted `events` table then tailing new rows; SPA consumes
+  it via `EventSource`, falls back to the existing poll.
+- **K3 - SPA shell rewrite.** Session sidebar + message-thread run view +
+  follow-up composer + queued indicator, on the SSE stream.
+- **K4 - Inline tool calls + file diffs** from `ToolResult.structured`.
+- **K5 - Visual direction (absorbs L6).** Impeccable `new-work` pass; reconcile
+  `styles.css` to a refreshed `DESIGN.md`.
+
 ## Phase L - Projects, memory, extensibility, notifications (user backlog, 2026-08-28)
 
 Captured from the user during the Phase I.5 session. Several items overlap

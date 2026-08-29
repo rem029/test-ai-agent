@@ -1,13 +1,13 @@
 # agentflow Developer Instructions
 
 ## Project Overview
-`agentflow` is a Python-based multi-agent development workflow tool with pluggable LLM backends (Claude Code, Antigravity, OpenRouter) and a local admin web UI (FastAPI + Jinja2 + htmx).
+`agentflow` is a Python-based multi-agent development workflow tool with pluggable LLM backends (Claude Code, Antigravity, OpenRouter) and a local admin web UI (FastAPI JSON API + a zero-build vanilla-JS SPA).
 
 ## Key Architecture Principles
 - **No LLM in coordination loop**: Control flow, step iteration, and git operations are managed in deterministic Python (`orchestrator.py`).
 - **Pluggable backends**: Roles (`review`, `build`, `verify`) are configured in `agentflow.config.yaml` and loaded via Pydantic models (`config.py`).
 - **State persistence**: Workflow runs persist as SQLite snapshots in `~/.agentflow/agentflow.db`.
-- **Web UI**: Zero-build frontend using vendored htmx (`static/htmx.min.js`), server-rendered Jinja2 templates, and vanilla CSS (`style.css`).
+- **Web UI**: Zero-build vanilla-JS SPA (`static/index.html`, `app.js`) talking to the FastAPI JSON API under `/api/*`, with vanilla CSS (`static/styles.css`).
 
 ## Common Commands
 - **Run tests**: `uv run pytest`
@@ -18,5 +18,5 @@
 
 ## Coding & Design Conventions
 - Keep the web UI lightweight with no external CDN or node build runtime dependencies.
-- Retain dark/light mode compatibility and accessible contrast in `style.css`.
+- Retain dark/light mode compatibility and accessible contrast in `static/styles.css`.
 - Ensure new tests in `tests/` mock backend calls and `run_workflow` to keep test suite fast and offline-friendly.
