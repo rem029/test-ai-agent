@@ -3,169 +3,341 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AgentFlow Web UI</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <title>agentflow</title>
+    <link rel="stylesheet" href="/static/console.css">
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container nav-container">
-            <a href="/" class="nav-logo">AgentFlow</a>
-            <div class="nav-links">
-                <a href="/run" data-tab="run" class="nav-link active">Run</a>
-                <a href="/config" data-tab="config" class="nav-link">Config</a>
-                <a href="/health" data-tab="health" class="nav-link">Health</a>
-                <a href="/runs" data-tab="runs" class="nav-link">Runs</a>
-            </div>
+<!--
+  IMPECCABLE DIRECTION CONTRACT — agentflow web console (Phase K)
+
+  THESIS: A run is a recording on a transport, not a chat log wearing a status
+  badge. This console refuses the centered-chat-thread-with-left-sidebar
+  arrangement every agent tool ships. The timeline is the spine; the thread
+  hangs off a playhead position.
+
+  OWN-WORLD: Near-black emissive ground (#0b0d10 / panel #12151a). ONE signal
+  accent — amber #ffb020 — reserved for the single live/active element, never
+  decoration. Role/run state is shown by lane fill and a mono glyph, never by
+  colored pills. The whole console sits on one monospace cell grid (ch / line
+  units); telemetry is tabular-nums. Hairline #23272e dividers, zero card
+  shadows, zero rounded-corner cards. A docked transport bar — the mixing-desk
+  master section — is always present at the bottom.
+
+  STORY: The developer opens a session, sees review / build / verify as three
+  lanes filling along one shared timeline, scrubs the playhead to any past
+  event to read its assistant text, tool calls and diffs, and steers or stops
+  from the docked bar without losing their place.
+
+  FIRST VIEWPORT: Left — narrow session rail (mono list, active row marked with
+  a ›). Centre-top — the timeline: three stacked role lanes, a draggable
+  playhead, ticks on the cell grid. Centre — the event thread for the playhead
+  position: assistant text as markdown, tool calls collapsible, diffs inline at
+  fixed identical scale across iterations. Bottom — docked transport bar: stop
+  ⏹, steer ⏭ input, live cost meter + spinner, right-aligned. Config / tools /
+  MCP are overlay panels invoked from the bar, not routes.
+
+  FORM: Transport / DAW master-section console. Direction 7 of 7 grounded
+  candidates. Seed key: dfedc3e0 (mode operate).
+
+  SIGNATURE INTERACTION: dragging the playhead along the timeline re-binds the
+  thread to that moment (scrub-to-replay off the persisted event log); the live
+  edge snaps the playhead forward as new SSE events arrive unless the user has
+  scrubbed back.
+
+  MOTION GRAMMAR: the playhead advances in real time on a shared clock; lane
+  fill grows left-to-right; the active lane's edge carries a 1px amber pulse;
+  everything else is still. Respect prefers-reduced-motion (freeze the pulse,
+  keep the fill).
+
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the
+  finish review, the verdict, DESIGN.md, and every shipping raster carrying its
+  provenance.
+-->
+
+<!-- Transport SVG Icon Defs (16px grid, 1.5px stroke) -->
+<svg style="display: none;" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <symbol id="icon-stop" viewBox="0 0 16 16">
+      <rect x="3.5" y="3.5" width="9" height="9" fill="currentColor" />
+    </symbol>
+    <symbol id="icon-play" viewBox="0 0 16 16">
+      <polygon points="4,3 13,8 4,13" fill="currentColor" />
+    </symbol>
+    <symbol id="icon-skip" viewBox="0 0 16 16">
+      <polygon points="3,3 10,8 3,13" fill="currentColor" />
+      <rect x="11" y="3" width="2" height="10" fill="currentColor" />
+    </symbol>
+    <symbol id="icon-pause" viewBox="0 0 16 16">
+      <rect x="3.5" y="3" width="3" height="10" fill="currentColor" />
+      <rect x="9.5" y="3" width="3" height="10" fill="currentColor" />
+    </symbol>
+    <symbol id="icon-close" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+    </symbol>
+    <symbol id="icon-chevron-right" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M6 3.5l4.5 4.5L6 12.5" />
+    </symbol>
+    <symbol id="icon-chevron-down" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M3.5 6l4.5 4.5L12.5 6" />
+    </symbol>
+    <symbol id="icon-check" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M2.5 8.5l4 4 7-9" />
+    </symbol>
+    <symbol id="icon-alert" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M8 2.5l6.5 11H1.5L8 2.5zM8 6.5v3M8 11.5v.5" />
+    </symbol>
+    <symbol id="icon-folder" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M2 3.5h4l1.5 2H14v7H2v-9z" />
+    </symbol>
+    <symbol id="icon-wrench" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M13.5 6.5a4 4 0 0 1-5 1.2L4 12.2a1 1 0 0 1-1.4-1.4l4.5-4.5A4 4 0 0 1 8.3 1.3l2.2 2.2-2 2 1.5 1.5 2-2 1.5 1.5z" />
+    </symbol>
+    <symbol id="icon-plug" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M6 1.5v3M10 1.5v3M4 4.5h8v4a4 4 0 0 1-8 0v-4zM8 12.5v2" />
+    </symbol>
+    <symbol id="icon-bell" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M8 2a3 3 0 0 0-3 3v3L3.5 10v1h9v-1L11 8V5a3 3 0 0 0-3-3zM6.5 13a1.5 1.5 0 0 0 3 0" />
+    </symbol>
+    <symbol id="icon-bell-off" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M3.5 10L5 8V5a3 3 0 0 1 4.5-2.6M11 8v.5M12.5 11H5M6.5 13a1.5 1.5 0 0 0 3 0M2 2l12 12" />
+    </symbol>
+    <symbol id="icon-trash" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M3 4.5h10M6 4.5V2.5h4v2M5 4.5v8.5h6V4.5" />
+    </symbol>
+    <symbol id="icon-plus" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M8 3v10M3 8h10" />
+    </symbol>
+    <symbol id="icon-menu" viewBox="0 0 16 16">
+      <path class="icon-stroke" d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />
+    </symbol>
+  </defs>
+</svg>
+
+<div id="app-root">
+    <!-- Topbar -->
+    <header class="topbar">
+        <div class="topbar-left">
+            <button id="mobile-rail-toggle" class="btn-icon mobile-only" title="Toggle sessions" aria-label="Toggle sessions" style="display: none;">
+                <svg class="icon"><use href="#icon-menu"/></svg>
+            </button>
+            <span class="brand">agentflow</span>
             <select id="project-select" class="nav-project" title="Target project" hidden></select>
-            <button id="notify-toggle" class="btn-theme" title="Desktop notifications">🔕</button>
-            <button id="theme-toggle" class="btn-theme">🌙</button>
         </div>
-    </nav>
+        <div class="topbar-right">
+            <button id="notify-toggle" class="btn-icon" title="Desktop notifications" aria-label="Desktop notifications">
+                <svg class="icon" id="notify-icon"><use href="#icon-bell-off"/></svg>
+            </button>
+            <button id="btn-open-tools" class="topbar-btn" title="Tools catalog">tools</button>
+            <button id="btn-open-mcp" class="topbar-btn" title="MCP servers status">mcp</button>
+            <button id="btn-open-config" class="topbar-btn" title="Settings &amp; Configuration">config</button>
+            <span id="topbar-session" class="topbar-session-info mono tabular-nums"></span>
+        </div>
+    </header>
 
-    <main class="container main-container">
-        <!-- Run Section -->
-        <section id="tab-run" class="tab-content active">
-            <h1>Start a New Run</h1>
-            <div class="card">
-                <form id="run-form" class="run-form">
-                    <div class="form-group">
-                        <label for="goal">Goal</label>
-                        <textarea id="goal" name="goal" rows="2" required placeholder="Describe what you want to achieve..."></textarea>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="review_backend">Review Backend</label>
-                            <select id="review_backend" name="review_backend">
-                                <option value="claude-code">Claude Code</option>
-                                <option value="antigravity">Antigravity</option>
-                                <option value="openrouter">OpenRouter</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="review_model">Review Model</label>
-                            <input type="text" id="review_model" name="review_model" placeholder="e.g. claude-3-7-sonnet">
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="build_backend">Build Backend</label>
-                            <select id="build_backend" name="build_backend">
-                                <option value="claude-code">Claude Code</option>
-                                <option value="antigravity" selected>Antigravity</option>
-                                <option value="openrouter">OpenRouter</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="build_model">Build Model</label>
-                            <input type="text" id="build_model" name="build_model" placeholder="e.g. gemini-2.5-flash">
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="verify_backend">Verify Backend</label>
-                            <select id="verify_backend" name="verify_backend">
-                                <option value="claude-code" selected>Claude Code</option>
-                                <option value="antigravity">Antigravity</option>
-                                <option value="openrouter">OpenRouter</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="verify_model">Verify Model</label>
-                            <input type="text" id="verify_model" name="verify_model" placeholder="e.g. claude-3-5-haiku">
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="max_iterations">Max Iterations</label>
-                        <input type="number" id="max_iterations" name="max_iterations" min="1" max="10" value="3">
-                    </div>
-
-                    <button type="submit" class="btn btn-primary">Start Run</button>
-                    <div id="run-status" class="status-message"></div>
-                </form>
+    <!-- Main Workspace Stage -->
+    <div class="main-stage">
+        <!-- Session Rail -->
+        <aside id="session-rail" class="session-rail">
+            <div class="rail-header">
+                <span>Sessions</span>
             </div>
-        </section>
+            <div id="session-list" class="session-list mono"></div>
+            <div class="rail-footer">
+                <button id="btn-new-session" class="btn-new-session mono" type="button">+ new session</button>
+            </div>
+        </aside>
 
-        <!-- Config Section -->
-        <section id="tab-config" class="tab-content">
-            <h2>Configuration</h2>
-            <div class="card">
-                <form id="config-form" class="config-form">
-                    <h3>Review Role</h3>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="config-review_backend">Backend</label>
+        <!-- Center Stage -->
+        <main class="center-column">
+            <!-- Timeline Section (Sticky) -->
+            <div id="timeline-area" class="timeline-area">
+                <div class="timeline-lanes">
+                    <!-- Review Lane -->
+                    <div class="timeline-lane" data-role="review">
+                        <span class="lane-label mono">review</span>
+                        <div class="lane-track">
+                            <div class="lane-fill" id="lane-fill-review"></div>
+                        </div>
+                        <span class="lane-status mono" id="lane-status-review">·</span>
+                        <span class="lane-cost mono tabular-nums" id="lane-cost-review"></span>
+                    </div>
+                    <!-- Build Lane -->
+                    <div class="timeline-lane" data-role="build">
+                        <span class="lane-label mono">build</span>
+                        <div class="lane-track">
+                            <div class="lane-fill" id="lane-fill-build"></div>
+                        </div>
+                        <span class="lane-status mono" id="lane-status-build">·</span>
+                        <span class="lane-cost mono tabular-nums" id="lane-cost-build"></span>
+                    </div>
+                    <!-- Verify Lane -->
+                    <div class="timeline-lane" data-role="verify">
+                        <span class="lane-label mono">verify</span>
+                        <div class="lane-track">
+                            <div class="lane-fill" id="lane-fill-verify"></div>
+                        </div>
+                        <span class="lane-status mono" id="lane-status-verify">·</span>
+                        <span class="lane-cost mono tabular-nums" id="lane-cost-verify"></span>
+                    </div>
+                </div>
+
+                <!-- Playhead Ruler -->
+                <div class="playhead-ruler-wrap">
+                    <div class="ruler-spacer"></div>
+                    <div id="playhead-ruler" class="playhead-ruler" tabindex="0" role="slider" aria-label="Timeline playhead" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+                        <div class="ruler-line"></div>
+                        <div id="ruler-ticks" class="ruler-ticks"></div>
+                        <div id="playhead-thumb" class="playhead-thumb" style="left: 100%;"></div>
+                    </div>
+                    <div class="ruler-meta">
+                        <span id="ruler-time" class="ruler-time mono tabular-nums">00:00</span>
+                        <button id="btn-snap-live" class="btn-snap-live live mono" title="Snap to live edge"><svg class="icon icon-stroke" style="width: 10px; height: 10px; margin-right: 0.3ch;"><use href="#icon-play"/></svg>live</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Scrub Indicator Banner -->
+            <div id="scrub-banner" class="scrub-banner mono" hidden>
+                <span id="scrub-label">scrubbed to 00:00</span>
+                <button id="btn-return-live" class="btn-return-live mono" type="button"><svg class="icon icon-stroke" style="width: 10px; height: 10px; margin-right: 0.3ch;"><use href="#icon-play"/></svg>return to live</button>
+            </div>
+
+            <!-- Event / Step Thread Scroll View -->
+            <div id="thread-area" class="thread-area">
+                <div id="thread-content" class="thread-content">
+                    <div class="empty-thread-block">
+                        <div class="empty-thread-title mono">no runs yet</div>
+                        <div class="empty-thread-sub mono">describe a run in the bar below to start ↓</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Docked Transport Bar -->
+    <footer id="transport-bar" class="transport-bar">
+        <button id="transport-stop" class="btn-transport btn-stop mono" disabled title="Stop active run">
+            <svg class="icon icon-stroke"><use href="#icon-stop"/></svg>
+            <span id="stop-btn-text">stop</span>
+        </button>
+
+        <div class="transport-center">
+            <div id="transport-queue-pill" class="transport-queue-pill mono" hidden>queued — picked up at next step</div>
+            <div class="composer-wrap">
+                <div id="file-mention-popup" class="file-mention-popup mono" hidden></div>
+                <svg class="composer-icon icon icon-stroke"><use href="#icon-skip"/></svg>
+                <input type="text" id="transport-input" class="transport-input mono" placeholder="describe a run to start…" autocomplete="off" spellcheck="false">
+                <button id="transport-send" class="btn-transport btn-send mono" type="button"><svg class="icon icon-stroke" style="width: 12px; height: 12px; margin-right: 0.4ch;"><use href="#icon-play"/></svg>send</button>
+            </div>
+        </div>
+
+        <div class="transport-status mono">
+            <span id="transport-spinner" class="status-spinner">⠋</span>
+            <span id="transport-status-text" class="status-text tabular-nums">idle</span>
+            <button id="btn-cmd-palette" class="btn-cmd-hint mono" title="Open command palette (⌘K / Ctrl-K)">⌘K</button>
+        </div>
+    </footer>
+
+    <!-- Command Palette Floating Dropdown -->
+    <div id="cmd-palette" class="cmd-palette-box" hidden>
+        <input type="text" id="cmd-palette-input" class="cmd-palette-input mono" placeholder="Type a command or jump to session…" autocomplete="off" spellcheck="false">
+        <div id="cmd-palette-results" class="cmd-palette-results mono"></div>
+    </div>
+
+    <!-- Overlay Panels (Config / Tools / MCP) -->
+    <div id="overlay-panel-container" class="overlay-panel-container" hidden>
+        <div class="overlay-header">
+            <span id="overlay-title" class="overlay-title mono">CONFIG</span>
+            <button id="overlay-close" class="btn-icon" aria-label="Close panel">
+                <svg class="icon"><use href="#icon-close"/></svg>
+            </button>
+        </div>
+        <div class="overlay-body">
+            <!-- Configuration Panel -->
+            <div id="panel-config" class="panel-view" hidden>
+                <form id="config-form" class="panel-view">
+                    <!-- Review Role -->
+                    <div class="form-group">
+                        <label>Review Role</label>
+                        <div class="form-row">
                             <select id="config-review_backend" name="review_backend">
                                 <option value="claude-code">Claude Code</option>
                                 <option value="antigravity">Antigravity</option>
                                 <option value="openrouter">OpenRouter</option>
                             </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="config-review_model">Model</label>
-                            <input type="text" id="config-review_model" name="review_model">
+                            <input type="text" id="config-review_model" name="review_model" placeholder="Model (optional)">
                         </div>
                     </div>
 
-                    <h3>Build Role</h3>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="config-build_backend">Backend</label>
+                    <!-- Build Role -->
+                    <div class="form-group">
+                        <label>Build Role</label>
+                        <div class="form-row">
                             <select id="config-build_backend" name="build_backend">
                                 <option value="claude-code">Claude Code</option>
-                                <option value="antigravity">Antigravity</option>
+                                <option value="antigravity" selected>Antigravity</option>
                                 <option value="openrouter">OpenRouter</option>
                             </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="config-build_model">Model</label>
-                            <input type="text" id="config-build_model" name="build_model">
+                            <input type="text" id="config-build_model" name="build_model" placeholder="Model (optional)">
                         </div>
                     </div>
 
-                    <h3>Verify Role</h3>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="config-verify_backend">Backend</label>
+                    <!-- Verify Role -->
+                    <div class="form-group">
+                        <label>Verify Role</label>
+                        <div class="form-row">
                             <select id="config-verify_backend" name="verify_backend">
-                                <option value="claude-code">Claude Code</option>
+                                <option value="claude-code" selected>Claude Code</option>
                                 <option value="antigravity">Antigravity</option>
                                 <option value="openrouter">OpenRouter</option>
                             </select>
+                            <input type="text" id="config-verify_model" name="verify_model" placeholder="Model (optional)">
+                        </div>
+                    </div>
+
+                    <!-- Workflow Controls: Max Iterations, Permissions, Max Cost -->
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label for="config-max_iterations">Max Iterations</label>
+                            <input type="number" id="config-max_iterations" name="max_iterations" min="1" max="10" value="3">
                         </div>
                         <div class="form-group">
-                            <label for="config-verify_model">Model</label>
-                            <input type="text" id="config-verify_model" name="verify_model">
+                            <label for="config-permissions">Permissions</label>
+                            <select id="config-permissions" name="permissions">
+                                <option value="auto">auto</option>
+                                <option value="prompt">prompt</option>
+                                <option value="deny">deny</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="config-max_cost_usd">Max Cost (USD)</label>
+                            <input type="number" id="config-max_cost_usd" name="max_cost_usd" step="0.01" min="0" placeholder="e.g. 2.50 (empty = no limit)">
                         </div>
                     </div>
 
-                    <h3>OpenRouter API Key</h3>
+                    <!-- OpenRouter API Key -->
                     <div class="form-group">
+                        <label>OpenRouter API Key</label>
                         <div id="config-openrouter-status" class="key-status"></div>
-                        <label for="config-openrouter_api_key">Replace key</label>
                         <input type="password" id="config-openrouter_api_key" name="openrouter_api_key" autocomplete="off" placeholder="Paste a new key to replace the current one">
-                        <p class="form-hint">Stored with owner-only permissions in <code>.env</code>. Never shown in full. Leave blank to keep the current key.</p>
+                        <p class="form-hint">Stored with owner-only permissions in <code>agentflow.config.yaml</code>. Never shown in full. Leave blank to keep current key.</p>
                     </div>
 
-                    <h3>Memory</h3>
-                    <p class="form-hint">Standing instructions prepended to every review / build / verify prompt. Stored under <code>~/.agentflow/</code>, never in the target repo.</p>
+                    <!-- Memory -->
                     <div class="form-group">
-                        <label for="config-memory-global">Global (all projects)</label>
-                        <textarea id="config-memory-global" name="memory_global" rows="4" placeholder="e.g. Always run `uv run pytest` before declaring done."></textarea>
+                        <label for="config-memory-global">Global Memory</label>
+                        <textarea id="config-memory-global" name="memory_global" rows="3" placeholder="Standing instructions for all projects..."></textarea>
                     </div>
                     <div class="form-group">
-                        <label for="config-memory-project">This project</label>
-                        <textarea id="config-memory-project" name="memory_project" rows="4" placeholder="Conventions specific to this repository."></textarea>
+                        <label for="config-memory-project">Project Memory</label>
+                        <textarea id="config-memory-project" name="memory_project" rows="3" placeholder="Instructions specific to this repository..."></textarea>
                     </div>
 
-                    <h3>Email Notifications</h3>
+                    <!-- Email Notifications -->
                     <div class="form-group">
                         <label class="checkbox-label">
                             <input type="checkbox" id="config-notify-enabled" name="notify_enabled">
-                            Enable email notifications
+                            <span>Enable email notifications</span>
                         </label>
                     </div>
                     <div class="form-row">
@@ -195,13 +367,13 @@
                         </div>
                         <div class="form-group">
                             <label for="config-notify-base_url">Base URL</label>
-                            <input type="text" id="config-notify-base_url" name="notify_base_url" placeholder="https://agentui.example.com">
+                            <input type="text" id="config-notify-base_url" name="notify_base_url" placeholder="https://agentflow.example.com">
                         </div>
                     </div>
                     <div class="form-group">
                         <label class="checkbox-label">
                             <input type="checkbox" id="config-notify-tls" name="notify_smtp_use_tls" checked>
-                            Use TLS / STARTTLS
+                            <span>Use TLS / STARTTLS</span>
                         </label>
                     </div>
                     <div class="form-group">
@@ -209,72 +381,71 @@
                         <div class="checkbox-row">
                             <label class="checkbox-label">
                                 <input type="checkbox" id="config-notify-on-finished" name="notify_on_finished" checked>
-                                Run finished
+                                <span>Run finished</span>
                             </label>
                             <label class="checkbox-label">
                                 <input type="checkbox" id="config-notify-on-blocked" name="notify_on_blocked">
-                                Fatal blocker
+                                <span>Fatal blocker</span>
                             </label>
                         </div>
                     </div>
                     <div class="form-group">
+                        <label>SMTP Password</label>
                         <div id="config-smtp-status" class="key-status"></div>
-                        <label for="config-smtp_password">SMTP Password</label>
-                        <input type="password" id="config-smtp_password" name="smtp_password" autocomplete="off" placeholder="Paste to replace">
-                        <p class="form-hint">Stored securely in <code>.env</code>. Never shown in full. Leave blank to keep the current password.</p>
+                        <input type="password" id="config-smtp_password" name="smtp_password" autocomplete="off" placeholder="Paste to replace password">
+                        <p class="form-hint">Stored with owner-only permissions in <code>agentflow.config.yaml</code>. Never shown in full. Leave blank to keep current password.</p>
                     </div>
-                    <div class="form-group form-inline-action">
-                        <button type="button" id="send-test-email" class="btn btn-secondary">Send test email</button>
-                        <span id="test-email-status" class="test-email-status"></span>
-                    </div>
-
                     <div class="form-group">
-                        <label for="config-max_iterations">Max Iterations</label>
-                        <input type="number" id="config-max_iterations" name="max_iterations" min="1" max="10" value="3">
+                        <div>
+                            <button type="button" id="send-test-email" class="btn-secondary mono">Send test email</button>
+                            <span id="test-email-status" class="test-email-status mono"></span>
+                        </div>
                     </div>
 
-                    <button type="submit" class="btn btn-primary">Save Config</button>
-                    <div id="config-status" class="status-message"></div>
+                    <!-- MCP Servers Editor -->
+                    <div class="form-group">
+                        <label>MCP Servers</label>
+                        <p class="form-hint">Model Context Protocol server integrations configured for this agent.</p>
+                        <div id="mcp-servers-list" class="mcp-servers-list"></div>
+                        <div style="margin-top: 0.5rem;">
+                            <button type="button" id="btn-add-mcp-server" class="btn-secondary mono">+ add server</button>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="form-actions">
+                        <button type="submit" id="btn-save-config" class="btn-primary mono">save config</button>
+                        <span id="config-status" class="status-message mono"></span>
+                    </div>
                 </form>
             </div>
-        </section>
 
-        <!-- Health Section -->
-        <section id="tab-health" class="tab-content">
-            <h2>Backend Health</h2>
-            <div class="card">
-                <div id="health-list" class="health-list"></div>
+            <!-- Tools Panel -->
+            <div id="panel-tools" class="panel-view" hidden>
+                <p class="form-hint">Tools available to agent backends during workflows.</p>
+                <div id="tools-list"></div>
             </div>
-        </section>
 
-        <!-- Runs Section -->
-        <section id="tab-runs" class="tab-content">
-            <h2>Recent Runs</h2>
-            <div class="card">
-                <div id="runs-list" class="runs-list"></div>
-            </div>
-        </section>
-
-        <!-- Run Detail Section -->
-        <section id="tab-run-detail" class="tab-content">
-            <div class="detail-header">
-                <button id="back-to-runs" class="btn btn-secondary">&larr; Back to Runs</button>
-                <h2 id="detail-goal">Run Detail</h2>
-            </div>
-            <div id="run-detail-content" class="run-detail-content"></div>
-            <div id="session-composer" class="composer" hidden>
-                <h3 id="composer-title">Continue this session</h3>
-                <p class="form-hint" id="composer-hint"></p>
-                <textarea id="composer-input" rows="3" placeholder="What should happen next? e.g. &quot;verify still fails on X — try Y&quot;"></textarea>
-                <div class="composer-actions">
-                    <button type="button" id="composer-send" class="btn btn-primary">Send</button>
-                    <span id="composer-status" class="composer-status"></span>
+            <!-- MCP Status Panel -->
+            <div id="panel-mcp" class="panel-view" hidden>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <p class="form-hint">Live connection status and exposed tools per configured MCP server.</p>
+                    <button type="button" id="btn-recheck-mcp" class="btn-secondary mono">recheck</button>
                 </div>
+                <div id="mcp-list"></div>
             </div>
-        </section>
-    </main>
+        </div>
+    </div>
+</div>
 
-    <script src="/static/md.js"></script>
-    <script src="/static/app.js"></script>
+<!-- Compatibility stubs for legacy test queries -->
+<div id="session-composer" class="composer" hidden>
+    <textarea id="composer-input" hidden></textarea>
+    <button id="composer-send" hidden></button>
+    <span id="composer-status" class="composer-status" hidden></span>
+</div>
+
+<script src="/static/md.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

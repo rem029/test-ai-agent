@@ -437,6 +437,10 @@ def create_app(
         run = load_run(run_id, target_cwd, path=db_path)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
+        active_id = get_active_run(target_cwd)
+        run["is_active"] = (active_id == run_id)
+        if run.get("finished_at") is None and active_id != run_id:
+            run["interrupted"] = True
         return run
 
     @app.get("/api/runs/{run_id}/tool_calls")
@@ -476,6 +480,24 @@ def create_app(
                 except ValueError:
                     last_seq = 0
 
+            # Immediate check before loop: if run is already finished or orphaned/interrupted
+            initial_run = load_run(run_id, target_cwd, path=db_path)
+            if initial_run is not None:
+                if initial_run.get("finished_at") is not None:
+                    events = list_events(run_id, after_seq=last_seq, path=db_path)
+                    for ev in events:
+                        yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev['payload'])}\n\n"
+                    yield "event: done\ndata: {}\n\n"
+                    return
+                active_id = get_active_run(target_cwd)
+                if active_id != run_id:
+                    events = list_events(run_id, after_seq=last_seq, path=db_path)
+                    for ev in events:
+                        yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev['payload'])}\n\n"
+                    yield f"event: interrupted\ndata: {json.dumps({'run_id': run_id, 'interrupted': True})}\n\n"
+                    yield "event: done\ndata: {}\n\n"
+                    return
+
             last_event_time = time.time()
             max_iterations = 7200
             iterations = 0
@@ -492,9 +514,15 @@ def create_app(
                     last_event_time = time.time()
                 else:
                     current_run = load_run(run_id, target_cwd, path=db_path)
-                    if current_run is not None and current_run.get("finished_at") is not None:
-                        yield "event: done\ndata: {}\n\n"
-                        return
+                    if current_run is not None:
+                        if current_run.get("finished_at") is not None:
+                            yield "event: done\ndata: {}\n\n"
+                            return
+                        active_id = get_active_run(target_cwd)
+                        if active_id != run_id:
+                            yield f"event: interrupted\ndata: {json.dumps({'run_id': run_id, 'interrupted': True})}\n\n"
+                            yield "event: done\ndata: {}\n\n"
+                            return
 
                     now = time.time()
                     if now - last_event_time >= 15.0:

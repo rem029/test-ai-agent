@@ -296,7 +296,7 @@ def test_static_assets_contain_tool_req_support(tmp_path):
     assert "renderToolReq" in js_resp.text
     assert "tool-req-name" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".tool-req" in css_resp.text
     assert ".tool-req-name" in css_resp.text
@@ -368,6 +368,57 @@ def test_js_split_tool_blocks_via_node():
     if (r8.requests.length !== 2 || r8.requests[0].name !== 'ReadFile' || r8.requests[1].name !== 'WriteFile' || r8.prose !== '' || r8.prose.includes('<') || r8.prose.includes('DSML')) {
         process.exit(8);
     }
+
+    // 9. Well-formed step header with role, backend, model, cost, iter, and verdict PASS
+    const verifyStep = {
+        role: 'verify',
+        iteration: 2,
+        text: 'All tests pass.\\nVERIFY_RESULT: PASS',
+        usage: { backend: 'openrouter', model: 'deepseek/deepseek-chat', cost_usd: 0.0142 }
+    };
+    const vHtml = app.renderStep(verifyStep, 0);
+    if (!vHtml.includes('step-role') || !vHtml.includes('verify') || !vHtml.includes('iter 2') || !vHtml.includes('PASS') || !vHtml.includes('openrouter · deepseek/deepseek-chat') || !vHtml.includes('$0.0142')) {
+        process.exit(9);
+    }
+
+    // 10. Failed verify step
+    const failStep = {
+        role: 'verify',
+        iteration: 1,
+        text: 'Tests failed.\\nVERIFY_RESULT: FAIL',
+        usage: { backend: 'claude-code', model: 'claude-3-7-sonnet', cost_usd: 0.005 }
+    };
+    const fHtml = app.renderStep(failStep, 1);
+    if (!fHtml.includes('FAIL') || !fHtml.includes('claude-code · claude-3-7-sonnet')) {
+        process.exit(10);
+    }
+
+    // 11. renderRunHeader with full goal, state, cost, duration, and role models
+    const testRun = {
+        run_id: 'run-xyz-12345678',
+        goal: 'Add an awesome new tape header block to the Transport console with full prompt text.',
+        started_at: 100.0,
+        finished_at: 220.0,
+        config: {
+            review: { backend: 'claude-code' },
+            build: { backend: 'openrouter', model: 'deepseek-chat' },
+            verify: { backend: 'antigravity' }
+        },
+        steps: [
+            { role: 'review', usage: { cost_usd: 0.01 } },
+            { role: 'build', usage: { cost_usd: 0.03 } }
+        ]
+    };
+    const hdrHtml = app.renderRunHeader(testRun);
+    if (!hdrHtml.includes('GOAL') ||
+        !hdrHtml.includes('Add an awesome new tape header block to the Transport console with full prompt text.') ||
+        !hdrHtml.includes('run-xyz-12345678') ||
+        !hdrHtml.includes('completed') ||
+        !hdrHtml.includes('02:00') ||
+        !hdrHtml.includes('$0.04') ||
+        !hdrHtml.includes('review claude-code · build openrouter/deepseek-chat · verify antigravity')) {
+        process.exit(11);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
@@ -426,7 +477,7 @@ def test_spa_catch_all_and_404(tmp_path):
         resp = client.get(path)
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert 'id="run-form"' in resp.text or 'class="nav-logo"' in resp.text
+        assert 'class="brand"' in resp.text or 'id="transport-bar"' in resp.text
 
     # Unknown /api routes must return 404 JSON, NOT html
     api_404 = client.get("/api/nonesuch")
@@ -582,7 +633,7 @@ def test_static_assets_contain_notify_and_blockers(tmp_path):
     assert "blocker" in js_resp.text
     assert "step-noresponse" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".blockers" in css_resp.text
     assert ".blocker" in css_resp.text
@@ -680,7 +731,7 @@ def test_static_assets_contain_openrouter_key_ui(tmp_path):
     assert "config-openrouter-status" in js_resp.text
     assert "openrouter_api_key" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".key-status" in css_resp.text
     assert ".key-source" in css_resp.text
@@ -914,7 +965,7 @@ def test_static_assets_contain_project_selector_ui(tmp_path):
     assert 'id="project-select"' in html_resp.text
     assert 'class="nav-project"' in html_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".nav-project" in css_resp.text
 
@@ -1136,7 +1187,7 @@ def test_static_assets_contain_session_composer_and_thread(tmp_path):
     assert "session-thread" in js_resp.text
     assert "renderSessionThread" in js_resp.text
 
-    css_resp = client.get("/static/styles.css")
+    css_resp = client.get("/static/console.css")
     assert css_resp.status_code == 200
     assert ".session-thread" in css_resp.text
     assert ".composer" in css_resp.text
@@ -1298,7 +1349,7 @@ def test_api_run_stream_keepalive(tmp_path):
                 in_mock = False
             return 130.0
 
-    with patch("agentflow.web.app.time.time", side_effect=mock_time):
+    with patch("agentflow.web.app.time.time", side_effect=mock_time), patch("agentflow.web.app.get_active_run", return_value="run-stream-live"):
         resp = client.get("/api/runs/run-stream-live/stream")
         assert resp.status_code == 200
         assert ": keepalive\n\n" in resp.text
@@ -1582,6 +1633,42 @@ def test_api_files_endpoint(tmp_path):
     assert "file1.txt" in files
     assert "README.md" in files
     assert "src/app.py" in files
+
+
+def test_api_run_stream_interrupted_orphan_run(tmp_path):
+    """An orphaned run with finished_at None that is not the active run should emit interrupted and done."""
+    from agentflow.orchestrator import RunState
+    from agentflow.database import save_run, append_event
+
+    db = tmp_path / "agentflow.db"
+    run = RunState(
+        run_id="run-orphan-1",
+        session_id="sess-orphan-1",
+        goal="Orphaned zombie task",
+        config={},
+        started_at=1000.0,
+        finished_at=None,  # unfinished
+        steps=[],
+    )
+    save_run(run, str(tmp_path), db)
+    append_event("run-orphan-1", 1, "step_started", {"role": "review"}, path=db)
+
+    client = _make_client(tmp_path)
+
+    # 1. run_detail returns interrupted=True
+    detail = client.get("/api/runs/run-orphan-1").json()
+    assert detail["interrupted"] is True
+    assert detail["is_active"] is False
+
+    # 2. SSE stream emits events, interrupted event, and done
+    with client.stream("GET", "/api/runs/run-orphan-1/stream") as response:
+        assert response.status_code == 200
+        content = "".join(list(response.iter_text()))
+        assert "event: step_started" in content
+        assert "event: interrupted" in content
+        assert "event: done" in content
+
+
 
 
 
