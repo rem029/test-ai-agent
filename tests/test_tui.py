@@ -1122,6 +1122,22 @@ def test_parse_perm_answer():
     assert _parse_perm_answer("random_garbage") == "deny"
 
 
+def test_fmt_elapsed(monkeypatch):
+    from agentflow.tui.repl import _fmt_elapsed
+
+    assert _fmt_elapsed(None) == "0s"
+    assert _fmt_elapsed(0.0) == "0s"
+
+    monkeypatch.setattr(time, "monotonic", lambda: 105.0)
+    assert _fmt_elapsed(100.0) == "5s"
+
+    monkeypatch.setattr(time, "monotonic", lambda: 165.0)
+    assert _fmt_elapsed(100.0) == "1:05"
+
+    monkeypatch.setattr(time, "monotonic", lambda: 3705.0)
+    assert _fmt_elapsed(100.0) == "60:05"
+
+
 def test_turn_toolbar_hidden_when_worker_done():
     from agentflow.tui.repl import _turn_toolbar
 
@@ -1133,16 +1149,59 @@ def test_turn_toolbar_hidden_when_worker_done():
 
 
 def test_turn_toolbar_shows_role_when_alive():
+    from prompt_toolkit.formatted_text import to_plain_text
+
     from agentflow.tui.repl import _turn_toolbar
 
     fake_worker = MagicMock()
     fake_worker.is_alive.return_value = True
-    tstate = {"last_role": "build", "cost": 0.042}
+    tstate = {"last_role": "build", "cost": 0.042, "start": time.monotonic()}
 
     bar = _turn_toolbar(tstate, fake_worker)
-    assert "build working" in bar
-    assert "$0.0420" in bar
-    assert "Ctrl+C stop" in bar
+    plain = to_plain_text(bar)
+    assert "build" in plain
+    assert "working" in plain
+    assert "$0.0420" in plain
+    assert "Ctrl+C" in plain
+    assert "0s" in plain or "s" in plain
+
+
+def test_turn_prompt_message_shows_spinner_when_running():
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    from agentflow.tui.permissions import PermissionRequest
+    from agentflow.tui.repl import _turn_prompt_message
+
+    fake_worker = MagicMock()
+    fake_worker.is_alive.return_value = True
+    tstate = {"last_role": "build", "cost": 0.042, "start": time.monotonic()}
+    pending_perm = {"req": None}
+
+    # Worker alive -> HTML rendered text contains role + › + an s/: elapsed token
+    msg = _turn_prompt_message(tstate, fake_worker, pending_perm)
+    plain = to_plain_text(msg)
+    assert "build" in plain
+    assert "›" in plain
+    assert "$0.0420" in plain
+    assert "Ctrl+C to interrupt" in plain
+    assert "0s" in plain or "s" in plain
+
+    # pending_perm["req"] set -> returns the permission string containing the tool name
+    req = PermissionRequest(tool_name="WriteFile", args={"path": "main.py"})
+    pending_perm["req"] = req
+    msg_perm = _turn_prompt_message(tstate, fake_worker, pending_perm)
+    assert isinstance(msg_perm, str)
+    assert "WriteFile" in msg_perm
+    assert "allow" in msg_perm
+    assert "[d]eny" in msg_perm
+
+    # worker done + no perm -> just ›
+    pending_perm["req"] = None
+    fake_worker.is_alive.return_value = False
+    msg_done = _turn_prompt_message(tstate, fake_worker, pending_perm)
+    plain_done = to_plain_text(msg_done)
+    assert "›" in plain_done
+    assert "build" not in plain_done
 
 
 def test_perm_prompt_message():
