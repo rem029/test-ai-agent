@@ -58,6 +58,26 @@ def run_checks(config_path: str) -> int:
     return 0 if ok else 1
 
 
+def _apply_overrides(config, args):
+    if args.permissions:
+        config.permissions = args.permissions
+    if args.max_cost_usd is not None:
+        config.max_cost_usd = args.max_cost_usd
+    if args.review_backend:
+        config.review.backend = args.review_backend
+    if args.review_model is not None:
+        config.review.model = args.review_model or None
+    if args.build_backend:
+        config.build.backend = args.build_backend
+    if args.build_model is not None:
+        config.build.model = args.build_model or None
+    if args.verify_backend:
+        config.verify.backend = args.verify_backend
+    if args.verify_model is not None:
+        config.verify.model = args.verify_model or None
+    return config
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentflow")
     parser.add_argument("goal", nargs="?", help="The goal to work toward")
@@ -333,12 +353,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    if args.check or (not args.goal and not args.resume):
+    if args.check:
         return run_checks(config_path)
-
-    if args.resume and not args.goal:
-        print("Error: goal is required when resuming a session", file=sys.stderr)
-        return 1
 
     if args.resume:
         from .database import get_session
@@ -348,22 +364,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     config = load_config(config_path)
-    if args.permissions:
-        config.permissions = args.permissions
-    if args.max_cost_usd is not None:
-        config.max_cost_usd = args.max_cost_usd
-    if args.review_backend:
-        config.review.backend = args.review_backend
-    if args.review_model is not None:
-        config.review.model = args.review_model or None
-    if args.build_backend:
-        config.build.backend = args.build_backend
-    if args.build_model is not None:
-        config.build.model = args.build_model or None
-    if args.verify_backend:
-        config.verify.backend = args.verify_backend
-    if args.verify_model is not None:
-        config.verify.model = args.verify_model or None
+    _apply_overrides(config, args)
+
+    if not args.goal:
+        from .tui import run_repl
+
+        return run_repl(config, cwd=os.getcwd(), session_id=args.resume)
 
     try:
         state = run_workflow(args.goal, config, cwd=os.getcwd(), session_id=args.resume)

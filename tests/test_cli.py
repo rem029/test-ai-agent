@@ -292,5 +292,54 @@ def test_cli_test_email_success(capsys):
         assert "Test email: sent" in captured.out
 
 
+def test_cli_bare_invocation_starts_repl():
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    with (
+        patch("agentflow.cli.load_config", return_value=mock_config),
+        patch("agentflow.tui.run_repl", return_value=0) as mock_repl,
+        patch("agentflow.cli.run_checks") as mock_checks,
+    ):
+        ret = main([])
+        assert ret == 0
+        mock_repl.assert_called_once_with(mock_config, cwd=os.getcwd(), session_id=None)
+        mock_checks.assert_not_called()
+
+
+def test_cli_check_flag_runs_checks():
+    with patch("agentflow.cli.run_checks", return_value=0) as mock_checks:
+        ret = main(["--check"])
+        assert ret == 0
+        mock_checks.assert_called_once()
+
+
+def test_cli_resume_without_goal_starts_repl():
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    with (
+        patch("agentflow.cli.load_config", return_value=mock_config),
+        patch("agentflow.database.get_session", return_value={"session_id": "sid-123"}),
+        patch("agentflow.tui.run_repl", return_value=0) as mock_repl,
+    ):
+        ret = main(["--resume", "sid-123"])
+        assert ret == 0
+        mock_repl.assert_called_once_with(mock_config, cwd=os.getcwd(), session_id="sid-123")
+
+
+def test_cli_resume_missing_session_fails(capsys):
+    with patch("agentflow.database.get_session", return_value=None):
+        ret = main(["--resume", "nonexistent-sid"])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "Error: session not found: nonexistent-sid" in captured.err
+
+
+
 
 

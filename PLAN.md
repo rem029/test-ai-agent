@@ -466,7 +466,7 @@ projects.
 
 ## Status
 
-Phases A, B, C, D, E, F, and G are done.
+Phases A, B, C, D, E, F, G, and J are done.
 
 ---
 
@@ -813,6 +813,16 @@ interactive REPL (the one-shot `agentflow "<goal>"` form stays).
 - Session resume from SQLite; cost/token footer per turn.
 - Rendering via `rich`/`textual` + `prompt_toolkit` (presentation libraries,
   not agent frameworks - consistent with the hand-rolled-orchestrator rule).
+
+**Status (2026-08-29):** implemented on branch `phase-j`.
+- `permission_handler` injection in `orchestrator.py` (`run_workflow` -> `_run_with_tools` -> `_check_tool_permission`) for interactive mutating tool confirmations without breaking backward compatibility.
+- `src/agentflow/tui/render.py`: pure rendering helpers (`format_event`, `format_diff`, `truncate_output`, `format_footer`, `session_cost`).
+- `src/agentflow/tui/permissions.py`: `SessionPermissionBroker` coordinating cross-thread tool approval requests (`allow`, `allow_session`, `deny`).
+- `src/agentflow/tui/commands.py`: pure slash-command parser and dispatcher (`/help`, `/model`, `/config`, `/tools`, `/resume`, `/clear`, `/cost`, `/exit`, `/quit`).
+- `src/agentflow/tui/repl.py`: `run_repl` interactive loop with prompt_toolkit history, live event streaming, non-blocking broker servicing, and Ctrl+C step-interruption.
+- CLI wiring in `src/agentflow/cli.py`: bare invocation or `--resume <session>` without goal launches the REPL, preserving one-shot goal execution.
+- 263 tests pass (`+35` tests in `test_tui.py`, `test_cli.py`, `test_sessions_events.py`).
+
 
 ## Phase K - Web console rewrite (OpenCode-like)
 

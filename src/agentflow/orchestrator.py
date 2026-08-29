@@ -16,6 +16,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Callable
 
 try:
     import fcntl
@@ -327,16 +328,29 @@ def _execute_tool_call(name: str, args: dict, cwd: str) -> ToolResult:
 
 
 def _check_tool_permission(
-    tool_name: str, args: dict, permissions_policy: str
+    tool_name: str,
+    args: dict,
+    permissions_policy: str,
+    permission_handler: Callable[[str, dict], str] | None = None,
 ) -> tuple[bool, str | None]:
     """Check tool execution against permission policy.
 
     Read-only tools are always auto-allowed.
-    Mutating tools follow permissions_policy ('auto' | 'prompt' | 'deny').
+    If permission_handler is provided and the tool is mutating:
+      permission_handler(tool_name, args) is called.
+      "allow" and "allow_session" return (True, None).
+      "deny" returns (False, f"Permission denied by user for tool '{tool_name}'.").
+    Otherwise follows permissions_policy ('auto' | 'prompt' | 'deny').
     In non-interactive environments, 'prompt' acts as 'deny'.
     """
     if tool_name in READ_ONLY_TOOLS:
         return True, None
+
+    if permission_handler is not None:
+        decision = permission_handler(tool_name, args)
+        if decision in ("allow", "allow_session"):
+            return True, None
+        return False, f"Permission denied by user for tool '{tool_name}'."
 
     if permissions_policy == "deny":
         return (
@@ -403,6 +417,7 @@ def _run_with_tools(
     max_calls: int = MAX_TOOL_CALLS_PER_STEP,
     config: Config | None = None,
     database_path: Path | None = None,
+    permission_handler: Callable[[str, dict], str] | None = None,
 ) -> RunResult:
     """Run a backend prompt, executing any requested tools iteratively with structured conversation."""
     initial_content = f"{prompt}\n\n{TOOL_USE_INSTRUCTIONS}{_tool_schemas_text()}"
@@ -559,7 +574,9 @@ def _run_with_tools(
                 database_path=database_path,
             )
 
-            allowed, reason = _check_tool_permission(req.name, req.args, policy)
+            allowed, reason = _check_tool_permission(
+                req.name, req.args, policy, permission_handler=permission_handler
+            )
             if not allowed:
                 state.add_blocker("permission", reason or "", fatal=False, step_index=step_index, database_path=database_path)
                 tool_result = ToolResult(success=False, error=reason)
@@ -805,6 +822,7 @@ def run_workflow(
     session_id: str | None = None,
     database_path: Path | None = None,
     require_lock: bool = True,
+    permission_handler: Callable[[str, dict], str] | None = None,
 ) -> RunState:
     resolved_cwd = str(Path(cwd).resolve())
     lock = _get_run_lock(resolved_cwd)
@@ -962,6 +980,7 @@ def run_workflow(
             step_index=0,
             config=config,
             database_path=database_path,
+            permission_handler=permission_handler,
         )
         tool_count, tool_names = _step_tool_summary(state, 0)
         rec_review = _record(
@@ -1063,6 +1082,7 @@ def run_workflow(
                 step_index=iteration,
                 config=config,
                 database_path=database_path,
+                permission_handler=permission_handler,
             )
             tool_count, tool_names = _step_tool_summary(state, iteration)
             rec_build = _record(
@@ -1128,6 +1148,7 @@ def run_workflow(
                 step_index=iteration,
                 config=config,
                 database_path=database_path,
+                permission_handler=permission_handler,
             )
             tool_count, tool_names = _step_tool_summary(state, iteration)
             rec_verify = _record(
