@@ -301,6 +301,21 @@ vs-API-key billing as a first-class design constraint (Findings #1/#2), and
 per-role token/cost tracking from day one (see "Cost & token tracking per
 task").
 
+## Branch workflow
+
+Every phase is done on its own branch, not directly on `dev`:
+
+1. `git checkout dev && git pull` — start from the current tip of `dev`.
+2. `git checkout -b phase-<n>` (e.g. `phase-j`, `phase-l7`) — one branch per
+   phase, branched from `dev`.
+3. Implement, test (`uv run pytest`), and commit on that branch.
+4. Merge back into `dev` once the phase is reviewed and green; `dev` stays
+   the integration branch. Do not commit phase work straight to `dev`.
+
+Small follow-up fixes to an already-merged phase can go on a short-lived
+`<phase>-<topic>` branch (e.g. `deepseek-toolcalls`, `followup-composer`)
+branched from `dev` and merged back the same way.
+
 ## Task breakdown
 
 Broken into phases so infrastructure lands first and can be reviewed before
