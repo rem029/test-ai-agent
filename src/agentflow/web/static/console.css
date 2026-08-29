@@ -360,10 +360,24 @@ button:focus-visible,
   font-size: 11px;
   padding-left: 1.8ch;
   display: flex;
-  gap: 1ch;
+  align-items: center;
+  gap: 0.8ch;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .session-row.active .session-row-meta {
+  color: var(--text-secondary);
+}
+
+.session-date {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.session-row.active .session-date {
   color: var(--text-secondary);
 }
 

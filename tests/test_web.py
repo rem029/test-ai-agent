@@ -419,6 +419,17 @@ def test_js_split_tool_blocks_via_node():
         !hdrHtml.includes('review claude-code · build openrouter/deepseek-chat · verify antigravity')) {
         process.exit(11);
     }
+
+    // 12. formatSessionDate helper
+    const nowTs = Date.now() / 1000;
+    const todayRes = app.formatSessionDate(nowTs);
+    if (!todayRes || !todayRes.text || !todayRes.fullTitle || !todayRes.text.includes(':')) {
+        process.exit(12);
+    }
+    const pastYearRes = app.formatSessionDate(1600000000); // 2020-09-13
+    if (!pastYearRes || !pastYearRes.text.includes('2020') || !pastYearRes.text.includes('Sep 13')) {
+        process.exit(13);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"

@@ -229,6 +229,8 @@ function renderSessionRail() {
         const title = escapeHtml(cleanSessionTitle(rawTitle, s.session_id));
         const runsCount = s.run_count || (s.runs && s.runs.length) || 1;
         const costStr = typeof s.total_cost === 'number' ? `$${s.total_cost.toFixed(2)}` : '$0.00';
+        const ts = typeof s.updated_at === 'number' ? s.updated_at : (typeof s.created_at === 'number' ? s.created_at : (s.runs && s.runs[0] && s.runs[0].started_at));
+        const dateInfo = formatSessionDate(ts);
 
         return `
             <div class="session-row ${isActive ? 'active' : ''}" data-session-id="${escapeHtml(s.session_id)}" title="${escapeHtml(rawTitle)}">
@@ -240,6 +242,7 @@ function renderSessionRail() {
                     <span>${runsCount} run${runsCount === 1 ? '' : 's'}</span>
                     <span>·</span>
                     <span>${costStr}</span>
+                    ${dateInfo ? `<span class="session-date" title="${escapeHtml(dateInfo.fullTitle)}">${escapeHtml(dateInfo.text)}</span>` : ''}
                 </div>
             </div>
         `;
@@ -2276,6 +2279,38 @@ function formatUnifiedDuration(sec) {
     return `${h}h ${String(remM).padStart(2, '0')}m`;
 }
 
+function formatSessionDate(ts) {
+    if (ts === null || ts === undefined || typeof ts !== 'number' || isNaN(ts) || ts <= 0) {
+        return null;
+    }
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return null;
+
+    const now = new Date();
+    const isToday = d.getFullYear() === now.getFullYear() &&
+                    d.getMonth() === now.getMonth() &&
+                    d.getDate() === now.getDate();
+    const isSameYear = d.getFullYear() === now.getFullYear();
+
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = MONTHS[d.getMonth()];
+    const day = d.getDate();
+    const year = d.getFullYear();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+
+    let text = '';
+    if (isToday) {
+        text = `${hh}:${mm}`;
+    } else if (isSameYear) {
+        text = `${month} ${day}`;
+    } else {
+        text = `${month} ${day} ${year}`;
+    }
+    const fullTitle = d.toLocaleString();
+    return { text, fullTitle };
+}
+
 function verifyVerdict(text) {
     const m = String(text || '').match(/VERIFY_RESULT:\s*(PASS|FAIL)/i);
     return m ? m[1].toUpperCase() : null;
@@ -2667,6 +2702,7 @@ if (typeof module !== 'undefined' && module.exports) {
         loadRuns,
         runStatus,
         formatUnifiedDuration,
+        formatSessionDate,
         loadMemory,
         submitConfig,
         NOTIFY_KEY,
