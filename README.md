@@ -13,8 +13,81 @@ available.
 
 ## Install
 
+`agentflow` is a standard Python package with a console-script entry point
+(`agentflow`). Install it as a tool so the command is available from any
+directory, the same way the `claude` CLI works:
+
 ```bash
-uv sync
+uv tool install /path/to/test-ai-agent
+```
+
+This puts an `agentflow` launcher in `~/.local/bin`. Make sure that directory
+is on your `PATH` (`uv tool update-shell` adds it if needed). After that:
+
+```bash
+cd ~/some/other/repo
+agentflow --check
+agentflow "Add a CONTRIBUTING guide"
+```
+
+Like `claude`, `agentflow` operates on the current working directory as the
+target repository: all file edits, test runs, and git operations happen there.
+It reads `agentflow.config.yaml` from that directory (or use `--config`).
+
+Alternatives:
+
+```bash
+uv tool install -e /path/to/test-ai-agent   # editable: code changes apply without reinstalling
+pipx install /path/to/test-ai-agent         # if you prefer pipx
+```
+
+To upgrade or remove a tool install:
+
+```bash
+uv tool upgrade agentflow
+uv tool uninstall agentflow
+```
+
+## Development
+
+Work on agentflow from a clone of the repository:
+
+```bash
+git clone <repo-url> test-ai-agent
+cd test-ai-agent
+uv sync            # create .venv and install runtime + dev dependencies
+```
+
+Run the CLI from source without installing it globally:
+
+```bash
+uv run agentflow --check
+uv run agentflow "Improve error handling in the CLI"
+```
+
+Run the test suite and benchmarks:
+
+```bash
+uv run pytest
+uv run python benchmarks/tool_loop_bench.py
+```
+
+Start the web UI against your local checkout:
+
+```bash
+uv run agentflow --serve                          # http://127.0.0.1:8420
+uv run agentflow --serve --host 0.0.0.0 --port 4200   # container / remote code-server
+```
+
+`--host 0.0.0.0` is required when the dev environment runs inside a container
+(for example a Coolify-hosted code-server) so the port is reachable from
+outside the container.
+
+If you want a global `agentflow` command that tracks your working changes,
+install it editable and it will pick up edits without reinstalling:
+
+```bash
+uv tool install -e .
 ```
 
 ## Configure
