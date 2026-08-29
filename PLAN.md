@@ -921,6 +921,12 @@ reuse the same input line modally. Non-tty / tests use `_turn_drain_only`
 into `_process_new_events`. `_read_pending_line` removed. 330 tests pass
 (`-5` read-pending, `+6` async-turn).
 
+**Fix (branch `phase-j.5a-render-fix`):** `patch_stdout()` defaults to
+`raw=False`, which sanitized the VT100 escapes `rich` emits — mid-run output
+showed literal `?[36m` codes and didn't wrap. Now `patch_stdout(raw=True)`
+and the in-turn `Console` gets an explicit `shutil.get_terminal_size()`
+width. 336 tests pass.
+
 ### J.5b - Persistent bottom status bar + richer footer
 
 `format_footer()` (`render.py:212`) already computes per-backend
@@ -975,6 +981,22 @@ below). 329 tests pass (`+10` in `tests/test_tui.py` section 10).
   (J.5a) stays plain — no completion.
 - Literal passthrough: `@path` tokens go into the goal string as-is; the
   agent's Read tools act on them. No REPL-side expansion.
+
+**Follow-ups (2026-08-29):**
+- `phase-j.6-dotfile-ranking`: `_score` reworked into match tiers (exact
+  basename > basename-prefix > path-segment-prefix > basename-substring >
+  path-substring > subsequence, then shorter path, then alpha) so `@.` and
+  `@.gi` surface dotfiles instead of burying them under files that merely
+  contain a `.`. Also stopped the `os.walk` fallback dropping `.github/`
+  etc. Plus a `worker.join(timeout=5)` in `_execute_turn` (fixes a flaky
+  final-footer race). 332 tests.
+- `phase-j.6-include-ignored`: `_list_project_files` now runs `git ls-files
+  --others` **without** `--exclude-standard` (tracked + untracked +
+  gitignored), pruned by a `NOISE_DIRS` denylist (`.venv`, `node_modules`,
+  `__pycache__`, `dist`, `build`, `.egg-info`, …), 8000-cap. Directory
+  entries (trailing `/`) are derived and offered; scorer strips the `/`
+  before tiering; `display_meta` is `"dir"`. This is why a gitignored
+  scratch dir like `.test/` now completes. 335 tests.
 
 ### Autocomplete
 - Extend the completer in `tui/completion.py`. Today `SlashCommandCompleter`
