@@ -1419,9 +1419,44 @@ def test_file_mention_completer_midline():
         assert c.start_position == -6
 
 
+def test_file_mention_completer_dotfile_prefix():
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from agentflow.tui.completion import FileMentionCompleter
+
+    files = [
+        ".gitignore",
+        ".github/copilot.md",
+        ".env.example",
+        "PLAN.md",
+        "README.md",
+        "src/app.py",
+    ]
+    completer = FileMentionCompleter(cwd="/fake", file_lister=lambda: files)
+
+    # "@.gi" -> .gitignore (tier 1: basename prefix) ranks before .github/copilot.md (tier 2: segment prefix)
+    completions_gi = list(
+        completer.get_completions(Document("@.gi", len("@.gi")), CompleteEvent())
+    )
+    texts_gi = [c.text for c in completions_gi]
+    assert texts_gi == [".gitignore", ".github/copilot.md"]
+    assert "PLAN.md" not in texts_gi
+    assert "README.md" not in texts_gi
+    assert "src/app.py" not in texts_gi
+
+    # "@." -> dotfile / dot-dir matches rank before normal files containing '.'
+    completions_dot = list(
+        completer.get_completions(Document("@.", len("@.")), CompleteEvent())
+    )
+    texts_dot = [c.text for c in completions_dot]
+    assert texts_dot[:3] == [".gitignore", ".env.example", ".github/copilot.md"]
+    assert set(texts_dot[3:]) == {"PLAN.md", "README.md", "src/app.py"}
+
+
 def test_list_project_files_git(tmp_path):
     import shutil
     import subprocess
+    import pytest
     from agentflow.tui.completion import _list_project_files
 
     if not shutil.which("git"):
@@ -1470,6 +1505,23 @@ def test_list_project_files_fallback(tmp_path):
 
     files = _list_project_files(str(plain_dir))
     assert files == ["README.md", "src/app.py"]
+
+
+def test_list_project_files_keeps_dot_dirs(tmp_path):
+    from agentflow.tui.completion import _list_project_files
+
+    plain_dir = tmp_path / "plain_with_dotdirs"
+    plain_dir.mkdir()
+    (plain_dir / ".github" / "workflows").mkdir(parents=True)
+    (plain_dir / ".github" / "workflows" / "ci.yml").write_text("name: CI")
+    (plain_dir / ".git").mkdir()
+    (plain_dir / ".git" / "HEAD").write_text("ref: refs/heads/main")
+    (plain_dir / "src").mkdir()
+    (plain_dir / "src" / "app.py").write_text("print(1)")
+
+    files = _list_project_files(str(plain_dir))
+    assert files == [".github/workflows/ci.yml", "src/app.py"]
+    assert not any(f.startswith(".git/") or f == ".git" for f in files)
 
 
 def test_merged_completer_in_repl():

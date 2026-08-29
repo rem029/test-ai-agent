@@ -460,6 +460,8 @@ def _execute_turn(
             run_box=run_box,
         )
 
+    worker.join(timeout=5.0)
+
     final_state = run_box["state"]
     if final_state is None:
         final_state = reconstruct_run(run_id, path=database_path)
