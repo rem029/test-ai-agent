@@ -120,3 +120,121 @@ def test_no_tool_requests_skips_loop(cwd):
 
     assert state.steps[0]["success"] is True
     assert len(state.tool_calls) == 0
+
+
+def test_unparsed_tool_call_retries_and_executes(cwd):
+    (Path(cwd) / "src").mkdir()
+    (Path(cwd) / "src" / "foo.py").write_text("hello world")
+
+    config = Config(
+        review=RoleConfig(backend="openrouter"),
+        build=RoleConfig(backend="openrouter"),
+        verify=RoleConfig(backend="openrouter"),
+    )
+
+    unparsed_text = """<｜DSML｜tool_call>
+<｜DSML｜invoke>123notaname</｜DSML｜invoke>
+</｜DSML｜tool_call>"""
+    proper_tool_text = """<tool_call>
+{"name": "ReadFile", "args": {"path": "src/foo.py"}}
+</tool_call>"""
+    review_final = "Plan: read the file."
+    build_text = "Built the changes. VERIFY_RESULT: PASS"
+    verify_text = "VERIFY_RESULT: PASS"
+
+    with patch("agentflow.orchestrator.BACKENDS") as mock_backends:
+        backend = _make_backend_responses([
+            unparsed_text,
+            proper_tool_text,
+            review_final,
+            build_text,
+            verify_text,
+        ])
+        mock_backends.__getitem__ = MagicMock(return_value=lambda model: backend)
+
+        with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
+            with patch("agentflow.orchestrator._repo_context", return_value=""):
+                state = run_workflow("test goal", config, cwd, database_path=Path(cwd) / "test.db")
+
+    assert len(state.tool_calls) >= 1
+    assert state.tool_calls[0]["tool_name"] == "ReadFile"
+    assert state.tool_calls[0]["args"] == {"path": "src/foo.py"}
+    assert "hello world" in state.tool_calls[0]["result"]["output"]
+
+    # Verify tool_parse_failed event was logged
+    from agentflow.database import list_events
+    events = list_events(state.run_id, path=Path(cwd) / "test.db")
+    parse_failed_events = [e for e in events if e.get("type") == "tool_parse_failed"]
+    assert len(parse_failed_events) == 1
+    assert parse_failed_events[0]["payload"]["step_index"] == 0
+    assert "123notaname" in parse_failed_events[0]["payload"]["snippet"]
+
+
+def test_tool_loop_executes_format_b(cwd):
+    (Path(cwd) / "src").mkdir()
+    (Path(cwd) / "src" / "foo.py").write_text("format b content")
+
+    config = Config(
+        review=RoleConfig(backend="openrouter"),
+        build=RoleConfig(backend="openrouter"),
+        verify=RoleConfig(backend="openrouter"),
+    )
+
+    format_b_text = """<｜DSML｜tool_call>
+<｜DSML｜invoke>ReadFile</｜DSML｜invoke>
+<｜DSML｜invoke>{"path": "src/foo.py"}</｜DSML｜invoke>
+</｜DSML｜tool_call>"""
+    review_final = "Plan: format b read."
+    build_text = "Built the changes. VERIFY_RESULT: PASS"
+    verify_text = "VERIFY_RESULT: PASS"
+
+    with patch("agentflow.orchestrator.BACKENDS") as mock_backends:
+        backend = _make_backend_responses([
+            format_b_text,
+            review_final,
+            build_text,
+            verify_text,
+        ])
+        mock_backends.__getitem__ = MagicMock(return_value=lambda model: backend)
+
+        with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
+            with patch("agentflow.orchestrator._repo_context", return_value=""):
+                state = run_workflow("test goal", config, cwd, database_path=Path(cwd) / "test.db")
+
+    assert len(state.tool_calls) >= 1
+    assert state.tool_calls[0]["tool_name"] == "ReadFile"
+    assert state.tool_calls[0]["args"] == {"path": "src/foo.py"}
+    assert "format b content" in state.tool_calls[0]["result"]["output"]
+
+
+def test_unparsed_tool_call_retry_limit_reached(cwd):
+    config = Config(
+        review=RoleConfig(backend="openrouter"),
+        build=RoleConfig(backend="openrouter"),
+        verify=RoleConfig(backend="openrouter"),
+    )
+
+    unparsed_text = """<｜DSML｜tool_call>
+<｜DSML｜invoke>123notaname</｜DSML｜invoke>
+</｜DSML｜tool_call>"""
+
+    with patch("agentflow.orchestrator.BACKENDS") as mock_backends:
+        backend = MagicMock()
+        backend.run.return_value = RunResult(
+            success=True, text=unparsed_text, usage=Usage("mock", "model", 1, 1, 0.0), raw={}
+        )
+        mock_backends.__getitem__ = MagicMock(return_value=lambda model: backend)
+
+        with patch("agentflow.orchestrator._commit_and_push", return_value={"pushed": True}):
+            with patch("agentflow.orchestrator._repo_context", return_value=""):
+                state = run_workflow("test goal", config, cwd, database_path=Path(cwd) / "test.db")
+
+    from agentflow.database import list_events
+    events = list_events(state.run_id, path=Path(cwd) / "test.db")
+    parse_failed_events = [e for e in events if e.get("type") == "tool_parse_failed"]
+    # Up to 2 retries allowed per step before returning result as-is
+    step0_events = [e for e in parse_failed_events if e["payload"]["step_index"] == 0]
+    assert len(step0_events) == 2
+    assert len(parse_failed_events) == 14
+
+

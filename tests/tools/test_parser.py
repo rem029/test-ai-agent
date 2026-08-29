@@ -155,3 +155,72 @@ def test_parse_dsml_ascii_pipe_delimiters():
     assert calls[0].name == "Shell"
     assert calls[0].args == {"command": "pytest"}
 
+
+def test_parse_format_a_verbatim():
+    text = """<｜DSML｜tool_call>
+{"name": "ListDirectory", "args": {"path": "."}}
+</｜DSML｜tool_call>"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": "."}
+
+
+def test_parse_format_b_verbatim():
+    text = """<｜DSML｜tool_call>
+<｜DSML｜invoke>ReadFile</｜DSML｜invoke>
+<｜DSML｜invoke>{"path": ".agentflow-test-todo/index.html"}</｜DSML｜invoke>
+</｜DSML｜tool_call>"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ReadFile"
+    assert calls[0].args == {"path": ".agentflow-test-todo/index.html"}
+
+
+def test_parse_format_c_verbatim():
+    text = """<｜DSML｜tool_calls>
+<｜DSML｜invoke name="ListDirectory">
+<｜DSML｜parameter>args</｜DSML｜parameter>
+<｜DSML｜parameter>{"path": "."}</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": "."}
+
+
+def test_parse_multiple_invokes_in_tool_calls_wrapper():
+    text = """<｜DSML｜tool_calls>
+<｜DSML｜invoke name="ReadFile">
+<｜DSML｜parameter>{"path": "a.txt"}</｜DSML｜parameter>
+</｜DSML｜invoke>
+<｜DSML｜invoke name="WriteFile">
+<｜DSML｜parameter>{"path": "b.txt", "content": "hello"}</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 2
+    assert calls[0].name == "ReadFile"
+    assert calls[0].args == {"path": "a.txt"}
+    assert calls[1].name == "WriteFile"
+    assert calls[1].args == {"path": "b.txt", "content": "hello"}
+
+
+def test_parse_broken_close_tag_variant():
+    text = """<｜DSML｜tool_calls>
+<｜DSML｜invoke name="ListDirectory">
+<｜DSML｜parameter>{"path": "."}</｜DSML｜parameter>
+</｜DSML｜parameter>
+<｜DSML｜invoke name="ReadFile">
+<｜DSML｜parameter>{"path": "a.txt"}</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>"""
+    calls = parse_tool_requests(text)
+    assert len(calls) == 2
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": "."}
+    assert calls[1].name == "ReadFile"
+    assert calls[1].args == {"path": "a.txt"}
+
+

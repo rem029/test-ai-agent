@@ -19,53 +19,148 @@ class ParsedToolRequest(BaseModel):
     args: dict[str, Any]
 
 
-_LOOSE_TOOL_CALL_RE = re.compile(
-    r"<[^\n>]*?tool_call\s*>\s*(\{.*?\})\s*<\s*/[^\n>]*?tool_call\s*>",
-    re.DOTALL | re.IGNORECASE,
-)
-_UNCLOSED_TOOL_CALL_RE = re.compile(
-    r"<[^\n>]*?tool_call\s*>\s*(\{.*\})\s*$",
-    re.DOTALL | re.IGNORECASE,
-)
+_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+_OPEN_TOOL_CALL_RE = re.compile(r"<[^>]*?tool_calls?\b[^>]*>", re.IGNORECASE)
+_CLOSE_TOOL_CALL_RE = re.compile(r"</[^>]*?tool_calls?\b[^>]*>", re.IGNORECASE)
+
+_INVOKE_NAME_ATTR_RE = re.compile(r"<[^>]*?invoke\b[^>]*?name\s*=\s*[\"']([A-Za-z_]\w*)[\"'][^>]*>", re.IGNORECASE)
+_INVOKE_NAME_ATTR_ANY_RE = re.compile(r"invoke\s+name\s*=\s*[\"']([A-Za-z_]\w*)[\"']", re.IGNORECASE)
+_INVOKE_BARE_NAME_RE = re.compile(r"<[^>]*?invoke[^>]*?>\s*([A-Za-z_]\w*)\s*<", re.IGNORECASE)
+_FUNCTION_SEP_NAME_RE = re.compile(r"function\s*[｜|]\s*sep\s*[｜|]\s*([A-Za-z_]\w*)", re.IGNORECASE)
+
+
+def _extract_balanced_json_objects(text: str) -> list[str]:
+    """Find all top-level balanced {...} substrings respecting string quotes and escapes."""
+    results: list[str] = []
+    in_string = False
+    escape = False
+    depth = 0
+    start = -1
+
+    for i, char in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif char == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start != -1:
+                        results.append(text[start : i + 1])
+                        start = -1
+
+    return results
+
+
+def _parse_single_unit(unit: str) -> ParsedToolRequest | None:
+    """Parse a single tool call unit/block into a ParsedToolRequest."""
+    json_candidates = _extract_balanced_json_objects(unit)
+
+    # 1. JSON object with string "name" key anywhere in the block -> use its name and args
+    for raw in json_candidates:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                raw_name = data.get("name")
+                if isinstance(raw_name, str) and _NAME_RE.match(raw_name):
+                    args = data.get("args")
+                    return ParsedToolRequest(
+                        name=raw_name,
+                        args=args if isinstance(args, dict) else {},
+                    )
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # 2. invoke name="X"
+    name: str | None = None
+    m2 = _INVOKE_NAME_ATTR_ANY_RE.search(unit)
+    if m2 and _NAME_RE.match(m2.group(1)):
+        name = m2.group(1)
+
+    # 3. <...invoke...> Name < (bare-word name inside invoke tags - Format B)
+    if not name:
+        m3 = _INVOKE_BARE_NAME_RE.search(unit)
+        if m3 and _NAME_RE.match(m3.group(1)):
+            name = m3.group(1)
+
+    # 4. function | sep | Name (deepseek-native bonus)
+    if not name:
+        m4 = _FUNCTION_SEP_NAME_RE.search(unit)
+        if m4 and _NAME_RE.match(m4.group(1)):
+            name = m4.group(1)
+
+    if not name:
+        return None
+
+    # Get ARGS: first balanced {...} yielding a dict that is not the {"name": ...} wrapper
+    args: dict[str, Any] = {}
+    for raw in json_candidates:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                args = data
+                break
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    return ParsedToolRequest(name=name, args=args)
 
 
 def _extract_loose_tool_calls(text: str) -> list[ParsedToolRequest]:
-    """Extract tool calls from loose/DSML tool_call blocks containing JSON payloads."""
+    """Extract tool calls from loose/DSML tool_call blocks in various formats."""
     calls: list[ParsedToolRequest] = []
-    last_end = 0
-    for match in _LOOSE_TOOL_CALL_RE.finditer(text):
-        last_end = match.end()
-        raw_json = match.group(1).strip()
-        try:
-            data = json.loads(raw_json)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if isinstance(data, dict) and data.get("name") and isinstance(data["name"], str):
-            args = data.get("args")
-            calls.append(
-                ParsedToolRequest(
-                    name=data["name"],
-                    args=args if isinstance(args, dict) else {},
-                )
-            )
+    pos = 0
 
-    # Check for an unclosed trailing block after the last matched closed block
-    remainder = text[last_end:]
-    unclosed_match = _UNCLOSED_TOOL_CALL_RE.search(remainder)
-    if unclosed_match:
-        raw_json = unclosed_match.group(1).strip()
-        try:
-            data = json.loads(raw_json)
-            if isinstance(data, dict) and data.get("name") and isinstance(data["name"], str):
-                args = data.get("args")
-                calls.append(
-                    ParsedToolRequest(
-                        name=data["name"],
-                        args=args if isinstance(args, dict) else {},
-                    )
-                )
-        except (json.JSONDecodeError, TypeError):
-            pass
+    while pos < len(text):
+        open_match = _OPEN_TOOL_CALL_RE.search(text, pos)
+        if not open_match:
+            break
+
+        start_content = open_match.end()
+        close_match = _CLOSE_TOOL_CALL_RE.search(text, start_content)
+        if close_match:
+            block = text[start_content : close_match.start()]
+            pos = close_match.end()
+        else:
+            block = text[start_content:]
+            pos = len(text)
+
+        # Check if block contains multiple invoke sub-blocks
+        invoke_name_matches = list(_INVOKE_NAME_ATTR_RE.finditer(block))
+        if invoke_name_matches:
+            for i, match in enumerate(invoke_name_matches):
+                start_sub = match.start()
+                end_sub = invoke_name_matches[i + 1].start() if i + 1 < len(invoke_name_matches) else len(block)
+                sub_unit = block[start_sub:end_sub]
+                req = _parse_single_unit(sub_unit)
+                if req:
+                    calls.append(req)
+            continue
+
+        bare_invoke_matches = list(_INVOKE_BARE_NAME_RE.finditer(block))
+        if len(bare_invoke_matches) > 1:
+            for i, match in enumerate(bare_invoke_matches):
+                start_sub = match.start()
+                end_sub = bare_invoke_matches[i + 1].start() if i + 1 < len(bare_invoke_matches) else len(block)
+                sub_unit = block[start_sub:end_sub]
+                req = _parse_single_unit(sub_unit)
+                if req:
+                    calls.append(req)
+            continue
+
+        req = _parse_single_unit(block)
+        if req:
+            calls.append(req)
 
     return calls
 

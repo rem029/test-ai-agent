@@ -9,6 +9,7 @@ tracking per task" and "Interface: CLI first, web later").
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 import threading
 import time
@@ -205,6 +206,8 @@ You may invoke tools by writing one or more blocks like this:
 <tool_call>
 {"name": "ToolName", "args": {"arg_name": "value"}}
 </tool_call>
+
+Emit the block EXACTLY as shown: literal `<tool_call>` and `</tool_call>` tags around ONE JSON object with `name` and `args` keys. Do NOT use `<invoke>`, `<parameter>`, `<function>`, markdown code fences, the `｜` character, or any other wrapper. After you receive a tool result, use it — do not repeat a tool call you have already made.
 
 Available tools:
 """
@@ -427,6 +430,8 @@ def _run_with_tools(
         raw={},
     )
 
+    parse_retries = 0
+
     for call_index in range(max_calls):
         if has_stop_signal(state.run_id, database_path):
             drain_pending_messages(state.run_id, kinds=("control",), path=database_path)
@@ -513,6 +518,26 @@ def _run_with_tools(
             )
 
         if not requests:
+            if parse_retries < 2 and re.search(r"<[^>]*?tool_calls?\b|<[^>]*?invoke\b", result.text, re.I):
+                parse_retries += 1
+                state.log_event(
+                    "tool_parse_failed",
+                    {"step_index": step_index, "snippet": result.text[:300]},
+                    database_path=database_path,
+                )
+                messages.append(Message(role="assistant", content=result.text))
+                messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            'Your previous message contained a tool call that could not be parsed. '
+                            'Emit tool calls EXACTLY as: <tool_call>{"name": "ToolName", "args": {"key": "value"}}</tool_call> '
+                            '— a single JSON object, literal <tool_call> tags, no <invoke>, no <parameter>, no other wrappers. '
+                            'Re-issue the tool call now.'
+                        ),
+                    )
+                )
+                continue
             return result
 
         # Agent requested tools: append assistant message to conversation history
