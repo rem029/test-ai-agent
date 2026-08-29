@@ -477,7 +477,7 @@ projects.
 
 ## Status
 
-Phases A, B, C, D, E, F, G, and J are done.
+Phases A, B, C, D, E, F, G, and J (incl. J.5, J.6) are done.
 
 ---
 
@@ -939,10 +939,29 @@ first (claude-code and openrouter usage already flow through).
   $<running cost>`. Footer call passes the session.
 
 
-## Phase J.6 - REPL: `@`-file completion (do next)
+## Phase J.6 - REPL: `@`-file completion (done)
 
 Requested 2026-08-29. Like Claude Code: typing `@` at the between-turns
 prompt pops a fuzzy file picker for files in the project.
+
+**Status (2026-08-29):** implemented on branch `phase-j.6`. Autocomplete +
+literal passthrough only (contents-expansion deferred per the recommendation
+below). 329 tests pass (`+10` in `tests/test_tui.py` section 10).
+- `tui/completion.py`: `_list_project_files(cwd)` (git `ls-files` + `--others
+  --exclude-standard`, dedup/sort; bounded `os.walk` fallback skipping
+  `.git`/`.venv`/`node_modules`/`__pycache__`/cache dirs, capped at 5000,
+  never raises); `_is_subsequence` scorer; `FileMentionCompleter(cwd,
+  file_lister=None, cache_ttl=30.0)` — fires only when the cursor token
+  starts with `@` (and not on a leading `/`), fuzzy subsequence match ranked
+  by contiguous-substring / basename hit / path length, capped at 50, 30s
+  lazy cache. Inserts `@<path>` (start_position covers only the post-`@`
+  query).
+- `tui/repl.py`: `PromptSession` completer is now
+  `merge_completers([SlashCommandCompleter(), FileMentionCompleter(cwd)])`;
+  `complete_while_typing=True` unchanged. The mid-run `select` input path
+  (J.5a) stays plain — no completion.
+- Literal passthrough: `@path` tokens go into the goal string as-is; the
+  agent's Read tools act on them. No REPL-side expansion.
 
 ### Autocomplete
 - Extend the completer in `tui/completion.py`. Today `SlashCommandCompleter`

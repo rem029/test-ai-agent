@@ -1,7 +1,11 @@
-"""Slash command completer for prompt_toolkit REPL."""
+"""Slash command and @file completers for prompt_toolkit REPL."""
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import time
 from typing import Callable, Iterable
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -124,5 +128,165 @@ class SlashCommandCompleter(Completer):
                         start_position=-len(partial_token),
                         display=candidate,
                     )
+        except Exception:
+            return
+
+
+def _is_subsequence(sub: str, s: str) -> bool:
+    """Check if sub is a subsequence of s in order."""
+    if not sub:
+        return True
+    it = iter(s)
+    return all(c in it for c in sub)
+
+
+def _list_project_files(cwd: str) -> list[str]:
+    """List project files relative to cwd, using git ls-files if available, falling back to os.walk."""
+    try:
+        r1 = subprocess.run(
+            ["git", "ls-files"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        r2 = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r1.returncode == 0 and r2.returncode == 0:
+            files: set[str] = set()
+            for line in r1.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    files.add(line.replace("\\", "/"))
+            for line in r2.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    files.add(line.replace("\\", "/"))
+            return sorted(files)
+    except Exception:
+        pass
+
+    try:
+        files_list: list[str] = []
+        noise_dirs = {
+            ".git",
+            ".venv",
+            "venv",
+            "node_modules",
+            "__pycache__",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+        }
+        cwd_path = Path(cwd).resolve()
+        for root, dirs, filenames in os.walk(cwd_path):
+            dirs[:] = [d for d in dirs if d not in noise_dirs and not d.startswith(".git")]
+            for filename in filenames:
+                full_path = Path(root) / filename
+                try:
+                    rel_path = full_path.relative_to(cwd_path).as_posix()
+                    files_list.append(rel_path)
+                except ValueError:
+                    continue
+                if len(files_list) >= 5000:
+                    return sorted(files_list)
+        return sorted(files_list)
+    except Exception:
+        return []
+
+
+class FileMentionCompleter(Completer):
+    """Prompt-toolkit completer for @file mentions in the REPL."""
+
+    def __init__(
+        self,
+        cwd: str,
+        file_lister: Callable[[], list[str]] | None = None,
+        cache_ttl: float = 30.0,
+    ) -> None:
+        self._cwd = str(cwd)
+        self._file_lister = file_lister
+        self._cache_ttl = cache_ttl
+        self._cached_files: list[str] | None = None
+        self._cache_time: float = 0.0
+
+    def _get_files(self) -> list[str]:
+        now = time.monotonic()
+        if self._cached_files is None or (now - self._cache_time) > self._cache_ttl:
+            try:
+                if self._file_lister is not None:
+                    self._cached_files = list(self._file_lister())
+                else:
+                    self._cached_files = _list_project_files(self._cwd)
+            except Exception:
+                self._cached_files = []
+            self._cache_time = now
+        return self._cached_files
+
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
+        try:
+            text = document.text_before_cursor
+            if not text or text[-1].isspace():
+                return
+            if text.lstrip().startswith("/"):
+                return
+
+            tokens = text.split()
+            if not tokens:
+                return
+
+            current_token = tokens[-1]
+            if not current_token.startswith("@"):
+                return
+
+            query = current_token[1:]
+            query_lower = query.lower()
+            files = self._get_files()
+
+            if not query:
+                for path in sorted(files)[:50]:
+                    display_meta = os.path.dirname(path)
+                    yield Completion(
+                        path,
+                        start_position=0,
+                        display=path,
+                        display_meta=display_meta,
+                    )
+                return
+
+            matching_paths: list[str] = [
+                p for p in files if _is_subsequence(query_lower, p.lower())
+            ]
+            if not matching_paths:
+                return
+
+            def _score(path: str) -> tuple[int, int, int, str]:
+                path_lower = path.lower()
+                basename_lower = os.path.basename(path).lower()
+                contiguous_path = 0 if query_lower in path_lower else 1
+                in_basename = (
+                    0
+                    if query_lower in basename_lower
+                    else (0 if _is_subsequence(query_lower, basename_lower) else 1)
+                )
+                return (contiguous_path, in_basename, len(path), path)
+
+            matching_paths.sort(key=_score)
+
+            for path in matching_paths[:50]:
+                display_meta = os.path.dirname(path)
+                yield Completion(
+                    path,
+                    start_position=-len(query),
+                    display=path,
+                    display_meta=display_meta,
+                )
         except Exception:
             return
