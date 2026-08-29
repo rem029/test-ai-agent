@@ -1076,6 +1076,8 @@ function renderThread() {
 function renderStep(step, index) {
     const role = step.role || 'step';
     const isVerify = role === 'verify';
+    const isBuild = role === 'build';
+    const isFailedBuild = isBuild && step.success === false;
     const verdict = isVerify ? verifyVerdict(step.text) : (step.success === false ? 'FAIL' : (step.success ? 'PASS' : null));
 
     let verdictHtml = '';
@@ -1107,13 +1109,18 @@ function renderStep(step, index) {
 
     const metaParts = [];
     if (backendModel) metaParts.push(`<span>${escapeHtml(backendModel)}</span>`);
+    if (isFailedBuild && step.text && step.text.startsWith('Stopped:')) {
+        metaParts.push(`<span class="mono" style="color: var(--status-red);">${escapeHtml(step.text.slice(0, 90))}</span>`);
+    } else if (isFailedBuild) {
+        metaParts.push(`<span class="mono" style="color: var(--status-red);">failed</span>`);
+    }
     if (cost) metaParts.push(`<span>${cost}</span>`);
 
     return `
-        <div class="step-item ${isEmptyStep ? 'empty-step' : ''}">
+        <div class="step-item ${isEmptyStep ? 'empty-step' : ''} ${isFailedBuild ? 'failed-build-step' : ''}">
             <div class="step-header">
                 <div class="step-header-left">
-                    <span class="step-caret open"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
+                    <span class="step-caret ${isFailedBuild ? '' : 'open'}"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
                     <span class="step-role mono">${escapeHtml(role)}</span>
                     ${iter ? `<span class="mono" style="color: var(--text-faint);">· ${escapeHtml(iter)}</span>` : ''}
                     ${verdictHtml}
@@ -1122,7 +1129,7 @@ function renderStep(step, index) {
                     ${metaParts.join(' · ')}
                 </div>
             </div>
-            <div class="step-body">${bodyHtml}</div>
+            <div class="step-body" ${isFailedBuild ? 'hidden' : ''}>${bodyHtml}</div>
         </div>
     `;
 }

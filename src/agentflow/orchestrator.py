@@ -9,6 +9,7 @@ tracking per task" and "Interface: CLI first, web later").
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import threading
@@ -313,10 +314,13 @@ REVIEW_PROMPT = """You are the reviewer/planner for a coding task in this reposi
 
 Goal: {goal}
 
-Read whatever files you need to understand the codebase, then respond with a
-concise, numbered task breakdown for what the build step should implement.
-Keep it to the essential steps only - no preamble, no explanation of what \
-you did, just the numbered plan."""
+Read whatever files you need to understand the codebase, then respond with your findings or plan.
+- If the goal requires writing or changing code, provide a concise, numbered plan for the build step.
+- If the goal is a question, review, audit, assessment, or feedback request, provide your complete analysis and findings directly.
+
+End your response with a single line indicating whether concrete code changes are needed:
+BUILD_NEEDED: yes (if code changes should be implemented by the build step)
+BUILD_NEEDED: no (if this is an analysis, review, explanation, or question and no code needs to be built)"""
 
 BUILD_PROMPT = """You are implementing a coding task in this repository.
 
@@ -345,6 +349,46 @@ FAIL. Respond with your findings, and end your response with exactly one of
 these two lines:
 VERIFY_RESULT: PASS
 VERIFY_RESULT: FAIL"""
+
+_ANALYSIS_GOAL_PATTERN = re.compile(
+    r"^\s*(?:can you\s+|could you\s+|please\s+)?(?:review|analys|analyz|audit|explain|describe|assess|evaluate|inspect|critique|what|why|how|is\s+|are\s+|does\s+|summar|feedback)\b",
+    re.IGNORECASE,
+)
+_ANALYSIS_PHRASES = ("give me your feedback", "your thoughts", "take a look")
+
+_BUILD_NEEDED_PATTERN = re.compile(
+    r"^\s*(?:BUILD[ _-]?NEEDED|BUILD)\s*:\s*(yes|no)\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def parse_and_strip_build_needed(text: str) -> tuple[str, bool | None]:
+    """Parse BUILD_NEEDED: yes/no marker from text and strip the marker line.
+
+    Returns (cleaned_text, build_needed_bool_or_none).
+    """
+    if not text:
+        return text, None
+    match = _BUILD_NEEDED_PATTERN.search(text)
+    if not match:
+        return text, None
+    val_str = match.group(1).lower()
+    build_needed = val_str == "yes"
+    cleaned = _BUILD_NEEDED_PATTERN.sub("", text).strip()
+    return cleaned, build_needed
+
+
+def is_analysis_only_goal(goal: str) -> bool:
+    """Heuristic to detect whether a goal is an inquiry/review/analysis rather than code construction."""
+    if not goal:
+        return False
+    if _ANALYSIS_GOAL_PATTERN.search(goal):
+        return True
+    g_lower = goal.lower()
+    if any(phrase in g_lower for phrase in _ANALYSIS_PHRASES):
+        return True
+    return False
+
 
 # Backends without a confirmed native file-reading tool (OpenRouter's plain
 # chat completion; Antigravity's SDK fallback) can't see the current repo -
@@ -496,6 +540,7 @@ def _run_with_tools(
     mode: str,
     state: RunState,
     step_index: int,
+    role: str = "agent",
     max_calls: int = MAX_TOOL_CALLS_PER_STEP,
     config: Config | None = None,
     database_path: Path | None = None,
@@ -530,6 +575,8 @@ def _run_with_tools(
     )
 
     parse_retries = 0
+    recent_tool_calls: list[tuple[str, str]] = []
+    mutating_calls_count = 0
 
     for call_index in range(max_calls):
         if has_stop_signal(state.run_id, database_path):
@@ -655,6 +702,17 @@ def _run_with_tools(
                 continue
             return result
 
+        # Check no-progress guard for write mode
+        if mode == "write" and call_index >= 6 and mutating_calls_count == 0:
+            stop_msg = f"Stopped: the {role} backend ran {call_index} tools but wrote no files."
+            state.add_blocker("backend_error", stop_msg, fatal=False, step_index=step_index, database_path=database_path)
+            return RunResult(
+                success=False,
+                text=stop_msg,
+                usage=result.usage,
+                raw=result.raw,
+            )
+
         # Agent requested tools: append assistant message to conversation history
         messages.append(
             Message(
@@ -668,6 +726,21 @@ def _run_with_tools(
         results_parts: list[str] = []
         tool_results_data: list[dict] = []
         for req in requests:
+            # Check consecutive identical tool call guard
+            args_key = json.dumps(req.args or {}, sort_keys=True)
+            recent_tool_calls.append((req.name, args_key))
+            if len(recent_tool_calls) >= 3 and (
+                recent_tool_calls[-1] == recent_tool_calls[-2] == recent_tool_calls[-3]
+            ):
+                stop_msg = f"Stopped: the {role} backend repeated the same tool call ({req.name}) 3 times without progressing."
+                state.add_blocker("backend_error", stop_msg, fatal=False, step_index=step_index, database_path=database_path)
+                return RunResult(
+                    success=False,
+                    text=stop_msg,
+                    usage=result.usage,
+                    raw=result.raw,
+                )
+
             state.log_event(
                 "tool_call",
                 {"step_index": step_index, "tool_name": req.name, "args": req.args},
@@ -682,6 +755,11 @@ def _run_with_tools(
                 tool_result = ToolResult(success=False, error=reason)
             else:
                 tool_result = _execute_tool_call(req.name, req.args, cwd, toolset=ts)
+
+            if tool_result.success:
+                t = ts.get(req.name)
+                if (t is not None and not getattr(t, "read_only", True)) or req.name in ("WriteFile", "EditFile"):
+                    mutating_calls_count += 1
 
             state.add_tool_call(
                 step_index=step_index,
@@ -1108,6 +1186,7 @@ def run_workflow(
             review_prompt,
             cwd=cwd,
             mode="read",
+            role="review",
             state=state,
             step_index=0,
             config=config,
@@ -1116,6 +1195,8 @@ def run_workflow(
             toolset=toolset,
         )
         tool_count, tool_names = _step_tool_summary(state, 0)
+        cleaned_review_text, build_needed = parse_and_strip_build_needed(review_result.text)
+        review_result.text = cleaned_review_text
         rec_review = _record(
             "review",
             "read",
@@ -1168,6 +1249,31 @@ def run_workflow(
             _print_summary(state, quiet=quiet)
             return state
 
+        # Check whether the workflow should proceed to build or finish after review
+        workflow_mode = getattr(config, "workflow_mode", "auto")
+        if workflow_mode == "full":
+            should_build = True
+        elif workflow_mode == "review_only":
+            should_build = False
+        else:  # auto
+            if build_needed is not None:
+                should_build = build_needed
+            else:
+                should_build = not is_analysis_only_goal(goal)
+
+        if not should_build:
+            _say(f"[review] analysis complete (mode: review_only):\n{cleaned_review_text}\n")
+            state.finished_at = time.time()
+            state.log_event(
+                "run_finished",
+                {"finished_at": state.finished_at, "pushed": None, "mode": "review_only"},
+                database_path=database_path,
+            )
+            state.save(cwd, database_path=database_path)
+            _notify("finished")
+            _print_summary(state, quiet=quiet)
+            return state
+
         plan = review_result.text
         _say(f"[review] plan:\n{plan}\n")
 
@@ -1211,6 +1317,7 @@ def run_workflow(
                 build_prompt,
                 cwd=cwd,
                 mode="write",
+                role="build",
                 state=state,
                 step_index=iteration,
                 config=config,
@@ -1278,6 +1385,7 @@ def run_workflow(
                 verify_prompt,
                 cwd=cwd,
                 mode="verify",
+                role="verify",
                 state=state,
                 step_index=iteration,
                 config=config,

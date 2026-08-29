@@ -142,3 +142,34 @@ def test_active_config_path(tmp_path):
     load_config("nonexistent_path.yaml")
     assert active_config_path() == "nonexistent_path.yaml"
 
+
+def test_dump_and_load_config_workflow_mode_roundtrip(tmp_path):
+    config_file = tmp_path / "agentflow.config.yaml"
+    cfg = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+        workflow_mode="review_only",
+    )
+    dump_config(cfg, str(config_file))
+    loaded = load_config(str(config_file))
+    assert loaded.workflow_mode == "review_only"
+
+    # Default is auto
+    cfg2 = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="antigravity"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    assert cfg2.workflow_mode == "auto"
+
+
+def test_load_config_env_workflow_mode(tmp_path, monkeypatch):
+    config_file = tmp_path / "agentflow.config.yaml"
+    config_file.write_text("workflow_mode: auto\nbuild:\n  backend: claude-code\n")
+
+    monkeypatch.setenv("AGENTFLOW_WORKFLOW_MODE", "full")
+    loaded = load_config(str(config_file))
+    assert loaded.workflow_mode == "full"
+
+

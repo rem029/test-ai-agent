@@ -435,6 +435,22 @@ def test_js_split_tool_blocks_via_node():
     if (typeof app.showTransportFeedback !== 'function' || typeof app.collectMcpServersFromDOM !== 'function') {
         process.exit(14);
     }
+
+    // 15. renderStep review expanded vs failed build collapsed
+    const reviewStepHtml = app.renderStep({ role: 'review', success: true, text: 'Review analysis findings' }, 0);
+    if (!reviewStepHtml.includes('step-caret open') || reviewStepHtml.includes('hidden>')) {
+        process.exit(15);
+    }
+    const failedBuildStepHtml = app.renderStep({
+        role: 'build',
+        success: false,
+        text: 'Stopped: the build backend repeated the same tool call (ReadFile) 3 times without progressing.',
+        iteration: 1,
+        usage: { backend: 'openrouter', model: 'deepseek-v4-flash', cost_usd: 0.001 }
+    }, 1);
+    if (!failedBuildStepHtml.includes('failed-build-step') || !failedBuildStepHtml.includes('<div class="step-body" hidden>') || !failedBuildStepHtml.includes('repeated the same tool call')) {
+        process.exit(16);
+    }
     """
     res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"

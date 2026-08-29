@@ -61,6 +61,10 @@ def run_checks(config_path: str) -> int:
 def _apply_overrides(config, args):
     if args.permissions:
         config.permissions = args.permissions
+    if getattr(args, "workflow_mode", None):
+        config.workflow_mode = args.workflow_mode
+    if getattr(args, "review_only", False):
+        config.workflow_mode = "review_only"
     if args.max_cost_usd is not None:
         config.max_cost_usd = args.max_cost_usd
     if args.review_backend:
@@ -156,6 +160,16 @@ def main(argv: list[str] | None = None) -> int:
         "--permissions",
         choices=["auto", "prompt", "deny"],
         help="Tool permission policy for mutating operations (auto, prompt, deny)",
+    )
+    parser.add_argument(
+        "--workflow-mode",
+        choices=["auto", "review_only", "full"],
+        help="Workflow execution mode (auto, review_only, full)",
+    )
+    parser.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Run only the review/analysis step and skip build, verify, and push",
     )
     parser.add_argument(
         "--max-cost-usd",

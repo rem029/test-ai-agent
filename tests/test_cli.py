@@ -350,6 +350,41 @@ def test_cli_resume_missing_session_fails(capsys):
         assert "Error: session not found: nonexistent-sid" in captured.err
 
 
+def test_cli_review_only_flag():
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    with patch("agentflow.cli.load_config", return_value=mock_config):
+        with patch("agentflow.cli.run_workflow") as mock_run:
+            mock_run.return_value = type("State", (), {"pushed": {"pushed": True}})()
+            ret = main(["--review-only", "analyze codebase"])
+
+    assert ret == 0
+    mock_run.assert_called_once()
+    passed_config = mock_run.call_args[0][1]
+    assert passed_config.workflow_mode == "review_only"
+
+
+def test_cli_workflow_mode_flag():
+    mock_config = Config(
+        review=RoleConfig(backend="claude-code"),
+        build=RoleConfig(backend="claude-code"),
+        verify=RoleConfig(backend="claude-code"),
+    )
+    with patch("agentflow.cli.load_config", return_value=mock_config):
+        with patch("agentflow.cli.run_workflow") as mock_run:
+            mock_run.return_value = type("State", (), {"pushed": {"pushed": True}})()
+            ret = main(["--workflow-mode", "full", "analyze codebase"])
+
+    assert ret == 0
+    mock_run.assert_called_once()
+    passed_config = mock_run.call_args[0][1]
+    assert passed_config.workflow_mode == "full"
+
+
+
 
 
 

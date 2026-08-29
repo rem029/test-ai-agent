@@ -33,6 +33,7 @@ DEFAULTS: dict[str, "RoleConfig"] = {}
 
 
 PermissionMode = Literal["auto", "prompt", "deny"]
+WorkflowMode = Literal["auto", "review_only", "full"]
 
 
 _MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -90,6 +91,7 @@ class Config(BaseModel):
     verify: RoleConfig
     max_iterations: int = 3
     permissions: PermissionMode = "auto"
+    workflow_mode: WorkflowMode = "auto"
     max_cost_usd: float | None = None
     notifications: NotificationConfig | None = None
     credentials: CredentialsConfig | None = None
@@ -151,6 +153,12 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
         permissions = os.environ["AGENTFLOW_PERMISSIONS"]
     if permissions is not None:
         roles["permissions"] = permissions
+
+    workflow_mode = file_data.get("workflow_mode")
+    if os.environ.get("AGENTFLOW_WORKFLOW_MODE"):
+        workflow_mode = os.environ["AGENTFLOW_WORKFLOW_MODE"]
+    if workflow_mode is not None:
+        roles["workflow_mode"] = workflow_mode
 
     max_cost_usd = file_data.get("max_cost_usd")
     if os.environ.get("AGENTFLOW_MAX_COST_USD"):
@@ -219,6 +227,7 @@ def dump_config(
         "verify": config.verify.model_dump(exclude_none=True),
         "max_iterations": config.max_iterations,
         "permissions": config.permissions,
+        "workflow_mode": config.workflow_mode,
     }
     if config.max_cost_usd is not None:
         data["max_cost_usd"] = config.max_cost_usd

@@ -103,6 +103,35 @@ class WriteFileTool(Tool):
         return ToolResult(success=True, output=f"Wrote {path}", structured=structured)
 
 
+LIST_DIRECTORY_DENYLIST: set[str] = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".egg-info",
+    ".claude",
+    ".agent",
+    ".gemini",
+    ".impeccable",
+    ".agentflow",
+    ".agentflow-test-todo",
+}
+MAX_LIST_DIRECTORY_ENTRIES = 400
+
+
+def _is_denylisted_part(parts: tuple[str, ...]) -> bool:
+    for part in parts:
+        if part in LIST_DIRECTORY_DENYLIST or part.endswith(".egg-info"):
+            return True
+    return False
+
+
 class ListDirectoryParams(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -128,15 +157,29 @@ class ListDirectoryTool(Tool):
 
         try:
             entries: list[str] = []
+            truncated_count = 0
             if recursive:
                 for p in sorted(target.rglob("*")):
                     rel = p.relative_to(target)
+                    if _is_denylisted_part(rel.parts):
+                        continue
                     prefix = "[dir]" if p.is_dir() else "[file]"
-                    entries.append(f"{prefix} {rel}")
+                    if len(entries) < MAX_LIST_DIRECTORY_ENTRIES:
+                        entries.append(f"{prefix} {rel}")
+                    else:
+                        truncated_count += 1
             else:
                 for p in sorted(target.iterdir()):
+                    if _is_denylisted_part((p.name,)):
+                        continue
                     prefix = "[dir]" if p.is_dir() else "[file]"
-                    entries.append(f"{prefix} {p.name}")
+                    if len(entries) < MAX_LIST_DIRECTORY_ENTRIES:
+                        entries.append(f"{prefix} {p.name}")
+                    else:
+                        truncated_count += 1
+
+            if truncated_count > 0:
+                entries.append(f"... ({truncated_count} more entries hidden; narrow the path)")
         except OSError as exc:
             return ToolResult(success=False, error=f"Could not list {path}: {exc}")
 

@@ -161,3 +161,41 @@ def test_search_files_alias_directory(ctx):
     assert result.success is True
     assert "target.py:1: matched_text" in result.output
 
+
+def test_list_directory_denylist_filtering(ctx):
+    # Create allowed files
+    (ctx.cwd_path / "src").mkdir()
+    (ctx.cwd_path / "src" / "main.py").write_text("print(1)")
+    # Create denylisted directories and files
+    for d in [".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "build"]:
+        p = ctx.cwd_path / d
+        p.mkdir(exist_ok=True)
+        (p / "secret.txt").write_text("skip")
+
+    # Non-recursive
+    res_non_rec = ListDirectoryTool().run({"path": "."}, context=ctx)
+    assert res_non_rec.success is True
+    assert "[dir] src" in res_non_rec.output
+    for d in [".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "build"]:
+        assert f"[dir] {d}" not in res_non_rec.output
+
+    # Recursive
+    res_rec = ListDirectoryTool().run({"path": ".", "recursive": True}, context=ctx)
+    assert res_rec.success is True
+    assert "[file] src/main.py" in res_rec.output
+    for d in [".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "build"]:
+        assert f"{d}/secret.txt" not in res_rec.output
+
+
+def test_list_directory_caps_at_400_entries(ctx):
+    (ctx.cwd_path / "bulk").mkdir()
+    for i in range(450):
+        (ctx.cwd_path / "bulk" / f"f_{i:03d}.txt").write_text("data")
+
+    res = ListDirectoryTool().run({"path": "bulk", "recursive": True}, context=ctx)
+    assert res.success is True
+    assert "... (50 more entries hidden; narrow the path)" in res.output
+    lines = res.output.strip().splitlines()
+    assert len(lines) == 401  # 400 entries + 1 truncation note
+
+
