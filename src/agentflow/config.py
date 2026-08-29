@@ -10,11 +10,12 @@ Resolution order (highest wins): env vars > config file > defaults.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 BackendName = Literal["claude-code", "antigravity", "openrouter"]
 
@@ -32,6 +33,33 @@ DEFAULTS: dict[str, "RoleConfig"] = {}
 
 
 PermissionMode = Literal["auto", "prompt", "deny"]
+
+
+_MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class MCPServerConfig(BaseModel):
+    name: str
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+    enabled: bool = True
+    auto_approve: list[str] = Field(default_factory=list)   # tool names always allowed; the single-element list ["all"] means every tool on this server
+
+    @model_validator(mode="after")
+    def _validate_server(self) -> MCPServerConfig:
+        if not self.name or not _MCP_SERVER_NAME_PATTERN.match(self.name):
+            raise ValueError(
+                f"MCPServerConfig name must be non-empty and match ^[A-Za-z0-9_-]+$, got {self.name!r}"
+            )
+        has_command = self.command is not None and self.command != ""
+        has_url = self.url is not None and self.url != ""
+        if (has_command and has_url) or (not has_command and not has_url):
+            raise ValueError(
+                "MCPServerConfig must specify exactly one of 'command' or 'url'"
+            )
+        return self
 
 
 class NotificationConfig(BaseModel):
@@ -65,6 +93,7 @@ class Config(BaseModel):
     max_cost_usd: float | None = None
     notifications: NotificationConfig | None = None
     credentials: CredentialsConfig | None = None
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     def roles(self) -> dict[str, RoleConfig]:
         return {"review": self.review, "build": self.build, "verify": self.verify}
@@ -157,6 +186,21 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     if creds is not None:
         roles["credentials"] = creds
 
+    mcp_servers_data = file_data.get("mcp_servers")
+    mcp_servers: list[MCPServerConfig] = []
+    if isinstance(mcp_servers_data, list):
+        for item in mcp_servers_data:
+            if isinstance(item, dict):
+                mcp_servers.append(MCPServerConfig(**item))
+            elif isinstance(item, MCPServerConfig):
+                mcp_servers.append(item)
+
+    if os.environ.get("AGENTFLOW_MCP_DISABLED") in ("1", "true", "True"):
+        for s in mcp_servers:
+            s.enabled = False
+
+    roles["mcp_servers"] = mcp_servers
+
     return Config(**roles)
 
 
@@ -184,6 +228,8 @@ def dump_config(
         creds_dump = config.credentials.model_dump(exclude_none=True)
         if creds_dump:
             data["credentials"] = creds_dump
+    if config.mcp_servers:
+        data["mcp_servers"] = [s.model_dump(exclude_none=True) for s in config.mcp_servers]
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
