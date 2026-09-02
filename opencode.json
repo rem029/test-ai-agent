@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "plan": {
+      "model": "opencode-go/kimi-k3"
+    },
+    "build": {
+      "model": "opencode-go/kimi-k2.7-code"
+    },
+    "verify": {
+      "description": "Verifies completed work: runs tests and checks the result against the goal.",
+      "mode": "subagent",
+      "model": "opencode-go/glm-5.3",
+      "prompt": "You verify completed work. Run the project's test suite, check the implementation against the stated goal, and report what passes, what fails, and what is still missing. Do not modify code unless the fix is trivial."
+    }
+  },
+  "skills": {
+    "paths": [".claude/skills", ".gemini/skills", ".agent/skills"]
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated", "--no-sandbox", "--browser", "chromium"],
+      "enabled": true
+    }
+  }
+}
