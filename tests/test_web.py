@@ -507,6 +507,72 @@ def test_js_unwrap_step_payload_via_node():
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
 
 
+def test_js_interrupted_run_dangling_turn_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    const events = [
+        { type: 'step_started', payload: { role: 'build', backend: 'claude-code', model: 'claude-3-7-sonnet' }, ts: 100, seq: 1 },
+        { type: 'text_delta', payload: { delta: 'hello ' }, ts: 101, seq: 2 },
+        { type: 'text_delta', payload: { delta: 'world' }, ts: 102, seq: 3 }
+    ];
+
+    // 1. buildTurns on interrupted/non-live run retains dangling turn
+    const turns = app.buildTurns(events, false);
+    if (!Array.isArray(turns) || turns.length !== 1) {
+        process.exit(1);
+    }
+    const t = turns[0];
+    if (t.role !== 'build' || t.text !== 'hello world' || t.success !== false || t.interrupted !== true) {
+        process.exit(2);
+    }
+
+    // 2. renderStep on the dangling turn renders prose and interrupted verdict badge
+    const html = app.renderStep(t, 0);
+    if (!html.includes('hello world') || !html.includes('step-verdict') || !html.includes('interrupted') || html.includes('No written response recorded.')) {
+        process.exit(3);
+    }
+
+    // 3. buildTurns on actually live run leaves turn as activeTurn
+    const liveTurns = app.buildTurns(events, true);
+    if (liveTurns.length !== 0 || !liveTurns.activeTurn || liveTurns.activeTurn.liveText !== 'hello world') {
+        process.exit(4);
+    }
+
+    // 4. Truly empty dangling turn (no live text and no tool calls) is skipped
+    const emptyEvents = [
+        { type: 'step_started', payload: { role: 'build' }, ts: 100, seq: 1 }
+    ];
+    const emptyTurns = app.buildTurns(emptyEvents, false);
+    if (emptyTurns.length !== 0) {
+        process.exit(5);
+    }
+
+    // 5. danglingTurnToStep pure helper contract
+    const stepObj = app.danglingTurnToStep({
+        role: 'review',
+        liveText: 'Partial review output',
+        iteration: 2,
+        backend: 'antigravity',
+        model: 'deepseek-chat'
+    });
+    if (stepObj.role !== 'review' || stepObj.text !== 'Partial review output' || stepObj.success !== false || stepObj.interrupted !== true || stepObj.iteration !== 2) {
+        process.exit(6);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+
+
 def test_api_runs_pagination(tmp_path):
     from agentflow.database import save_run
     from agentflow.orchestrator import RunState

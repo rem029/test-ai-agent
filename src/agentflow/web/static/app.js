@@ -666,29 +666,26 @@ function renderRunHeader(run) {
     `;
 }
 
-function renderThread() {
-    const container = document.getElementById('thread-content');
-    if (!container) return;
+function danglingTurnToStep(turn) {
+    if (!turn) return null;
+    return {
+        role: turn.role,
+        text: turn.liveText || '',
+        success: false,
+        iteration: turn.iteration,
+        backend: turn.backend,
+        model: turn.model,
+        interrupted: true
+    };
+}
 
-    if (!currentRun && currentEvents.length === 0) {
-        container.innerHTML = `
-            <div class="empty-thread-block">
-                <div class="empty-thread-title mono">no runs yet</div>
-                <div class="empty-thread-sub mono">describe a run in the bar below to start ↓</div>
-            </div>
-        `;
-        return;
-    }
-
-    const visibleEvents = currentEvents;
-
-    // Build chronological chat turns from the event log.
+function buildTurns(events, isLive = false) {
     const turns = [];
     let assistantTurn = null;
     let assistantStepIndex = 0;
     const fatalBlockers = [];
 
-    visibleEvents.forEach(ev => {
+    (events || []).forEach(ev => {
         if (ev.type === 'user_message') {
             turns.push({ type: 'user', payload: ev.payload, seq: ev.seq, ts: ev.ts });
         } else if (ev.type === 'step_started') {
@@ -731,6 +728,50 @@ function renderThread() {
             turns.push({ type: 'summary', payload: ev.payload, seq: ev.seq, ts: ev.ts });
         }
     });
+
+    let activeTurn = null;
+    if (assistantTurn) {
+        if (isLive) {
+            activeTurn = assistantTurn;
+        } else {
+            const hasContent = Boolean((assistantTurn.liveText && assistantTurn.liveText.trim()) || (assistantTurn.toolCalls && assistantTurn.toolCalls.length > 0));
+            if (hasContent) {
+                const stepObj = danglingTurnToStep(assistantTurn);
+                turns.push({
+                    ...assistantTurn,
+                    ...stepObj,
+                    type: 'assistant',
+                    toolCalls: assistantTurn.toolCalls || [],
+                    stepIndex: assistantTurn.stepIndex
+                });
+            }
+        }
+    }
+
+    turns.fatalBlockers = fatalBlockers;
+    turns.activeTurn = activeTurn;
+    return turns;
+}
+
+function renderThread() {
+    const container = document.getElementById('thread-content');
+    if (!container) return;
+
+    if (!currentRun && currentEvents.length === 0) {
+        container.innerHTML = `
+            <div class="empty-thread-block">
+                <div class="empty-thread-title mono">no runs yet</div>
+                <div class="empty-thread-sub mono">describe a run in the bar below to start ↓</div>
+            </div>
+        `;
+        return;
+    }
+
+    const visibleEvents = currentEvents;
+    const isLive = typeof isRunLive === 'function' ? isRunLive() : false;
+    const turns = buildTurns(visibleEvents, isLive);
+    const fatalBlockers = [...(turns.fatalBlockers || [])];
+    const assistantTurn = turns.activeTurn;
 
     // Also surface persisted blockers for completed runs when the event log lacks them.
     if (currentRun && Array.isArray(currentRun.blockers) && fatalBlockers.length === 0) {
@@ -869,8 +910,8 @@ function renderStep(step, index) {
     const isVerify = role === 'verify';
     const isBuild = role === 'build';
     const isBuildReview = role === 'build_review';
-    const isFailedBuild = isBuild && step.success === false;
-    let verdict = isVerify ? verifyVerdict(step.text) : (step.success === false ? 'FAIL' : (step.success ? 'PASS' : null));
+    const isFailedBuild = isBuild && step.success === false && !step.interrupted;
+    let verdict = step.interrupted ? 'interrupted' : (isVerify ? verifyVerdict(step.text) : (step.success === false ? 'FAIL' : (step.success ? 'PASS' : null)));
     if (isBuildReview) {
         const brVerdict = buildReviewVerdict(step.text);
         if (brVerdict) verdict = brVerdict;
@@ -2892,6 +2933,8 @@ if (typeof document !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         unwrapStepPayload,
+        buildTurns,
+        danglingTurnToStep,
         splitToolBlocks,
         formatToolReqArgs,
         renderToolReq,
