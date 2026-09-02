@@ -692,6 +692,8 @@ def _run_with_tools(
     parse_retries = 0
     recent_tool_calls: list[tuple[str, str]] = []
     mutating_calls_count = 0
+    tool_results_count = 0
+    empty_final_retries = 0
     seen_read_calls: dict[tuple[str, str], int] = {}
 
     for call_index in range(max_calls):
@@ -816,6 +818,33 @@ def _run_with_tools(
                     )
                 )
                 continue
+
+            # The backend used tools but then returned nothing readable. Nudge it
+            # to actually write its answer rather than silently producing nothing.
+            if (
+                mode == "read"
+                and tool_results_count > 0
+                and not result.text.strip()
+                and empty_final_retries < 2
+            ):
+                empty_final_retries += 1
+                state.log_event(
+                    "tool_result_empty",
+                    {"step_index": step_index, "retry": empty_final_retries},
+                    database_path=database_path,
+                )
+                messages.append(Message(role="assistant", content=result.text))
+                messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "You already received the tool results you requested. "
+                            "Now write your final response in plain text. Do not emit any tool calls. "
+                            "If you are unsure, state what you found and what you could not determine."
+                        ),
+                    )
+                )
+                continue
             return result
 
         # Check no-progress guard for write mode
@@ -891,6 +920,7 @@ def _run_with_tools(
                 t = ts.get(req.name)
                 if (t is not None and not getattr(t, "read_only", True)) or req.name in ("WriteFile", "EditFile"):
                     mutating_calls_count += 1
+                tool_results_count += 1
 
             state.add_tool_call(
                 step_index=step_index,

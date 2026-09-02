@@ -7,6 +7,25 @@ import pytest
 from agentflow.tools.parser import ParsedToolRequest, parse_tool_requests
 
 
+def test_parse_dsml_param_pair_args():
+    # DSML variant that encodes args as alternating name/value <parameter> pairs
+    # (no JSON object) — e.g. what deepseek emitted for ListDirectory.
+    text = (
+        "<\uff5cDSML\uff5ctool_call>\n"
+        "<\uff5cDSML\uff5cinvoke name=\"ListDirectory\">\n"
+        "<\uff5cDSML\uff5cparameter>path</\uff5cDSML\uff5cparameter>\n"
+        "<\uff5cDSML\uff5cparameter>.test/dragtask</\uff5cDSML\uff5cparameter>\n"
+        "<\uff5cDSML\uff5cparameter>recursive</\uff5cDSML\uff5cparameter>\n"
+        "<\uff5cDSML\uff5cparameter>true</\uff5cDSML\uff5cparameter>\n"
+        "</\uff5cDSML\uff5cinvoke>\n"
+        "</\uff5cDSML\uff5ctool_call>"
+    )
+    calls = parse_tool_requests(text)
+    assert len(calls) == 1
+    assert calls[0].name == "ListDirectory"
+    assert calls[0].args == {"path": ".test/dragtask", "recursive": True}
+
+
 def test_parse_xml_tool_call():
     text = """
 <tool_call>

@@ -131,7 +131,49 @@ def _parse_single_unit(unit: str) -> ParsedToolRequest | None:
         except (json.JSONDecodeError, TypeError):
             continue
 
+    # Fallback: DSML/<parameter> blocks written as alternating name/value pairs
+    # (e.g. <parameter>path</parameter><parameter>.test/dragtask</parameter>)
+    # with no JSON object present. Coerce scalars (booleans, numbers).
+    if not args:
+        param_bodies = [
+            p.strip()
+            for p in re.findall(
+                r"<[^>]*?parameter[^>]*>(.*?)</[^>]*?parameter[^>]*>", unit, re.IGNORECASE | re.DOTALL
+            )
+        ]
+        if len(param_bodies) >= 2 and not any(p.startswith("{") for p in param_bodies):
+            paired: dict[str, Any] = {}
+            for i in range(0, len(param_bodies) - 1, 2):
+                key = param_bodies[i]
+                val = param_bodies[i + 1]
+                if key and key not in paired:
+                    paired[key] = _coerce_scalar(val)
+            args = paired
+
     return ParsedToolRequest(name=name, args=args)
+
+
+def _coerce_scalar(value: str) -> Any:
+    """Coerce a DSML parameter value into a scalar (bool / int / float) when it looks like one."""
+    v = value.strip()
+    low = v.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("null", "none"):
+        return None
+    if re.fullmatch(r"-?\d+", v):
+        try:
+            return int(v)
+        except ValueError:
+            return v
+    if re.fullmatch(r"-?\d+\.\d+", v):
+        try:
+            return float(v)
+        except ValueError:
+            return v
+    return v
 
 
 def _extract_loose_tool_calls(text: str) -> list[ParsedToolRequest]:

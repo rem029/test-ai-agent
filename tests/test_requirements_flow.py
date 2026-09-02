@@ -156,6 +156,26 @@ def test_analysis_classifier_detects_questions():
     assert not is_analysis_only_goal("build a login page")
 
 
+def test_review_empty_after_tools_gets_nudged(cwd):
+    # The review used tools then returned nothing readable; it must be nudged
+    # into actually writing its analysis instead of ending with no_response.
+    (Path(cwd) / "readme.txt").write_text("hello")
+    tool_txt = '<tool_call>\n{"name": "ReadFile", "args": {"path": "readme.txt"}}\n</tool_call>'
+    blank = "  "
+    answer = "The file says hello. ANALYSIS_COMPLETE"
+    build = "Implemented."
+    verify = "Tests pass\nVERIFY_RESULT: PASS"
+
+    config = _config(build_review=False)
+    state = _run("build a login page", config, cwd, [tool_txt, blank, answer, build, verify])
+
+    review = state.steps[0]
+    assert review["role"] == "review"
+    assert review["no_response"] is not True
+    assert "ANALYSIS_COMPLETE" in review["text"]
+    assert state.pushed == {"pushed": True}
+
+
 def test_analysis_question_goal_never_builds(cwd):
     # The user's failing case: a question-style goal where the review returns
     # no plan. It must finish as analysis-only rather than spin the build step.
