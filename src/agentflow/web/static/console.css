@@ -969,6 +969,296 @@ body.run-live .step-live-item .step-role {
   font-size: 11px;
 }
 
+/* --- Chat Thread (Phase O) --- */
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding-bottom: 0.5rem;
+}
+
+.chat-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: 88ch;
+  width: 100%;
+  position: relative;
+}
+
+.chat-bubble.assistant {
+  align-self: flex-start;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chat-bubble.system {
+  align-self: center;
+  align-items: center;
+  max-width: 70ch;
+}
+
+.bubble-header {
+  display: flex;
+  align-items: center;
+  gap: 0.8ch;
+  padding: 0 0.4ch;
+  user-select: none;
+}
+
+.bubble-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bubble-role {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: lowercase;
+}
+
+.user-header .bubble-role {
+  color: var(--text-faint);
+}
+
+.bubble-live-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-amber);
+}
+
+body.run-live .bubble-live-pulse {
+  animation: bubble-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes bubble-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.run-live .bubble-live-pulse {
+    animation: none;
+  }
+}
+
+.bubble-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 100%;
+}
+
+.chat-bubble.user .bubble-body {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  padding: 0.7rem 1.2ch;
+}
+
+.chat-bubble.user .bubble-body .md {
+  color: var(--text-primary);
+}
+
+/* Assistant bubbles reuse the existing step-item as their body; just loosen spacing. */
+.chat-bubble.assistant .step-item {
+  border-color: var(--border-subtle);
+}
+
+.chat-bubble.assistant.live .step-item {
+  border-color: var(--accent-amber);
+  background: var(--bg-panel);
+}
+
+.chat-bubble.assistant.live .step-live-item .step-role {
+  color: var(--accent-amber);
+}
+
+.chat-bubble.highlighted .step-item {
+  border-color: var(--accent-amber);
+  background: var(--accent-amber-dim);
+}
+
+/* Changes footer inside assistant bubbles */
+.changes-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1ch;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border-hairline);
+  margin-top: 0.2rem;
+}
+
+.change-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.change-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4ch;
+  background: var(--bg-ground);
+  border: 1px solid var(--border-hairline);
+  padding: 0.15rem 0.6ch;
+  font-size: 11px;
+}
+
+.change-chip.write {
+  border-left: 2px solid var(--accent-amber);
+}
+
+.change-chip.edit {
+  border-left: 2px solid var(--text-secondary);
+}
+
+.change-glyph {
+  color: var(--text-faint);
+  font-weight: 700;
+}
+
+.change-path {
+  color: var(--text-secondary);
+}
+
+.change-tool-count {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+/* Tool calls collapsed inside assistant bubbles */
+.bubble-tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.bubble-tool-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8ch;
+  background: var(--bg-ground);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  padding: 0.25rem 0.8ch;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bubble-tool-toggle:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.bubble-tool-toggle .step-caret.open {
+  transform: rotate(90deg);
+}
+
+.bubble-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-left: 1.5ch;
+  border-left: 2px solid var(--border-hairline);
+}
+
+.bubble-tool-list .tool-call-item {
+  border-color: var(--border-subtle);
+}
+
+/* System bubbles (blockers, requirements) */
+.chat-bubble.system {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  padding: 0.6rem 1.2ch;
+}
+
+.chat-bubble.system.fatal {
+  border-color: var(--status-red);
+  background: var(--status-red-dim);
+}
+
+.system-blocker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 12px;
+}
+
+.system-blocker-reason {
+  color: var(--status-red);
+  font-weight: 500;
+}
+
+.system-blocker-detail {
+  color: var(--text-primary);
+}
+
+.system-requirements-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-amber);
+  margin-bottom: 0.4rem;
+}
+
+.system-requirements-list {
+  margin: 0 0 0 1.8ch;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.system-requirements-list li {
+  margin-bottom: 0.25rem;
+}
+
+/* Follow / pause indicator */
+.follow-indicator {
+  position: fixed;
+  bottom: calc(var(--transport-height) + 0.75rem);
+  right: 1.5ch;
+  z-index: 25;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  padding: 0.2rem 0.8ch;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.follow-indicator.following {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
+.follow-indicator.paused {
+  border-color: var(--text-faint);
+  color: var(--text-faint);
+}
+
+.follow-indicator:hover {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
 /* Tool Request Chip (for parse-failed or raw blocks) */
 .tool-reqs {
   display: flex;
