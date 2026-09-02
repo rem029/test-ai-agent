@@ -485,6 +485,11 @@ REPL command. Phase K (web console rewrite) done on branch `phase-k`: K1+K2
 rewrite (K3-K5) - see the Phase K section below. L6 (visual direction) and
 L7.3 (web MCP config UI) landed with it.
 
+Phase N (requirements clarification + build review) done and merged to `dev`:
+requirements loop, build-review step, configurable tool-call caps, review
+read-cap fix, empty-response nudge, and DSML param-pair parsing. Phase O
+(chat-first run history with live updates) is the next planned phase.
+
 Also merged to `dev` this session (not part of a numbered phase):
 - Readable tool-arg validation errors + `file_path`/`filepath`/`filename`
   aliases for `path` on the file tools; `Toolset.capability_hints()` nudging
@@ -1395,6 +1400,120 @@ before writing its analysis. Changes:
 - TUI inline requirement prompt (currently surfaces + proceeds).
 - The requirements `REQUIREMENTS_CLEAR` marker maturity depends on the
   backend actually emitting it; a backend that omits it proceeds as before.
+
+## Phase O - Chat-first run history with live updates (2026-09-02)
+
+**Requested by the user after reviewing `run-20260902` session #2.**
+Current web console keeps the assistant's reasoning in the step cards, but the
+user has to click the timeline/playhead to read past analysis, and the page
+must be refreshed to see new events. Phase O makes the main thread panel a
+first-class chat history while keeping the timeline as secondary navigation.
+
+### Goal
+
+The run detail page should feel like Claude Code / OpenCode / Antigravity:
+assistant reasoning appears as scrolling chat bubbles, file changes are visible
+inside each turn, and live runs update automatically without a manual refresh.
+
+### Problems to solve
+
+1. **History is behind the timeline.** Completed steps are rendered as
+   collapsed cards; the rich analysis the user wants to re-read requires
+   clicking a timeline segment.
+2. **Refresh required for updates.** SSE events arrive, but the main panel
+   does not auto-append + auto-scroll, so the user reloads the page.
+3. **Tool calls dominate the view.** A separate "Tool Calls" wall sits below
+   the steps, pulling attention away from the assistant's prose and the files
+   it changed.
+
+### Design
+
+1. **Chat-bubble thread as the primary view**
+   - Each completed step becomes a bubble with:
+     - Role avatar/label (`Review`, `Build`, `Verify`, `Build review`,
+       `Requirements`).
+     - Rendered Markdown prose (or the synthesized no-prose summary from
+       `_record`).
+     - A compact "Changes" footer: files written/edited, count of tool calls,
+       and key calls (`WriteFile src/foo.py`, `Shell pytest`, etc.).
+   - User messages (`user_message` events, steer/answer/note) render as
+     right-aligned user bubbles so the conversation turn structure is obvious.
+   - Bubbles are stacked chronologically; the timeline above becomes a
+     scrubber that scrolls/jumps to a step rather than a separate content view.
+
+2. **Timeline stays, but secondary**
+   - Keep the top timeline as a run-overview / playhead.
+   - Clicking a segment scrolls the chat to that step and highlights it.
+   - Remove the current behavior where the timeline is the only way to see
+     step prose.
+
+3. **Live auto-update + auto-scroll**
+   - On `text_delta`, append to the active bubble's prose and scroll the thread
+     to the bottom if the user is already near the bottom (standard
+     "following" behavior).
+   - On `step_started` / `step_finished` / `tool_call` / `tool_result`, insert
+     or update the relevant bubble without a full page reload.
+   - Add a subtle "Following" / "Paused" indicator when the user scrolls up
+     manually.
+
+4. **Collapsible tool detail inside bubbles**
+   - Each assistant bubble shows a one-line summary of tools used.
+   - Expand within the bubble to see arguments/output, instead of the global
+     "Tool Calls" section.
+   - File-write bubbles can show a mini diff inline.
+
+5. **Empty-step friendliness**
+   - Reuse the improved `_record` summaries from Phase N, but render them as
+     normal bubble text (not a faint italic aside).
+   - Add an icon/color cue so the user can tell "this step had no prose but
+     did work" at a glance.
+
+### Task breakdown
+
+1. **Data plumbing**
+   - Ensure `GET /api/runs/{id}/events` returns all event types the UI needs,
+     including `text_delta`, `step_started`, `step_finished`, `tool_call`,
+     `tool_result`, `user_message`, `requirements_pending`, `requirements_answer`,
+     `blocker`, `run_finished`.
+   - Add or reuse a per-step tool/file-change summary endpoint or compute it
+     client-side from the existing event stream.
+
+2. **Front-end refactor (`src/agentflow/web/static/app.js`)**
+   - Replace the current `renderThreadContent` step-card list with a
+     `renderChatThread` function that emits bubbles.
+   - Implement `renderAssistantBubble(step)` and `renderUserBubble(msg)`.
+   - Add `renderChangesFooter(step)` summarizing files written/edited and
+     tool-call count.
+   - Implement follow-scroll logic and a manual-scroll pause detector.
+   - Retain timeline click handlers but make them scroll-to-step.
+
+3. **Styling (`src/agentflow/web/static/console.css`)**
+   - Chat bubble tokens (background, border-radius, max-width, padding) using
+     existing DESIGN.md color tokens.
+   - User bubble vs assistant bubble distinction.
+   - Live-step pulsing/amber accent already added in Phase N; refine for the
+     bubble layout.
+
+4. **SSE/live reliability**
+   - Confirm `EventSource` reconnects on error and resumes from the last seen
+     event id/seq.
+   - Ensure newly created runs immediately open the SSE stream and start
+     rendering bubbles.
+
+5. **Tests**
+   - Update `tests/test_web.py` render assertions if any fixture text changed.
+   - New unit tests for `renderChangesFooter` (or backend equivalent) using
+     mocked step + tool_call fixtures.
+   - `uv run pytest` must stay green.
+
+### Success criteria
+
+- A completed run's analysis is readable by scrolling the chat thread; no
+  timeline click required.
+- A live run appends new assistant/user bubbles and scrolls automatically.
+- File changes are visible per turn without opening a separate tool-call wall.
+- The timeline still works as a scrubber / overview.
+- `uv run pytest` passes; Impeccable detector clean.
 
 ## Phase M - Release & distribution (Linux only, for now)
 
