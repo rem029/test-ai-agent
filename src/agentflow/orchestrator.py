@@ -202,6 +202,58 @@ def _wait_for_requirements_answer(
     return ""
 
 
+def _summary_payload(state: RunState) -> dict:
+    """Build a structured summary payload for the web UI."""
+    steps = getattr(state, "steps", []) or []
+
+    def _step_usage(s: object) -> dict:
+        if isinstance(s, dict):
+            return s.get("usage") or {}
+        return getattr(s, "usage", None) or {}
+
+    def _step_attr(s: object, name: str):
+        if isinstance(s, dict):
+            return s.get(name)
+        return getattr(s, name, None)
+
+    total_cost = sum(float((_step_usage(s).get("cost_usd")) or 0) for s in steps)
+    written_paths: set[str] = set()
+    for s in steps:
+        paths = _step_attr(s, "written_paths") or []
+        written_paths.update(paths)
+    files = sorted(written_paths)
+
+    status = "completed"
+    if getattr(state, "stopped", False):
+        status = "stopped"
+    elif state.blockers and any(b.get("fatal") for b in state.blockers):
+        status = "blocked"
+    else:
+        verify_steps = [s for s in steps if _step_attr(s, "role") == "verify"]
+        if verify_steps:
+            last_v = verify_steps[-1]
+            v_text = _step_attr(last_v, "text") or ""
+            if _parse_verify_result(v_text):
+                pushed = getattr(state, "pushed", None) or {}
+                status = "pushed" if (isinstance(pushed, dict) and pushed.get("pushed")) else "completed"
+            else:
+                status = "failed"
+
+    started = getattr(state, "started_at", 0) or 0
+    finished = getattr(state, "finished_at", 0) or 0
+    duration = max(0.0, finished - started) if finished and started else 0.0
+
+    return {
+        "goal": getattr(state, "goal", "") or "",
+        "status": status,
+        "files": files,
+        "total_cost": total_cost,
+        "duration": duration,
+        "started_at": started,
+        "finished_at": finished,
+    }
+
+
 def _finalize_stopped(
     state: RunState,
     cwd: str,
@@ -219,6 +271,11 @@ def _finalize_stopped(
             {"reason": "user stop signal", "at": state.finished_at},
             database_path=database_path,
         )
+    state.log_event(
+        "summary",
+        _summary_payload(state),
+        database_path=database_path,
+    )
     state.log_event(
         "run_finished",
         {"finished_at": state.finished_at, "pushed": None, "stopped": True},
@@ -420,7 +477,11 @@ report:
 
 Do NOT run the test suite or produce a PASS/FAIL verdict — a later verify step
 runs the tests. This is a code-review pass only.
-Be concise. Respond with your review findings."""
+Be concise. Respond with your review findings.
+
+End your response with exactly one of these two lines:
+BUILD_REVIEW_VERDICT: approve
+BUILD_REVIEW_VERDICT: reject"""
 
 VERIFY_PROMPT = """You are verifying a coding task in this repository.
 
@@ -455,6 +516,10 @@ _REQUIREMENTS_CLEAR_PATTERN = re.compile(
     r"^\s*REQUIREMENTS[ _-]?CLEAR\s*:\s*(yes|no)\b.*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_BUILD_REVIEW_VERDICT_PATTERN = re.compile(
+    r"^\s*BUILD_REVIEW_VERDICT\s*:\s*(approve|reject|pass|fail|approved|rejected)\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def parse_and_strip_requirements_clear(text: str) -> tuple[str, bool | None]:
@@ -486,6 +551,22 @@ def parse_and_strip_build_needed(text: str) -> tuple[str, bool | None]:
     build_needed = val_str == "yes"
     cleaned = _BUILD_NEEDED_PATTERN.sub("", text).strip()
     return cleaned, build_needed
+
+
+def parse_build_review_verdict(text: str) -> tuple[str, bool | None]:
+    """Parse BUILD_REVIEW_VERDICT: approve|reject marker and strip the marker line.
+
+    Returns (cleaned_text, verdict_bool_or_none). True means approved.
+    """
+    if not text:
+        return text, None
+    match = _BUILD_REVIEW_VERDICT_PATTERN.search(text)
+    if not match:
+        return text, None
+    val_str = match.group(1).lower()
+    approved = val_str in ("approve", "pass", "approved")
+    cleaned = _BUILD_REVIEW_VERDICT_PATTERN.sub("", text).strip()
+    return cleaned, approved
 
 
 def is_analysis_only_goal(goal: str) -> bool:
@@ -1401,6 +1482,11 @@ def run_workflow(
             state.finished_at = time.time()
             state.log_event("error", {"error": budget_err}, database_path=database_path)
             state.log_event(
+                "summary",
+                _summary_payload(state),
+                database_path=database_path,
+            )
+            state.log_event(
                 "run_finished",
                 {"finished_at": state.finished_at, "pushed": None},
                 database_path=database_path,
@@ -1420,6 +1506,11 @@ def run_workflow(
             )
             _notify("blocked")
             state.finished_at = time.time()
+            state.log_event(
+                "summary",
+                _summary_payload(state),
+                database_path=database_path,
+            )
             state.log_event(
                 "run_finished",
                 {"finished_at": state.finished_at, "pushed": None},
@@ -1457,6 +1548,11 @@ def run_workflow(
             _say(f"[review] analysis complete (mode: review_only):\n{cleaned_review_text}\n")
             state.finished_at = time.time()
             state.log_event(
+                "summary",
+                _summary_payload(state),
+                database_path=database_path,
+            )
+            state.log_event(
                 "run_finished",
                 {"finished_at": state.finished_at, "pushed": None, "mode": "review_only"},
                 database_path=database_path,
@@ -1468,6 +1564,11 @@ def run_workflow(
 
         plan = review_result.text
         _say(f"[review] plan:\n{plan}\n")
+        state.log_event(
+            "plan",
+            {"plan": plan, "role": "review", "at": time.time()},
+            database_path=database_path,
+        )
 
         # Requirements clarification: the review step already assessed whether
         # the requirements are clear (REQUIREMENTS_CLEAR). If it flagged them as
@@ -1628,6 +1729,11 @@ def run_workflow(
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
+                    "summary",
+                    _summary_payload(state),
+                    database_path=database_path,
+                )
+                state.log_event(
                     "run_finished",
                     {"finished_at": state.finished_at, "pushed": None},
                     database_path=database_path,
@@ -1675,6 +1781,8 @@ def run_workflow(
                     max_calls=getattr(config, "max_read_tool_calls", MAX_READ_TOOL_CALLS_PER_STEP),
                 )
                 br_tool_count, br_tool_names = _step_tool_summary(state, iteration)
+                cleaned_build_review_text, build_review_approved = parse_build_review_verdict(build_review_result.text)
+                build_review_result.text = cleaned_build_review_text
                 rec_build_review = _record(
                     "build_review",
                     "read",
@@ -1741,6 +1849,11 @@ def run_workflow(
                 state.finished_at = time.time()
                 state.log_event("error", {"error": budget_err}, database_path=database_path)
                 state.log_event(
+                    "summary",
+                    _summary_payload(state),
+                    database_path=database_path,
+                )
+                state.log_event(
                     "run_finished",
                     {"finished_at": state.finished_at, "pushed": None},
                     database_path=database_path,
@@ -1771,6 +1884,11 @@ def run_workflow(
             _say(f"[iterate] gave up after {config.max_iterations} iteration(s) without passing verify")
 
         state.log_event(
+            "summary",
+            _summary_payload(state),
+            database_path=database_path,
+        )
+        state.log_event(
             "run_finished",
             {"finished_at": state.finished_at, "pushed": state.pushed},
             database_path=database_path,
@@ -1785,6 +1903,11 @@ def run_workflow(
         if state is not None and state.finished_at is None:
             state.finished_at = time.time()
             error_msg = str(exc_to_record) if exc_to_record is not None else "interrupted"
+            state.log_event(
+                "summary",
+                _summary_payload(state),
+                database_path=database_path,
+            )
             state.log_event(
                 "run_finished",
                 {"finished_at": state.finished_at, "pushed": None, "error": error_msg},

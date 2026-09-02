@@ -377,7 +377,7 @@ def test_js_split_tool_blocks_via_node():
         usage: { backend: 'openrouter', model: 'deepseek/deepseek-chat', cost_usd: 0.0142 }
     };
     const vHtml = app.renderStep(verifyStep, 0);
-    if (!vHtml.includes('step-role') || !vHtml.includes('verify') || !vHtml.includes('iter 2') || !vHtml.includes('PASS') || !vHtml.includes('openrouter · deepseek/deepseek-chat') || !vHtml.includes('$0.0142')) {
+    if (!vHtml.includes('step-role') || !vHtml.includes('Verify/Test') || !vHtml.includes('iter 2') || !vHtml.includes('PASS') || !vHtml.includes('openrouter · deepseek/deepseek-chat') || !vHtml.includes('$0.0142')) {
         process.exit(9);
     }
 
@@ -391,6 +391,29 @@ def test_js_split_tool_blocks_via_node():
     const fHtml = app.renderStep(failStep, 1);
     if (!fHtml.includes('FAIL') || !fHtml.includes('claude-code · claude-3-7-sonnet')) {
         process.exit(10);
+    }
+
+    // 17. Gate labels map roles to human-readable names
+    if (app.gateLabel('review') !== 'Review' || app.gateLabel('build') !== 'Build' || app.gateLabel('verify') !== 'Verify/Test' || app.gateLabel('build_review') !== 'Build review' || app.gateLabel('requirements') !== 'Clarify requirements') {
+        process.exit(17);
+    }
+
+    // 18. Plan bubble renders the plan text
+    const planHtml = app.renderPlanBubble('1. Add login\\n2. Add tests');
+    if (!planHtml.includes('Plan') || !planHtml.includes('Add login') || !planHtml.includes('Add tests')) {
+        process.exit(18);
+    }
+
+    // 19. Summary bubble renders goal, files, status, cost, duration
+    const summaryHtml = app.renderSummaryBubble({
+        goal: 'Add a feature',
+        status: 'pushed',
+        files: ['src/foo.py'],
+        total_cost: 0.1234,
+        duration: 90
+    });
+    if (!summaryHtml.includes('Summary') || !summaryHtml.includes('Add a feature') || !summaryHtml.includes('src/foo.py') || !summaryHtml.includes('Pushed') || !summaryHtml.includes('$0.12') || !summaryHtml.includes('01:30')) {
+        process.exit(19);
     }
 
     // 11. renderRunHeader with full goal, state, cost, duration, and role models
