@@ -462,6 +462,8 @@ function connectRunStream(runId) {
         'run_finished',
         'requirements_pending',
         'requirements_answer',
+        'plan',
+        'summary',
         'done'
     ];
 
@@ -526,8 +528,11 @@ function handleStreamEvent(event) {
         if (statusText) statusText.textContent = 'awaiting your requirements';
     } else if (event.type === 'requirements_answer') {
         requirementsAwaiting = false;
-        const input = document.getElementById('transport-input');
-        if (input) input.placeholder = 'describe a run to start…';
+        updateComposerPlaceholder();
+    } else if (event.type === 'plan') {
+        updateComposerPlaceholder();
+    } else if (event.type === 'summary') {
+        updateComposerPlaceholder();
     } else if (event.type === 'interrupted') {
         if (currentRun) {
             currentRun.interrupted = true;
@@ -548,7 +553,7 @@ function handleStreamEvent(event) {
     updateTransportUI();
 }
 
-function onRunEnded() {
+async function onRunEnded() {
     if (currentRun && !currentRun.finished_at && !currentRun.interrupted) {
         currentRun.finished_at = Date.now() / 1000;
     }
@@ -563,7 +568,22 @@ function onRunEnded() {
         maybeNotify(`agentflow — run ${status.label.toLowerCase()}`, (currentRun.goal || '').slice(0, 100));
     }
 
-    loadSessions(false);
+    await loadSessions(false);
+
+    // Refresh the current session detail so the session-thread status pills stay in sync.
+    if (currentSessionId) {
+        try {
+            const pq = projectQuery();
+            const url = pq ? `/api/sessions/${encodeURIComponent(currentSessionId)}?${pq}` : `/api/sessions/${encodeURIComponent(currentSessionId)}`;
+            const res = await fetch(url);
+            if (res.ok) {
+                currentSessionData = await res.json();
+                renderThread();
+            }
+        } catch (e) {
+            console.error('Failed to refresh session detail:', e);
+        }
+    }
 }
 
 // -------------------------------------------------------------------
@@ -700,6 +720,10 @@ function renderThread() {
             turns.push({ type: 'requirements_pending', payload: ev.payload, seq: ev.seq, ts: ev.ts });
         } else if (ev.type === 'requirements_answer') {
             turns.push({ type: 'requirements_answer', payload: ev.payload, seq: ev.seq, ts: ev.ts });
+        } else if (ev.type === 'plan') {
+            turns.push({ type: 'plan', payload: ev.payload, seq: ev.seq, ts: ev.ts });
+        } else if (ev.type === 'summary') {
+            turns.push({ type: 'summary', payload: ev.payload, seq: ev.seq, ts: ev.ts });
         }
     });
 
@@ -767,12 +791,16 @@ function renderThread() {
                 `;
             } else if (turn.type === 'requirements_answer') {
                 html += renderUserBubble({ body: turn.payload.body || '' }, 'answer');
+            } else if (turn.type === 'plan') {
+                html += renderPlanBubble(turn.payload.plan || '');
+            } else if (turn.type === 'summary') {
+                html += renderSummaryBubble(turn.payload);
             }
         });
     }
 
-    // Live in-progress assistant turn appended at the bottom.
-    if (assistantTurn) {
+    // Live in-progress assistant turn appended at the bottom only when the run is actually live.
+    if (assistantTurn && isRunLive()) {
         html += renderLiveAssistantBubble(assistantTurn);
     }
 
@@ -832,10 +860,16 @@ function renderThread() {
 
 function renderStep(step, index) {
     const role = step.role || 'step';
+    const label = gateLabel(role);
     const isVerify = role === 'verify';
     const isBuild = role === 'build';
+    const isBuildReview = role === 'build_review';
     const isFailedBuild = isBuild && step.success === false;
-    const verdict = isVerify ? verifyVerdict(step.text) : (step.success === false ? 'FAIL' : (step.success ? 'PASS' : null));
+    let verdict = isVerify ? verifyVerdict(step.text) : (step.success === false ? 'FAIL' : (step.success ? 'PASS' : null));
+    if (isBuildReview) {
+        const brVerdict = buildReviewVerdict(step.text);
+        if (brVerdict) verdict = brVerdict;
+    }
 
     let verdictHtml = '';
     if (verdict) {
@@ -878,7 +912,7 @@ function renderStep(step, index) {
             <div class="step-header">
                 <div class="step-header-left">
                     <span class="step-caret ${isFailedBuild ? '' : 'open'}"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
-                    <span class="step-role mono">${escapeHtml(role)}</span>
+                    <span class="step-role mono">${escapeHtml(label)}</span>
                     ${iter ? `<span class="mono" style="color: var(--text-faint);">· ${escapeHtml(iter)}</span>` : ''}
                     ${verdictHtml}
                 </div>
@@ -969,6 +1003,7 @@ function renderBubbleToolCalls(toolCalls) {
 
 function renderAssistantBubble(step, index, toolCalls) {
     const role = step.role || 'step';
+    const label = gateLabel(role);
     const isLive = step.in_progress === true;
     const bubbleClass = isLive ? 'assistant live' : 'assistant';
     const stepHtml = renderStep(step, index);
@@ -978,8 +1013,8 @@ function renderAssistantBubble(step, index, toolCalls) {
     return `
         <div class="chat-bubble ${bubbleClass}" data-step-index="${index}" data-role="${escapeHtml(role)}">
             <div class="bubble-header">
-                <span class="bubble-avatar mono">${escapeHtml(role[0] || '·')}</span>
-                <span class="bubble-role mono">${escapeHtml(role)}</span>
+                <span class="bubble-avatar mono">${escapeHtml(label[0] || '·')}</span>
+                <span class="bubble-role mono">${escapeHtml(label)}</span>
                 ${isLive ? '<span class="bubble-live-pulse" aria-label="working"></span>' : ''}
             </div>
             <div class="bubble-body">
@@ -993,6 +1028,7 @@ function renderAssistantBubble(step, index, toolCalls) {
 
 function renderLiveAssistantBubble(activeTurn) {
     const role = activeTurn.role || 'step';
+    const label = gateLabel(role);
     const liveProse = (activeTurn.liveText || '');
     const { prose: liveClean } = splitToolBlocks(liveProse);
     const hasToolCalls = activeTurn.toolCalls && activeTurn.toolCalls.length > 0;
@@ -1011,8 +1047,8 @@ function renderLiveAssistantBubble(activeTurn) {
     return `
         <div class="chat-bubble assistant live" data-role="${escapeHtml(role)}">
             <div class="bubble-header">
-                <span class="bubble-avatar mono">${escapeHtml(role[0] || '·')}</span>
-                <span class="bubble-role mono">${escapeHtml(role)}</span>
+                <span class="bubble-avatar mono">${escapeHtml(label[0] || '·')}</span>
+                <span class="bubble-role mono">${escapeHtml(label)}</span>
                 <span class="bubble-live-pulse" aria-label="working"></span>
             </div>
             <div class="bubble-body">
@@ -1020,7 +1056,7 @@ function renderLiveAssistantBubble(activeTurn) {
                     <div class="step-header">
                         <div class="step-header-left">
                             <span class="step-caret open"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
-                            <span class="step-role mono">${escapeHtml(role)}</span>
+                            <span class="step-role mono">${escapeHtml(label)}</span>
                             <span class="step-verdict pass">…</span>
                             ${activeTurn.iteration ? `<span class="mono" style="color: var(--text-faint);">· iter ${activeTurn.iteration}</span>` : ''}
                         </div>
@@ -1044,6 +1080,84 @@ function renderUserBubble(msg, kind) {
             </div>
             <div class="bubble-body user-body">
                 <p class="md">${escapeHtml(body)}</p>
+            </div>
+        </div>
+    `;
+}
+
+function gateLabel(role) {
+    const labels = {
+        review: 'Review',
+        requirements: 'Clarify requirements',
+        build: 'Build',
+        build_review: 'Build review',
+        verify: 'Verify/Test'
+    };
+    return labels[role] || role;
+}
+
+function buildReviewVerdict(text) {
+    if (!text) return null;
+    const m = text.match(/^\s*BUILD_REVIEW_VERDICT\s*:\s*(approve|reject|pass|fail|approved|rejected)\b/im);
+    if (!m) return null;
+    const v = m[1].toLowerCase();
+    if (v === 'approve' || v === 'pass' || v === 'approved') return 'PASS';
+    if (v === 'reject' || v === 'fail' || v === 'rejected') return 'FAIL';
+    return null;
+}
+
+function renderPlanBubble(planText) {
+    if (!planText || !planText.trim()) return '';
+    return `
+        <div class="chat-bubble assistant plan-bubble" data-role="plan">
+            <div class="bubble-header">
+                <span class="bubble-avatar mono">P</span>
+                <span class="bubble-role mono">Plan</span>
+            </div>
+            <div class="bubble-body">
+                <div class="md">${renderMarkdown(planText)}</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderSummaryBubble(payload) {
+    const goal = payload.goal || '';
+    const status = payload.status || 'completed';
+    const files = payload.files || [];
+    const totalCost = typeof payload.total_cost === 'number' ? payload.total_cost : 0;
+    const costStr = totalCost > 0 ? `$${totalCost.toFixed(totalCost < 0.01 ? 4 : 2)}` : '$0.00';
+    const duration = payload.duration || 0;
+    const durStr = formatUnifiedDuration(duration);
+
+    const fileChips = files.map(f => {
+        return `<span class="change-chip edit"><span class="change-glyph">±</span><span class="change-path mono">${escapeHtml(f)}</span></span>`;
+    }).join('');
+
+    const statusVerdict = status === 'pushed' ? 'Pushed' :
+        status === 'completed' ? 'Completed' :
+        status === 'failed' ? 'Failed' :
+        status === 'stopped' ? 'Stopped' :
+        status === 'blocked' ? 'Blocked' : status;
+
+    return `
+        <div class="chat-bubble assistant summary-bubble" data-role="summary">
+            <div class="bubble-header">
+                <span class="bubble-avatar mono">S</span>
+                <span class="bubble-role mono">Summary</span>
+                <span class="summary-status ${status}">${escapeHtml(statusVerdict)}</span>
+            </div>
+            <div class="bubble-body">
+                ${goal ? `<p class="md"><strong>Goal:</strong> ${escapeHtml(goal)}</p>` : ''}
+                ${files.length ? `<div class="summary-section"><div class="summary-section-title mono">Files changed</div><div class="change-files">${fileChips}</div></div>` : ''}
+                <div class="summary-meta mono">
+                    <span>status: ${escapeHtml(status)}</span>
+                    <span>·</span>
+                    <span>cost: ${costStr}</span>
+                    <span>·</span>
+                    <span>duration: ${durStr}</span>
+                </div>
+                <p class="md summary-next">What would you like to do next?</p>
             </div>
         </div>
     `;
@@ -1204,10 +1318,49 @@ ${turns}
 // -------------------------------------------------------------------
 // Transport Bar & Composer
 // -------------------------------------------------------------------
+function currentGateState() {
+    if (!currentRun) return 'idle';
+    if (requirementsAwaiting) return 'requirements';
+    if (isRunLive()) {
+        const steps = currentRun.steps || [];
+        const lastStep = steps.length > 0 ? steps[steps.length - 1] : null;
+        if (!lastStep) return 'plan_review';
+        const role = lastStep.role;
+        if (role === 'review' || role === 'requirements') return 'plan_review';
+        if (role === 'build_review') return 'build_review';
+        if (role === 'verify') {
+            const lastVerify = steps.filter(s => s.role === 'verify').pop();
+            if (lastVerify) {
+                const vText = lastVerify.text || '';
+                const verdict = verifyVerdict(vText);
+                if (verdict === 'FAIL' || lastVerify.success === false) return 'verify_failed';
+            }
+            return 'steer';
+        }
+        return 'steer';
+    }
+    return 'finished';
+}
+
+function updateComposerPlaceholder() {
+    const input = document.getElementById('transport-input');
+    if (!input || input.value) return;
+    const gate = currentGateState();
+    const placeholders = {
+        idle: 'describe a run to start…',
+        requirements: 'answer the requirements question…',
+        plan_review: 'approve this plan or ask for changes…',
+        build_review: 'approve the build or ask for changes…',
+        verify_failed: 'verify failed — steer the next build iteration…',
+        steer: 'steer this run…',
+        finished: "what's next?"
+    };
+    input.placeholder = placeholders[gate] || placeholders.idle;
+}
+
 function updateTransportUI() {
     const running = isRunLive();
     const stopBtn = document.getElementById('transport-stop');
-    const input = document.getElementById('transport-input');
 
     if (stopBtn) {
         stopBtn.disabled = !running;
@@ -1218,10 +1371,7 @@ function updateTransportUI() {
         }
     }
 
-    if (input && !input.value) {
-        input.placeholder = running ? 'steer this run…' : 'describe a run to start…';
-    }
-
+    updateComposerPlaceholder();
     updateTransportStatus();
 }
 
@@ -2743,6 +2893,9 @@ if (typeof module !== 'undefined' && module.exports) {
         renderAssistantBubble,
         renderLiveAssistantBubble,
         renderUserBubble,
+        renderPlanBubble,
+        renderSummaryBubble,
+        gateLabel,
         renderChangesFooter,
         summarizeStepChanges,
         renderRunHeader,

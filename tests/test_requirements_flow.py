@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from agentflow.backends.base import RunResult, Usage
 from agentflow.config import Config, RoleConfig
+from agentflow.database import list_events
 from agentflow.orchestrator import is_analysis_only_goal, run_workflow
 
 import pytest
@@ -187,3 +188,47 @@ def test_analysis_question_goal_never_builds(cwd):
     assert "build" not in roles
     assert state.finished_at is not None
     assert state.pushed is None
+
+
+def test_plan_event_emitted_after_review(cwd):
+    review = "Plan: build a thing.\nBUILD_NEEDED: yes\nREQUIREMENTS_CLEAR: yes"
+    build = "Implemented."
+    verify = "Tests pass\nVERIFY_RESULT: PASS"
+    config = _config(build_review=False)
+    state = _run("build a thing", config, cwd, [review, build, verify])
+
+    events = list_events(state.run_id, path=Path(cwd) / "test.db")
+    plan_events = [e for e in events if e["type"] == "plan"]
+    assert len(plan_events) == 1
+    assert "build a thing" in plan_events[0]["payload"]["plan"]
+
+
+def test_summary_event_emitted_on_finish(cwd):
+    review = "Plan: build a thing.\nBUILD_NEEDED: yes\nREQUIREMENTS_CLEAR: yes"
+    build = "Implemented."
+    verify = "Tests pass\nVERIFY_RESULT: PASS"
+    config = _config(build_review=False)
+    state = _run("build a thing", config, cwd, [review, build, verify])
+
+    events = list_events(state.run_id, path=Path(cwd) / "test.db")
+    summary_events = [e for e in events if e["type"] == "summary"]
+    assert len(summary_events) >= 1
+    summary = summary_events[-1]["payload"]
+    assert summary["goal"] == "build a thing"
+    assert summary["status"] in ("completed", "pushed")
+    assert "duration" in summary
+    assert "total_cost" in summary
+
+
+def test_build_review_verdict_is_stripped(cwd):
+    review = "Plan: build a thing.\nBUILD_NEEDED: yes\nREQUIREMENTS_CLEAR: yes"
+    build = "Implemented."
+    build_review = "Looks good.\nBUILD_REVIEW_VERDICT: approve"
+    verify = "Tests pass\nVERIFY_RESULT: PASS"
+    config = _config(build_review=True)
+    state = _run("build a thing", config, cwd, [review, build, build_review, verify])
+
+    br_steps = [s for s in state.steps if s["role"] == "build_review"]
+    assert len(br_steps) == 1
+    assert "BUILD_REVIEW_VERDICT" not in br_steps[0]["text"]
+    assert "approve" not in br_steps[0]["text"].lower()

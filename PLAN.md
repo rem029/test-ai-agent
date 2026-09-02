@@ -496,6 +496,10 @@ file chips + tool count, auto-scroll with follow/pause indicator, and the
 timeline removed from the web UI. Cache-busting query params + no-cache headers
 added to static assets.
 
+Phase P (conversational workflow UI) done on `phase-p`: explicit `plan` and
+`summary` events, gate labels, plan/summary bubbles, decision-gate composer
+placeholders, and `BUILD_REVIEW_VERDICT` marker support.
+
 Also merged to `dev` this session (not part of a numbered phase):
 - Readable tool-arg validation errors + `file_path`/`filepath`/`filename`
   aliases for `path` on the file tools; `Toolset.capability_hints()` nudging
@@ -1522,7 +1526,7 @@ inside each turn, and live runs update automatically without a manual refresh.
 - The timeline is removed from the web UI.
 - `uv run pytest` passes; Impeccable detector clean.
 
-## Phase P - Conversational workflow UI (do next)
+## Phase P - Conversational workflow UI (done)
 
 **Requested by the user after Phase O review.**
 
@@ -1616,6 +1620,8 @@ build review, Phase H/I tool loop, Phase O chat UI). Phase P is about:
 - A summary bubble appears at the end of every run.
 - The composer is always ready for the next user turn after a run finishes.
 - `uv run pytest` passes.
+
+**Status (2026-09-03):** implemented on `phase-p` (merging to `dev`). Backend emits explicit `plan` events after review and `summary` events on every run-finish path; `BUILD_REVIEW_PROMPT` asks for a `BUILD_REVIEW_VERDICT: approve|reject` marker and the orchestrator strips it before recording the step. Web UI maps each role to a human gate label (`Review`, `Clarify requirements`, `Plan`, `Build`, `Build review`, `Verify/Test`, `Summary`), renders the plan as its own bubble, renders a summary bubble at the end, and switches the composer placeholder based on the current gate state. 414 tests pass.
 
 ## Phase M - Release & distribution (Linux only, for now)
 
@@ -1736,5 +1742,5 @@ POSIX `sh`, `set -eu`, no bashisms. Flow:
 
 - Gitignore `.agentflow-test-todo/` (a stray workflow output artifact committed
   to the repo root).
-- Credential handling: secrets moved from `agentflow.config.yaml` to `.env` (env vars only). Added `.env.example` and hand-rolled `agentflow.dotenv` loader/writer.
+- Credential handling: secrets live in `agentflow.config.yaml` (`credentials:` block) with `.env` as a dev-only override (resolution order: env var > config file `credentials.<field>` > none). Added `.env.example` and hand-rolled `agentflow.dotenv` loader/writer.
 
