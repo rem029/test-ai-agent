@@ -78,7 +78,7 @@ def test_record_helper_no_prose_without_tools():
     res = RunResult(success=True, text="   \n  ", usage=Usage("m", "m", 1, 1, 0.0), raw={})
     rec = _record("verify", "verify", 1, res)
     assert rec["no_response"] is True
-    assert rec["text"] == "_The verify backend returned no written response._"
+    assert rec["text"] == "_The verify step completed without a written summary._"
 
 
 def test_record_helper_no_prose_with_tools():
@@ -86,8 +86,8 @@ def test_record_helper_no_prose_with_tools():
     rec = _record("build", "write", 1, res, tool_count=2, tool_names="ReadFile, Shell")
     assert rec["no_response"] is True
     assert rec["text"] == (
-        "_The build backend returned no written response._ "
-        "It ran 2 tool call(s) this step (ReadFile, Shell) — see Tool Calls below."
+        "_The build step completed without a written summary._ "
+        "It ran 2 tool call(s) this step (ReadFile, Shell)."
     )
 
 
@@ -118,7 +118,7 @@ def test_workflow_verify_step_no_prose(tmp_path):
     verify_step = state.steps[2]
     assert verify_step["role"] == "verify"
     assert verify_step["no_response"] is True
-    assert "no written response" in verify_step["text"]
+    assert "without a written summary" in verify_step["text"]
 
 
 def test_workflow_verify_step_runs_tools_then_no_prose(tmp_path):
@@ -154,7 +154,7 @@ def test_workflow_verify_step_runs_tools_then_no_prose(tmp_path):
     verify_step = state.steps[2]
     assert verify_step["role"] == "verify"
     assert verify_step["no_response"] is True
-    assert "no written response" in verify_step["text"]
+    assert "without a written summary" in verify_step["text"]
     assert "ReadFile" in verify_step["text"]
     assert "It ran 1 tool call(s) this step" in verify_step["text"]
 

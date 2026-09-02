@@ -978,6 +978,11 @@ function renderThread() {
         } else if (ev.type === 'step_finished') {
             steps.push(ev.payload);
             activeStep = null;
+        } else if (ev.type === 'text_delta') {
+            if (activeStep) activeStep.liveText = (activeStep.liveText || '') + (ev.payload.delta || '');
+            if (activeStep) activeStep.liveToolCallCount = currentToolCalls.length;
+        } else if (ev.type === 'tool_call') {
+            if (activeStep) activeStep.liveToolCallCount = currentToolCalls.length;
         } else if (ev.type === 'blocker') {
             blockers.push(ev.payload);
         } else if (ev.type === 'user_message') {
@@ -1030,21 +1035,26 @@ function renderThread() {
             html += renderStep(step, idx);
         });
     } else if (activeStep) {
+        const roleLabel = (activeStep.role || 'step');
+        const liveProse = (activeStep.liveText || '');
+        const liveClean = liveProse ? splitToolBlocks(liveProse).prose.trim() : '';
+        const liveHtml = liveClean
+            ? `<div class="md">${renderMarkdown(liveClean)}</div>`
+            : (activeStep.liveToolCallCount
+                ? `<div class="md step-live">working (${activeStep.liveToolCallCount} tool call${activeStep.liveToolCallCount === 1 ? '' : 's'} so far)…</div>`
+                : `<div class="md step-live thinking">thinking…</div>`);
         html += `
-            <div class="step-item">
+            <div class="step-item step-live-item">
                 <div class="step-header">
                     <div class="step-header-left">
                         <span class="step-caret open"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
-                        <span class="step-role mono">${escapeHtml(activeStep.role || 'step')}</span>
+                        <span class="step-role mono">${escapeHtml(roleLabel)}</span>
+                        <span class="step-verdict pass">…</span>
                         ${activeStep.iteration ? `<span class="mono" style="color: var(--text-faint);">· iter ${activeStep.iteration}</span>` : ''}
                     </div>
-                    <div class="step-meta mono">
-                        <span>running…</span>
-                    </div>
+                    <div class="step-meta mono"><span>working…</span></div>
                 </div>
-                <div class="step-body">
-                    <div class="md step-noresponse">Step in progress…</div>
-                </div>
+                <div class="step-body">${liveHtml}</div>
             </div>
         `;
     } else {

@@ -1118,6 +1118,16 @@ def _step_tool_summary(state: RunState, step_index: int) -> tuple[int, str]:
     return count, names_str
 
 
+def _step_written_paths(state: RunState, step_index: int) -> list[str]:
+    paths: list[str] = []
+    for c in state.tool_calls:
+        if c.get("step_index") != step_index:
+            continue
+        if c.get("tool_name") in ("WriteFile", "EditFile") and c.get("args", {}).get("path"):
+            paths.append(c["args"]["path"])
+    return paths
+
+
 def _record(
     role: str,
     mode: str,
@@ -1126,6 +1136,7 @@ def _record(
     *,
     tool_count: int = 0,
     tool_names: str = "",
+    written_paths: list[str] | None = None,
 ) -> dict:
     d = {
         "role": role,
@@ -1136,9 +1147,11 @@ def _record(
         "usage": asdict(result.usage),
     }
     if len(result.text.strip()) < 3:
-        msg = f"_The {role} backend returned no written response._"
+        msg = f"_The {role} step completed without a written summary._"
         if tool_count:
-            msg += f" It ran {tool_count} tool call(s) this step ({tool_names}) — see Tool Calls below."
+            msg += f" It ran {tool_count} tool call(s) this step ({tool_names})."
+        if written_paths:
+            msg += f" Wrote: {', '.join(written_paths)}."
         d["text"] = msg
         d["no_response"] = True
     else:
@@ -1598,6 +1611,7 @@ def run_workflow(
                 build_result,
                 tool_count=tool_count,
                 tool_names=tool_names,
+                written_paths=_step_written_paths(state, iteration),
             )
             state.steps.append(rec_build)
             state.log_event("step_finished", {"step": rec_build}, database_path=database_path)
