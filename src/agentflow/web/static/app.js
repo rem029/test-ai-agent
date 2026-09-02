@@ -490,6 +490,10 @@ function connectRunStream(runId) {
     });
 }
 
+function unwrapStepPayload(payload) {
+    return (payload && payload.step) || payload;
+}
+
 function handleStreamEvent(event) {
     if (event.seq && currentEvents.some(ev => ev.seq === event.seq)) {
         return;
@@ -505,7 +509,7 @@ function handleStreamEvent(event) {
     } else if (event.type === 'step_finished') {
         if (currentRun) {
             if (!currentRun.steps) currentRun.steps = [];
-            currentRun.steps.push(event.payload);
+            currentRun.steps.push(unwrapStepPayload(event.payload));
         }
     } else if (event.type === 'tool_call') {
         currentToolCalls.push(event.payload);
@@ -705,12 +709,13 @@ function renderThread() {
         } else if (ev.type === 'tool_call') {
             if (assistantTurn) assistantTurn.toolCalls.push(ev.payload);
         } else if (ev.type === 'step_finished') {
+            const stepData = unwrapStepPayload(ev.payload);
             if (assistantTurn) {
-                turns.push({ ...assistantTurn, ...ev.payload, finished_at: ev.ts, toolCalls: assistantTurn.toolCalls });
+                turns.push({ ...assistantTurn, ...stepData, finished_at: ev.ts, toolCalls: assistantTurn.toolCalls });
                 assistantTurn = null;
                 assistantStepIndex++;
             } else {
-                turns.push({ type: 'assistant', ...ev.payload, finished_at: ev.ts, toolCalls: [], stepIndex: assistantStepIndex });
+                turns.push({ type: 'assistant', ...stepData, finished_at: ev.ts, toolCalls: [], stepIndex: assistantStepIndex });
                 assistantStepIndex++;
             }
         } else if (ev.type === 'blocker') {
@@ -992,7 +997,7 @@ function renderBubbleToolCalls(toolCalls) {
         <div class="bubble-tool-group">
             <button class="bubble-tool-toggle" type="button" aria-expanded="false">
                 <span class="step-caret"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
-                <span class="mono">tool callings (${count})</span>
+                <span class="mono">tool calls (${count})</span>
             </button>
             <div class="bubble-tool-list" hidden>
                 ${listHtml}
@@ -2886,6 +2891,7 @@ if (typeof document !== 'undefined') {
 // -------------------------------------------------------------------
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        unwrapStepPayload,
         splitToolBlocks,
         formatToolReqArgs,
         renderToolReq,

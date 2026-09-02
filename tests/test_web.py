@@ -479,6 +479,34 @@ def test_js_split_tool_blocks_via_node():
     assert res.returncode == 0, f"Node script failed with: {res.stderr}"
 
 
+def test_js_unwrap_step_payload_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    if (app.unwrapStepPayload({step:{role:'review',text:'HELLO'}}).text !== 'HELLO') {
+        process.exit(1);
+    }
+    if (app.unwrapStepPayload({role:'build',text:'HI'}).text !== 'HI') {
+        process.exit(2);
+    }
+    const html = app.renderStep(app.unwrapStepPayload({step:{role:'review',text:'FROM STEP',success:true}}), 0);
+    if (!html.includes('FROM STEP') || html.includes('No written response recorded.')) {
+        process.exit(3);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"
+
+
 def test_api_runs_pagination(tmp_path):
     from agentflow.database import save_run
     from agentflow.orchestrator import RunState
@@ -1841,7 +1869,7 @@ def test_js_chat_first_ui_via_node():
     if (!bubble.includes('changes-footer') || !bubble.includes('src/foo.py')) {
         process.exit(7);
     }
-    if (!bubble.includes('bubble-tool-group') || !bubble.includes('tool callings (1)') || !bubble.includes('WriteFile')) {
+    if (!bubble.includes('bubble-tool-group') || !bubble.includes('tool calls (1)') || !bubble.includes('WriteFile')) {
         process.exit(8);
     }
 
