@@ -487,8 +487,14 @@ L7.3 (web MCP config UI) landed with it.
 
 Phase N (requirements clarification + build review) done and merged to `dev`:
 requirements loop, build-review step, configurable tool-call caps, review
-read-cap fix, empty-response nudge, and DSML param-pair parsing. Phase O
-(chat-first run history with live updates) is the next planned phase.
+read-cap fix, empty-response nudge, and DSML param-pair parsing.
+
+Phase O (chat-first run history) done on branch `phase-o`: thread renders
+chronological chat bubbles (assistant + user + system), tool calls grouped per
+step under a single collapsible "tool callings (N)" toggle, changes footer with
+file chips + tool count, auto-scroll with follow/pause indicator, and the
+timeline removed from the web UI. Cache-busting query params + no-cache headers
+added to static assets.
 
 Also merged to `dev` this session (not part of a numbered phase):
 - Readable tool-arg validation errors + `file_path`/`filepath`/`filename`
@@ -1512,8 +1518,104 @@ inside each turn, and live runs update automatically without a manual refresh.
   timeline click required.
 - A live run appends new assistant/user bubbles and scrolls automatically.
 - File changes are visible per turn without opening a separate tool-call wall.
-- The timeline still works as a scrubber / overview.
+- Tool calls are grouped per step under a single collapsible toggle.
+- The timeline is removed from the web UI.
 - `uv run pytest` passes; Impeccable detector clean.
+
+## Phase P - Conversational workflow UI (do next)
+
+**Requested by the user after Phase O review.**
+
+Goal: make the web console explicitly guide the user through a
+requirements-driven, multi-review workflow where every AI response is visible
+without scrubbing, and the user is asked at each decision gate.
+
+### Desired flow
+
+1. **Goal** — user submits a task in the composer.
+2. **Review / requirements** — AI reviews the goal and gives feedback.
+   - If requirements are incomplete or ambiguous, AI asks clarifying questions.
+   - The user answers by selecting from options or typing their preference.
+   - Loop back to review with the new context until requirements are clear
+     (reuse Phase N's `max_requirements_rounds` / `requirements_pending` flow).
+3. **Plan** — once requirements are clear, AI produces a plan and displays it
+   as a visible assistant bubble.
+4. **Plan review** — a reviewer (can reuse the review backend in `read` mode)
+   checks the plan against requirements.
+   - If the plan is rejected, loop back to review or ask the user.
+   - If approved, proceed.
+5. **Build** — AI executes the approved plan (reuse Phase N's `build_review`).
+6. **Build review** — AI reviews the actual diff/result against the plan.
+   - If rejected, loop back to build with feedback or ask the user.
+   - If approved, proceed.
+7. **Verify / test** — AI runs tests/verification against the plan.
+   - If it fails, loop back to build with feedback (existing `max_iterations`).
+   - If it passes, proceed.
+8. **Summary** — show a concise summary bubble of what was done, files changed,
+   cost, and final status.
+9. **What's next** — prompt the user for a follow-up task or let them start a
+   new turn in the same session.
+
+### Why this is a distinct phase
+
+Most of the backend logic already exists (Phase N requirements loop, Phase N
+build review, Phase H/I tool loop, Phase O chat UI). Phase P is about:
+- **UI clarity**: labeling each gate explicitly ("Review", "Plan", "Plan review",
+  "Build", "Build review", "Verify", "Summary", "What's next").
+- **User interruption at decision gates**: the composer changes placeholder and
+  the input is routed as `answer` / `steer` at the right checkpoints.
+- **No hidden state**: every AI response is rendered in the chat thread as it
+  happens; no timeline scrubbing needed.
+- **Summary / next-action prompt**: a final assistant bubble that summarizes the
+  run and asks the user what to do next.
+
+### Task breakdown
+
+1. **Label steps clearly in the UI**
+   - Map `role` values to human gate labels: `review` → "Review", `build` →
+     "Build", `verify` → "Verify/Test", `build_review` → "Build review",
+     `requirements` → "Clarify requirements".
+   - Render a gate label in each assistant bubble header.
+
+2. **Expose the plan as its own bubble**
+   - When the review backend emits a plan (the prose before `BUILD_NEEDED:`),
+     render it as a dedicated "Plan" bubble between "Review" and "Build".
+   - This may require a new event type (`plan`) or parsing the review step text
+     client-side; prefer backend emitting a `plan` event if ambiguous.
+
+3. **Decision-gate composer states**
+   - `requirements_pending`: composer placeholder becomes "answer the
+     requirements question…" and sends `kind: answer`.
+   - After a plan is shown: composer placeholder becomes "approve this plan or
+     ask for changes…" and sends `kind: steer`.
+   - After build review: composer placeholder becomes "approve the build or ask
+     for changes…".
+   - After verify failure: composer placeholder becomes "verify failed — steer
+     the next build iteration…".
+   - After summary: composer placeholder becomes "what's next?".
+
+4. **Summary bubble**
+   - On `run_finished`, render a final "Summary" assistant bubble with:
+     - Goal
+     - Files changed
+     - Final status (pushed / completed / stopped / failed)
+     - Total cost & duration
+     - "What would you like to do next?"
+
+5. **Backend polish**
+   - Ensure `BUILD_REVIEW_PROMPT` and `REVIEW_PROMPT` emit clear
+     approve/reject markers that the UI can surface.
+   - Consider emitting explicit `plan`, `plan_review`, `build_review` events so
+     the UI doesn't have to heuristically label steps.
+
+### Success criteria
+
+- Every AI response is visible in the chat thread without timeline interaction.
+- Requirements questions, plan approval, build review, and verify failure all
+  surface clear composer prompts.
+- A summary bubble appears at the end of every run.
+- The composer is always ready for the next user turn after a run finishes.
+- `uv run pytest` passes.
 
 ## Phase M - Release & distribution (Linux only, for now)
 
