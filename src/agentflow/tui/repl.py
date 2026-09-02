@@ -453,6 +453,11 @@ def _execute_turn(
 
     run_box: dict[str, Any] = {"state": None, "exc": None}
 
+    def _requirements_passthrough(questions: str) -> None:
+        # The REPL worker thread cannot safely prompt this thread, so surface
+        # the questions and proceed (interactive clarification is a follow-up).
+        console.print(f"[yellow]requirements need input[/yellow] (proceeding):\n{questions[:600]}")
+
     def _run_turn() -> None:
         try:
             run_box["state"] = run_workflow(
@@ -463,6 +468,7 @@ def _execute_turn(
                 session_id=session_id,
                 database_path=database_path,
                 permission_handler=broker.handler,
+                requirements_responder=_requirements_passthrough,
                 quiet=True,
             )
         except Exception as exc:

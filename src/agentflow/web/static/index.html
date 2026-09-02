@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>agentflow</title>
     <link rel="stylesheet" href="/static/console.css">
 </head>
@@ -117,7 +117,7 @@
     <!-- Topbar -->
     <header class="topbar">
         <div class="topbar-left">
-            <button id="mobile-rail-toggle" class="btn-icon mobile-only" title="Toggle sessions" aria-label="Toggle sessions" style="display: none;">
+            <button id="mobile-rail-toggle" class="btn-icon mobile-rail-toggle" title="Toggle sessions" aria-label="Toggle sessions" aria-controls="session-rail" aria-expanded="false">
                 <svg class="icon"><use href="#icon-menu"/></svg>
             </button>
             <span class="brand">agentflow</span>
@@ -137,9 +137,13 @@
     <!-- Main Workspace Stage -->
     <div class="main-stage">
         <!-- Session Rail -->
-        <aside id="session-rail" class="session-rail">
+        <div id="rail-backdrop" class="rail-backdrop" hidden></div>
+        <aside id="session-rail" class="session-rail" aria-label="Sessions">
             <div class="rail-header">
                 <span>Sessions</span>
+                <button id="rail-close" class="btn-icon mobile-rail-toggle" title="Close sessions" aria-label="Close sessions">
+                    <svg class="icon"><use href="#icon-close"/></svg>
+                </button>
             </div>
             <div id="session-list" class="session-list mono"></div>
             <div class="rail-footer">
@@ -313,6 +317,19 @@
                         <div class="form-group">
                             <label for="config-max_cost_usd">Max Cost (USD)</label>
                             <input type="number" id="config-max_cost_usd" name="max_cost_usd" step="0.01" min="0" placeholder="e.g. 2.50 (empty = no limit)">
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label for="config-max_requirements_rounds">Clarify Rounds</label>
+                            <input type="number" id="config-max_requirements_rounds" name="max_requirements_rounds" min="0" max="10" value="3">
+                            <p class="form-hint">Max times to ask you to clarify requirements (0 = off).</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-build_review" name="build_review">
+                                <span>Review build before verify</span>
+                            </label>
                         </div>
                     </div>
 

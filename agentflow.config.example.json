@@ -12,6 +12,8 @@
     "model": "deepseek/deepseek-chat"
   },
   "max_iterations": 3,
+  "max_requirements_rounds": 3,
+  "build_review": true,
   "mcp_servers": [
     {
       "name": "playwright",

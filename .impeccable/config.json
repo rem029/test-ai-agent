@@ -74,6 +74,12 @@
         "value": "#20242b",
         "createdAt": "2026-08-29T20:11:18.487Z",
         "reason": "Transport console design system, documented in DESIGN.md scale:/colors: blocks; degraded regex detector cannot resolve CSS custom properties or read the scale: key"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "16px",
+        "createdAt": "2026-09-02T00:00:00.000Z",
+        "reason": "Mobile (<700px) iOS anti-zoom exception: focusing a control with font-size below 16px triggers iOS viewport zoom; applied to inputs/textarea/select and .transport-input on the mobile breakpoint only"
       }
     ]
   }

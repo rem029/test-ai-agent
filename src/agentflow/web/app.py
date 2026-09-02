@@ -73,6 +73,8 @@ class ConfigUpdate(BaseModel):
     verify_backend: str = Field(..., description="Backend for verify role")
     verify_model: Optional[str] = None
     max_iterations: int = Field(3, ge=1, le=10)
+    max_requirements_rounds: int = Field(3, ge=0, le=10)
+    build_review: bool = True
     permissions: Optional[PermissionMode] = None
     max_cost_usd: Optional[float] = Field(None, ge=0)
     openrouter_api_key: Optional[str] = None
@@ -99,11 +101,13 @@ class RunCreate(BaseModel):
     verify_backend: Optional[str] = None
     verify_model: Optional[str] = None
     max_iterations: Optional[int] = Field(None, ge=1, le=10)
+    max_requirements_rounds: Optional[int] = Field(None, ge=0, le=10)
+    build_review: Optional[bool] = None
 
 
 class MessageCreate(BaseModel):
     body: str = Field(..., min_length=1)
-    kind: str = Field("steer", pattern="^(steer|note)$")
+    kind: str = Field("steer", pattern="^(steer|note|answer)$")
 
 
 
@@ -128,6 +132,14 @@ def _build_config_from_overrides(
         build=update_role("build", overrides.build_backend, overrides.build_model),
         verify=update_role("verify", overrides.verify_backend, overrides.verify_model),
         max_iterations=overrides.max_iterations if overrides.max_iterations else base_config.max_iterations,
+        max_requirements_rounds=(
+            overrides.max_requirements_rounds
+            if overrides.max_requirements_rounds is not None
+            else base_config.max_requirements_rounds
+        ),
+        build_review=(
+            overrides.build_review if overrides.build_review is not None else base_config.build_review
+        ),
         permissions=base_config.permissions,
         max_cost_usd=base_config.max_cost_usd,
         notifications=base_config.notifications,
@@ -277,6 +289,8 @@ def create_app(
             build=RoleConfig(backend=data.build_backend, model=data.build_model),
             verify=RoleConfig(backend=data.verify_backend, model=data.verify_model),
             max_iterations=data.max_iterations,
+            max_requirements_rounds=data.max_requirements_rounds,
+            build_review=data.build_review,
             permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
             max_cost_usd=max_cost,
             notifications=notif_cfg,

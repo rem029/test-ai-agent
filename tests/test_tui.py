@@ -1087,7 +1087,7 @@ def test_repl_scripted_session(isolate_database, capsys):
         except StopIteration:
             raise EOFError
 
-    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, requirements_responder=None, quiet=False):
         # Emit representative events
         append_event(
             run_id,
@@ -1203,7 +1203,7 @@ def test_repl_dedup_consecutive_tools(isolate_database, capsys):
         except StopIteration:
             raise EOFError
 
-    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, requirements_responder=None, quiet=False):
         append_event(run_id, 1, "run_started", {"run_id": run_id, "session_id": session_id, "goal": goal}, path=database_path)
         append_event(run_id, 2, "step_started", {"role": "build", "iteration": 1}, path=database_path)
         # First call
@@ -1534,7 +1534,7 @@ def test_turn_interactive_steer(isolate_database):
             return prompt_responses.pop(0)
         raise EOFError
 
-    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, requirements_responder=None, quiet=False):
         append_event(run_id, 1, "run_started", {"run_id": run_id, "session_id": session_id, "goal": goal}, path=database_path)
         append_event(run_id, 2, "step_started", {"role": "build", "iteration": 1}, path=database_path)
         time.sleep(0.05)
@@ -1603,7 +1603,7 @@ def test_turn_interactive_uses_raw_patch_stdout(isolate_database):
     async def fake_prompt_async(*args, **kwargs):
         raise EOFError
 
-    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, quiet=False):
+    def fake_workflow(goal, config, cwd, run_id, session_id, database_path=None, permission_handler=None, requirements_responder=None, quiet=False):
         append_event(run_id, 1, "run_started", {"run_id": run_id, "session_id": session_id, "goal": goal}, path=database_path)
         time.sleep(0.01)
         append_event(run_id, 2, "run_finished", {"finished_at": time.time()}, path=database_path)

@@ -111,6 +111,8 @@ verify:
   backend: openrouter
   model: deepseek/deepseek-chat
 max_iterations: 3
+max_requirements_rounds: 3  # how many times to ask clarifying questions before building (0 = off)
+build_review: true  # review the change in a dedicated step before verify runs the tests
 permissions: auto  # auto | prompt | deny
 max_cost_usd: 1.00  # optional budget limit in USD
 ```

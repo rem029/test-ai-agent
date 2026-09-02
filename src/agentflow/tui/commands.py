@@ -158,6 +158,8 @@ def dispatch(
                 f"  • permissions: {config.permissions}",
                 f"  • max_cost_usd: {f'${config.max_cost_usd:.2f}' if config.max_cost_usd is not None else 'unlimited'}",
                 f"  • max_iterations: {config.max_iterations}",
+                f"  • max_requirements_rounds: {config.max_requirements_rounds}",
+                f"  • build_review: {config.build_review}",
             ]
             return CommandResult("\n".join(lines))
 

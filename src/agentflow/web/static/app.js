@@ -32,6 +32,7 @@ let lastNotifiedRunId = null;
 
 // Config state
 let mcpServersList = [];
+let requirementsAwaiting = false;
 
 // -------------------------------------------------------------------
 // Helper: Is Run Live & Run State
@@ -236,7 +237,7 @@ function renderSessionRail() {
             <div class="session-row ${isActive ? 'active' : ''}" data-session-id="${escapeHtml(s.session_id)}" title="${escapeHtml(rawTitle)}">
                 <div class="session-row-title">
                     <span class="session-marker">${marker}</span>
-                    <span style="overflow: hidden; text-overflow: ellipsis;">${title}</span>
+                    <span class="session-title-text">${title}</span>
                 </div>
                 <div class="session-row-meta tabular-nums">
                     <span>${runsCount} run${runsCount === 1 ? '' : 's'}</span>
@@ -256,12 +257,21 @@ function renderSessionRail() {
     });
 }
 
+function setSessionRailOpen(open) {
+    const rail = document.getElementById('session-rail');
+    const toggle = document.getElementById('mobile-rail-toggle');
+    const backdrop = document.getElementById('rail-backdrop');
+    if (rail) rail.classList.toggle('mobile-open', open);
+    if (toggle) toggle.setAttribute('aria-expanded', String(open));
+    if (backdrop) backdrop.hidden = !open;
+    document.body.classList.toggle('rail-open', open);
+}
+
 async function selectSession(sessionId) {
     currentSessionId = sessionId;
     renderSessionRail();
 
-    const rail = document.getElementById('session-rail');
-    if (rail) rail.classList.remove('mobile-open');
+    setSessionRailOpen(false);
 
     try {
         const pq = projectQuery();
@@ -308,6 +318,7 @@ function startNewSession() {
     }
 
     renderSessionRail();
+    setSessionRailOpen(false);
 
     const topbarSession = document.getElementById('topbar-session');
     if (topbarSession) {
@@ -465,6 +476,8 @@ function connectRunStream(runId) {
         'user_message',
         'interrupted',
         'run_finished',
+        'requirements_pending',
+        'requirements_answer',
         'done'
     ];
 
@@ -521,6 +534,16 @@ function handleStreamEvent(event) {
     } else if (event.type === 'user_message') {
         const queuePill = document.getElementById('transport-queue-pill');
         if (queuePill) queuePill.hidden = true;
+    } else if (event.type === 'requirements_pending') {
+        requirementsAwaiting = true;
+        const input = document.getElementById('transport-input');
+        if (input) input.placeholder = 'answer the requirements question…';
+        const statusText = document.getElementById('transport-status-text');
+        if (statusText) statusText.textContent = 'awaiting your requirements';
+    } else if (event.type === 'requirements_answer') {
+        requirementsAwaiting = false;
+        const input = document.getElementById('transport-input');
+        if (input) input.placeholder = 'describe a run to start…';
     } else if (event.type === 'interrupted') {
         if (currentRun) {
             currentRun.interrupted = true;
@@ -1360,17 +1383,24 @@ async function handleTransportSubmit() {
         if (running) {
             const pq = projectQuery();
             const url = `/api/runs/${encodeURIComponent(currentRunId)}/messages` + (pq ? `?${pq}` : '');
+            const kind = requirementsAwaiting ? 'answer' : 'steer';
             const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ body: text, kind: 'steer' })
+                body: JSON.stringify({ body: text, kind })
             });
             if (res.ok) {
                 input.value = '';
-                const queuePill = document.getElementById('transport-queue-pill');
-                if (queuePill) {
-                    queuePill.textContent = 'steer queued — applied at the next step';
-                    queuePill.hidden = false;
+                if (kind === 'answer') {
+                    requirementsAwaiting = false;
+                    input.placeholder = 'describe a run to start…';
+                    showTransportFeedback('requirements answered', 'info');
+                } else {
+                    const queuePill = document.getElementById('transport-queue-pill');
+                    if (queuePill) {
+                        queuePill.textContent = 'steer queued — applied at the next step';
+                        queuePill.hidden = false;
+                    }
                 }
             } else {
                 const data = await res.json().catch(() => ({}));
@@ -1842,6 +1872,12 @@ async function loadConfig() {
         const maxI = document.getElementById('config-max_iterations');
         if (maxI && config.max_iterations !== undefined) maxI.value = config.max_iterations;
 
+        const reqRounds = document.getElementById('config-max_requirements_rounds');
+        if (reqRounds && config.max_requirements_rounds !== undefined) reqRounds.value = config.max_requirements_rounds;
+
+        const buildReview = document.getElementById('config-build_review');
+        if (buildReview && config.build_review !== undefined) buildReview.checked = !!config.build_review;
+
         const perms = document.getElementById('config-permissions');
         if (perms && config.permissions) perms.value = config.permissions;
 
@@ -2082,6 +2118,8 @@ async function submitConfig(e) {
         verify_backend: form.verify_backend ? form.verify_backend.value : '',
         verify_model: (form.verify_model && form.verify_model.value) || null,
         max_iterations: form.max_iterations ? parseInt(form.max_iterations.value, 10) : 3,
+        max_requirements_rounds: form.max_requirements_rounds ? parseInt(form.max_requirements_rounds.value, 10) : 3,
+        build_review: form.build_review ? form.build_review.checked : true,
         permissions: (form.permissions && form.permissions.value) || 'auto',
         max_cost_usd: maxCostVal,
         openrouter_api_key: keyVal.trim() || null,
@@ -2715,9 +2753,19 @@ if (typeof document !== 'undefined') {
         if (mobileToggle) {
             mobileToggle.addEventListener('click', () => {
                 const rail = document.getElementById('session-rail');
-                if (rail) rail.classList.toggle('mobile-open');
+                setSessionRailOpen(!(rail && rail.classList.contains('mobile-open')));
             });
         }
+
+        const railClose = document.getElementById('rail-close');
+        if (railClose) railClose.addEventListener('click', () => setSessionRailOpen(false));
+
+        const railBackdrop = document.getElementById('rail-backdrop');
+        if (railBackdrop) railBackdrop.addEventListener('click', () => setSessionRailOpen(false));
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') setSessionRailOpen(false);
+        });
 
         setupPlayheadControls();
         setupFileMention();

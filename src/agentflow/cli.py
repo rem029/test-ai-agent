@@ -67,6 +67,10 @@ def _apply_overrides(config, args):
         config.workflow_mode = "review_only"
     if args.max_cost_usd is not None:
         config.max_cost_usd = args.max_cost_usd
+    if args.max_requirements_rounds is not None:
+        config.max_requirements_rounds = args.max_requirements_rounds
+    if args.no_build_review:
+        config.build_review = False
     if args.review_backend:
         config.review.backend = args.review_backend
     if args.review_model is not None:
@@ -175,6 +179,17 @@ def main(argv: list[str] | None = None) -> int:
         "--max-cost-usd",
         type=float,
         help="Maximum cumulative budget in USD for this workflow run",
+    )
+    parser.add_argument(
+        "--max-requirements-rounds",
+        type=int,
+        default=None,
+        help="Max clarification rounds before proceeding (default 3; 0 disables requirements clarification)",
+    )
+    parser.add_argument(
+        "--no-build-review",
+        action="store_true",
+        help="Skip the post-build code review step (build review is on by default)",
     )
     parser.add_argument("--review-backend", choices=list(BACKENDS), help="Override review backend")
     parser.add_argument("--review-model", help="Override review model")
@@ -464,8 +479,28 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_repl(config, cwd=os.getcwd(), session_id=args.resume)
 
+    def _requirements_responder(questions: str) -> str | None:
+        if not sys.stdin.isatty():
+            print(f"[requirements] needs your input (non-interactive, proceeding):\n{questions}", file=sys.stderr)
+            return None
+        print("\n" + "=" * 60)
+        print("REQUIREMENTS: the plan needs clarification before building.")
+        print("=" * 60)
+        print(questions)
+        print("=" * 60)
+        try:
+            return input("Your requirements (press Enter to skip and proceed):\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+
     try:
-        state = run_workflow(args.goal, config, cwd=os.getcwd(), session_id=args.resume)
+        state = run_workflow(
+            args.goal,
+            config,
+            cwd=os.getcwd(),
+            session_id=args.resume,
+            requirements_responder=_requirements_responder if config.max_requirements_rounds else None,
+        )
     except RunInProgressError as err:
         print(f"Error: a run is already in progress for {err.cwd}", file=sys.stderr)
         return 1

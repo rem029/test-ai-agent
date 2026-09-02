@@ -1308,6 +1308,74 @@ mcp_servers:
   skill's instructions into the relevant step's prompt. Keep it
   hand-rolled - no third-party skill runtime.
 
+## Phase N - Requirements clarification + build review (2026-09-02)
+
+**Requested by the user.** Changed the default workflow from
+`goal -> review -> build -> verify -> test` to a requirements-driven flow:
+
+`goal -> review/plan -> (requirements unclear? ask user -> re-review) -> build
+-> review-build -> verify/test`
+
+### Fold-in requirements assessment (review step)
+
+- `REVIEW_PROMPT` now also instructs the reviewer to list any ambiguous /
+  under-specified requirements as numbered questions and to end with a
+  `REQUIREMENTS_CLEAR: yes|no` line (in addition to `BUILD_NEEDED`).
+- New `parse_and_strip_requirements_clear()` parses that marker.
+- After the review/plan step, if `REQUIREMENTS_CLEAR: no`, the orchestrator
+  asks the user for answers (event-driven), folds them in, and **re-reviews**
+  the plan with the new requirements — cycling until clear or
+  `max_requirements_rounds` is reached. `0` disables the loop. The happy path
+  (`clear`) adds no extra backend call.
+- The requirements prompt is folded into review, so no new role/backend config
+  was added; it reuses the review backend.
+
+### Wait / resume ("block then resume")
+
+- `_wait_for_requirements_answer()`:
+  - **Web / background run:** polls the DB queue for an unconsumed
+    `answer` message (the composer sends `kind: answer` while awaiting
+    requirements) or a `steer`, aborts on a stop signal.
+  - **CLI:** an interactive `requirements_responder` prints the questions and
+    reads `input()` (skips when stdin is not a TTY).
+  - **TUI:** surfaces the questions and proceeds (inline prompt in the worker
+    thread conflicts with the REPL — recorded as a follow-up).
+- Messages endpoint accepts `kind: steer|note|answer`; new SSE event types
+  `requirements_pending` / `requirements_answer`; the web composer shows
+  "awaiting your requirements" and sends `answer`.
+
+### Build review step (config-gated)
+
+- New `BUILD_REVIEW_PROMPT` runs after a successful build and before verify
+  (reuses the review backend, `mode=read`, role `build_review`). It reviews the
+  actual diff vs the plan/requirements but does NOT run tests (verify still
+  does).
+- Non-fatal: a build-review failure does not block verification.
+
+### Config / CLI / web surface
+
+- `Config.max_requirements_rounds: int = 3`, `Config.build_review: bool`
+  (model default `False`; the shipped `agentflow.config.yaml` and example set
+  `build_review: true` so real runs review the build). `load_config` /
+  `dump_config` / env overrides updated.
+- CLI: `--max-requirements-rounds <n>`, `--no-build-review`.
+- Web config panel: "Clarify Rounds" input + "Review build before verify"
+  toggle, wired through `POST/PUT /api/config`.
+- TUI `/config` shows the two new fields.
+
+### Verification
+
+- 405 tests pass (400 prior + 5 new in `tests/test_requirements_flow.py`
+  covering: ask-then-proceed, rounds cap, clear-first-pass (no extra calls),
+  build-review recorded when enabled, build-review skipped when disabled).
+- Impeccable detector clean on the changed web files.
+
+### Follow-ups
+
+- TUI inline requirement prompt (currently surfaces + proceeds).
+- The requirements `REQUIREMENTS_CLEAR` marker maturity depends on the
+  backend actually emitting it; a backend that omits it proceeds as before.
+
 ## Phase M - Release & distribution (Linux only, for now)
 
 **Requested 2026-08-29. Not yet implemented.**

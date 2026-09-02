@@ -90,6 +90,8 @@ class Config(BaseModel):
     build: RoleConfig
     verify: RoleConfig
     max_iterations: int = 3
+    max_requirements_rounds: int = 3
+    build_review: bool = False
     permissions: PermissionMode = "auto"
     workflow_mode: WorkflowMode = "auto"
     max_cost_usd: float | None = None
@@ -166,6 +168,18 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     if max_cost_usd is not None:
         roles["max_cost_usd"] = max_cost_usd
 
+    max_requirements_rounds = file_data.get("max_requirements_rounds")
+    if os.environ.get("AGENTFLOW_MAX_REQUIREMENTS_ROUNDS"):
+        max_requirements_rounds = int(os.environ["AGENTFLOW_MAX_REQUIREMENTS_ROUNDS"])
+    if max_requirements_rounds is not None:
+        roles["max_requirements_rounds"] = max_requirements_rounds
+
+    build_review = file_data.get("build_review")
+    if os.environ.get("AGENTFLOW_BUILD_REVIEW") in ("1", "true", "True", "0", "false", "False"):
+        build_review = os.environ["AGENTFLOW_BUILD_REVIEW"].lower() in ("1", "true")
+    if build_review is not None:
+        roles["build_review"] = build_review
+
     notifications_data = file_data.get("notifications")
     if isinstance(notifications_data, dict):
         notif = NotificationConfig(**notifications_data)
@@ -226,6 +240,8 @@ def dump_config(
         "build": config.build.model_dump(exclude_none=True),
         "verify": config.verify.model_dump(exclude_none=True),
         "max_iterations": config.max_iterations,
+        "max_requirements_rounds": config.max_requirements_rounds,
+        "build_review": config.build_review,
         "permissions": config.permissions,
         "workflow_mode": config.workflow_mode,
     }

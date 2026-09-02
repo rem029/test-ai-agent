@@ -137,6 +137,67 @@ def _drain_steer(state: RunState, database_path: Path | None = None) -> str:
     return f"User added while running:\n{folded}"
 
 
+_STOP = "__agentflow_stop__"
+
+
+def _wait_for_requirements_answer(
+    state: RunState,
+    questions: str,
+    database_path: Path | None,
+    *,
+    requirements_responder: Callable[[str], str | None] | None = None,
+    timeout: float = 16 * 60,
+    poll_interval: float = 0.5,
+) -> str:
+    """Wait for the user to answer the requirements questions.
+
+    Returns the answer text ("" if timed out / none given) or _STOP if the user
+    sent a stop signal while waiting.
+    """
+    state.log_event(
+        "requirements_pending",
+        {"questions": questions[:2000], "at": time.time()},
+        database_path=database_path,
+    )
+
+    if requirements_responder is not None:
+        try:
+            answer = requirements_responder(questions)
+        except Exception as exc:  # never let a responder crash the run
+            state.log_event(
+                "requirements_error", {"error": str(exc)}, database_path=database_path
+            )
+            return ""
+        if answer is None:
+            return ""
+        answer = str(answer).strip()
+        if answer:
+            state.log_event(
+                "requirements_answer", {"body": answer}, database_path=database_path
+            )
+        return answer
+
+    # Web / background run: poll the DB queue for an 'answer' (or a steer typed
+    # into the composer) and abort on a stop signal.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if has_stop_signal(state.run_id, database_path):
+            return _STOP
+        messages = drain_pending_messages(
+            state.run_id, kinds=("answer", "steer"), path=database_path
+        )
+        if messages:
+            answers = [m["body"].strip() for m in messages if m["body"].strip()]
+            if answers:
+                joined = "\n".join(answers)
+                state.log_event(
+                    "requirements_answer", {"body": joined}, database_path=database_path
+                )
+                return joined
+        time.sleep(poll_interval)
+    return ""
+
+
 def _finalize_stopped(
     state: RunState,
     cwd: str,
@@ -318,9 +379,16 @@ Read whatever files you need to understand the codebase, then respond with your 
 - If the goal requires writing or changing code, provide a concise, numbered plan for the build step.
 - If the goal is a question, review, audit, assessment, or feedback request, provide your complete analysis and findings directly.
 
-End your response with a single line indicating whether concrete code changes are needed:
+Before building, assess whether the goal and plan have any ambiguous or under-specified
+requirements that would cause rework (acceptance criteria, exact behavior, scope,
+constraints, tech choices). If so, list them as numbered questions the user must answer.
+If the requirements are clear, write only "requirements clear."
+
+End your response with two lines indicating what is needed next:
 BUILD_NEEDED: yes (if code changes should be implemented by the build step)
-BUILD_NEEDED: no (if this is an analysis, review, explanation, or question and no code needs to be built)"""
+BUILD_NEEDED: no (if this is an analysis, review, explanation, or question and no code needs to be built)
+REQUIREMENTS_CLEAR: yes (if the requirements are clear enough to build)
+REQUIREMENTS_CLEAR: no (if the user must answer the requirements questions above)"""
 
 BUILD_PROMPT = """You are implementing a coding task in this repository.
 
@@ -331,6 +399,24 @@ Plan:
 {context_section}
 {feedback_section}
 Make the necessary changes to the repository now."""
+
+BUILD_REVIEW_PROMPT = """You are reviewing a coding change in this repository before it is verified.
+
+Goal: {goal}
+
+Plan that was supposed to be implemented:
+{plan}
+
+The build step just made changes to satisfy the plan. Review the actual diff and
+the resulting code (read the changed files, run `git diff` / `git status`), then
+report:
+- Whether the changes match the plan and any user requirements.
+- Any correctness bugs, style problems, missing edge cases, or scope creep.
+- Concrete fixes needed, if any.
+
+Do NOT run the test suite or produce a PASS/FAIL verdict — a later verify step
+runs the tests. This is a code-review pass only.
+Be concise. Respond with your review findings."""
 
 VERIFY_PROMPT = """You are verifying a coding task in this repository.
 
@@ -354,12 +440,32 @@ _ANALYSIS_GOAL_PATTERN = re.compile(
     r"^\s*(?:can you\s+|could you\s+|please\s+)?(?:review|analys|analyz|audit|explain|describe|assess|evaluate|inspect|critique|what|why|how|is\s+|are\s+|does\s+|summar|feedback)\b",
     re.IGNORECASE,
 )
+_ANALYSIS_QUESTION_PATTERN = re.compile(r"\b(?:whats|what'?s|what is|what are|next steps|plan)\b", re.IGNORECASE)
 _ANALYSIS_PHRASES = ("give me your feedback", "your thoughts", "take a look")
 
 _BUILD_NEEDED_PATTERN = re.compile(
     r"^\s*(?:BUILD[ _-]?NEEDED|BUILD)\s*:\s*(yes|no)\b.*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_REQUIREMENTS_CLEAR_PATTERN = re.compile(
+    r"^\s*REQUIREMENTS[ _-]?CLEAR\s*:\s*(yes|no)\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def parse_and_strip_requirements_clear(text: str) -> tuple[str, bool | None]:
+    """Parse REQUIREMENTS_CLEAR: yes|no marker from text and strip the marker line.
+
+    Returns (cleaned_text, clear_bool_or_none).
+    """
+    if not text:
+        return text, None
+    match = _REQUIREMENTS_CLEAR_PATTERN.search(text)
+    if not match:
+        return text, None
+    clear = match.group(1).lower() == "yes"
+    cleaned = _REQUIREMENTS_CLEAR_PATTERN.sub("", text).strip()
+    return cleaned, clear
 
 
 def parse_and_strip_build_needed(text: str) -> tuple[str, bool | None]:
@@ -386,6 +492,11 @@ def is_analysis_only_goal(goal: str) -> bool:
         return True
     g_lower = goal.lower()
     if any(phrase in g_lower for phrase in _ANALYSIS_PHRASES):
+        return True
+    # A question ("Hello, what's next to plan?") is an inquiry, not a build task.
+    if "?" in goal:
+        return True
+    if _ANALYSIS_QUESTION_PATTERN.search(goal):
         return True
     return False
 
@@ -1001,6 +1112,7 @@ def run_workflow(
     database_path: Path | None = None,
     require_lock: bool = True,
     permission_handler: Callable[[str, dict], str] | None = None,
+    requirements_responder: Callable[[str], str | None] | None = None,
     quiet: bool = False,
 ) -> RunState:
     resolved_cwd = str(Path(cwd).resolve())
@@ -1083,6 +1195,8 @@ def run_workflow(
 
         state_config = {role: cfg.model_dump() for role, cfg in config.roles().items()}
         state_config["max_iterations"] = config.max_iterations
+        state_config["max_requirements_rounds"] = getattr(config, "max_requirements_rounds", 3)
+        state_config["build_review"] = getattr(config, "build_review", True)
         state_config["permissions"] = config.permissions
         if config.max_cost_usd is not None:
             state_config["max_cost_usd"] = config.max_cost_usd
@@ -1261,6 +1375,18 @@ def run_workflow(
             else:
                 should_build = not is_analysis_only_goal(goal)
 
+        # A review that produced no plan/prose at all is degenerate — we have
+        # nothing concrete to build from, so don't spin the build backend into
+        # its no-progress guard. Treat it as analysis-only unless the user
+        # explicitly forced a full build.
+        if (
+            workflow_mode != "full"
+            and should_build
+            and not (review_result.text or "").strip()
+        ):
+            _say("[review] produced no plan; treating run as analysis-only (build skipped)")
+            should_build = False
+
         if not should_build:
             _say(f"[review] analysis complete (mode: review_only):\n{cleaned_review_text}\n")
             state.finished_at = time.time()
@@ -1277,7 +1403,91 @@ def run_workflow(
         plan = review_result.text
         _say(f"[review] plan:\n{plan}\n")
 
+        # Requirements clarification: the review step already assessed whether
+        # the requirements are clear (REQUIREMENTS_CLEAR). If it flagged them as
+        # incomplete, ask the user, fold their answer in, and re-review — cycling
+        # until clear or max_requirements_rounds is reached (0 disables this).
+        _, requirements_clear = parse_and_strip_requirements_clear(review_result.text)
+        req_max = int(getattr(config, "max_requirements_rounds", 3))
+        requirements_answer = ""
+        requirements_round = 0
+        if (
+            should_build
+            and req_max > 0
+            and requirements_clear is False
+        ):
+            req_context = leftover_steer_text if leftover_steer_text else ""
+            questions = plan
+            while requirements_round < req_max and requirements_clear is not True:
+                _say(f"[requirements] unclear ({requirements_round + 1}/{req_max}), asking the user")
+                answer = _wait_for_requirements_answer(
+                    state,
+                    questions[:4000],
+                    database_path,
+                    requirements_responder=requirements_responder,
+                )
+                if answer == _STOP:
+                    return _finalize_stopped(state, cwd, database_path, log_stop_event=True, quiet=quiet)
+                if not answer:
+                    _say("[requirements] no answer received, proceeding to build")
+                    break
+
+                requirements_answer = f"{requirements_answer}\n{answer}".strip()
+                req_context = f"{req_context}\n{answer}".strip()
+                _say(f"[requirements] answer: {answer[:200]}")
+                requirements_round += 1
+                if requirements_round >= req_max:
+                    break
+
+                _say("[requirements] re-reviewing plan with the new requirements")
+                re_review_idx = len(state.steps)
+                state.log_event(
+                    "step_started",
+                    {"role": "requirements", "mode": "read", "iteration": requirements_round},
+                    database_path=database_path,
+                )
+                re_review_prompt = REVIEW_PROMPT.format(goal=goal)
+                if req_context:
+                    re_review_prompt = f"User requirements:\n{req_context}\n\n{re_review_prompt}"
+                if memory_block:
+                    re_review_prompt = f"{memory_block}\n\n{re_review_prompt}"
+                re_review_result = _run_with_tools(
+                    review_backend,
+                    re_review_prompt,
+                    cwd=cwd,
+                    mode="read",
+                    role="requirements",
+                    state=state,
+                    step_index=re_review_idx,
+                    config=config,
+                    database_path=database_path,
+                    permission_handler=permission_handler,
+                    toolset=toolset,
+                )
+                rr_tool_count, rr_tool_names = _step_tool_summary(state, re_review_idx)
+                rr_clean, rr_build_needed = parse_and_strip_build_needed(re_review_result.text)
+                rr_clean, rr_req_clear = parse_and_strip_requirements_clear(rr_clean)
+                re_review_result.text = rr_clean
+                rec_rr = _record(
+                    "requirements",
+                    "read",
+                    requirements_round,
+                    re_review_result,
+                    tool_count=rr_tool_count,
+                    tool_names=rr_tool_names,
+                )
+                state.steps.append(rec_rr)
+                state.log_event("step_finished", {"step": rec_rr}, database_path=database_path)
+                state.save(cwd, database_path=database_path)
+                if not re_review_result.success:
+                    break
+                plan = re_review_result.text
+                questions = plan
+                requirements_clear = rr_req_clear
+
         feedback = leftover_steer_text if leftover_steer_text else ""
+        if requirements_answer:
+            feedback = f"{feedback}\n\nUser requirements:\n{requirements_answer}".strip() if feedback else f"User requirements:\n{requirements_answer}"
         steer_text = _drain_steer(state, database_path=database_path)
         if steer_text:
             feedback = f"{feedback}\n\n{steer_text}".strip() if feedback else steer_text
@@ -1368,6 +1578,49 @@ def run_workflow(
                 )
                 feedback = build_result.text
                 continue
+
+            if getattr(config, "build_review", True):
+                _say(f"[review-build] reviewing changes (iteration {iteration})")
+                state.log_event(
+                    "step_started",
+                    {"role": "build_review", "mode": "read", "iteration": iteration},
+                    database_path=database_path,
+                )
+                review_build_prompt = BUILD_REVIEW_PROMPT.format(goal=goal, plan=plan)
+                if requirements_answer:
+                    review_build_prompt += f"\n\nUser requirements:\n{requirements_answer}"
+                if memory_block:
+                    review_build_prompt = f"{memory_block}\n\n{review_build_prompt}"
+                build_review_result = _run_with_tools(
+                    review_backend,
+                    review_build_prompt,
+                    cwd=cwd,
+                    mode="read",
+                    role="build_review",
+                    state=state,
+                    step_index=iteration,
+                    config=config,
+                    database_path=database_path,
+                    permission_handler=permission_handler,
+                    toolset=toolset,
+                )
+                br_tool_count, br_tool_names = _step_tool_summary(state, iteration)
+                rec_build_review = _record(
+                    "build_review",
+                    "read",
+                    iteration,
+                    build_review_result,
+                    tool_count=br_tool_count,
+                    tool_names=br_tool_names,
+                )
+                state.steps.append(rec_build_review)
+                state.log_event("step_finished", {"step": rec_build_review}, database_path=database_path)
+                state.save(cwd, database_path=database_path)
+
+                if build_review_result.stopped or has_stop_signal(state.run_id, database_path):
+                    return _finalize_stopped(state, cwd, database_path, log_stop_event=not build_review_result.stopped, quiet=quiet)
+                if not build_review_result.success:
+                    _say(f"[review-build] FAILED (non-fatal)")  # continue to verify
 
             _say(f"[verify] iteration {iteration}/{config.max_iterations}")
             state.log_event(

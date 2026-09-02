@@ -198,10 +198,18 @@ thumb), `:focus-visible` 2px amber outline with 1px offset.
 
 ## Responsive
 
-One breakpoint at `700px`: the session rail becomes a slide-in drawer behind a
-`☰` toggle, the topbar drops the session title, timeline lanes shrink to one
-line, overlay panels go full-width, and the transport bar wraps with the
-status readout on its own row above the input.
+One breakpoint at `700px`: the topbar drops the session title, timeline lanes
+shrink to one line, overlay panels go full-width, and the transport bar wraps
+with the status readout on its own row above the input. The session rail
+becomes a **hidden-by-default drawer**: hidden on first viewport so the active
+run owns the screen, opened by the `☰` toggle behind an on-hue `--scrim`
+backdrop, closed by tapping the backdrop, the header `✕`, `Escape`, or
+selecting a session. The toggle and close carry `aria-expanded`/`aria-controls`.
+Session rows grow to ≥44px tall, use `:active` (touch) feedback instead of
+hover-only, and truncate to two lines rather than one. The viewport meta uses
+`viewport-fit=cover` with `env(safe-area-inset-*)` padding on the topbar and
+transport so controls clear the notch/home indicator, and text inputs render at
+16px to prevent the iOS focus-zoom.
 
 ## Do / don't
 
@@ -221,5 +229,7 @@ status readout on its own row above the input.
   round-trip yet).
 - No session-level SSE stream; the sessions list is refetched.
 - No queue-management UI (cancel / reorder queued runs).
-- Mobile at ~390px is code-reviewed, not screenshot-verified (the review
-  browser stopped honoring viewport resize).
+- Mobile (~320–430px) navigation, drawer, touch targets and safe-area padding
+  are implemented but were not render-verified in the sandbox this session
+  (the container had no launchable browser); confirm on a real device or the
+  hosted URL.
