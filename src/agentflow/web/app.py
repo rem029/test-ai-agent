@@ -199,6 +199,18 @@ def create_app(
     app = FastAPI(title="agentflow Web UI", version="0.1.0")
     db_path = database_path or DEFAULT_DATABASE_PATH
 
+    # Disable caching for the SPA and static assets so proxy/CDN/browser always
+    # picks up the latest build after a server restart.
+    @app.middleware("http")
+    async def _no_cache_middleware(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static/") or (not path.startswith("/api/") and "." not in path.split("/")[-1]):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     _projects: list[str] = []
     for p in (projects or [cwd]):
         rp = str(Path(p).resolve())

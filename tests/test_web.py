@@ -1760,9 +1760,106 @@ def test_api_run_stream_interrupted_orphan_run(tmp_path):
         assert "event: done" in content
 
 
+def test_js_chat_first_ui_via_node():
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+
+    script = """
+    const md = require('./src/agentflow/web/static/md.js');
+    global.renderMarkdown = md.renderMarkdown;
+    const app = require('./src/agentflow/web/static/app.js');
+
+    // 1. summarizeStepChanges detects a WriteFile and an edit diff
+    const writeCall = {
+        tool_name: 'WriteFile',
+        args: { path: 'src/foo.py', content: 'print(1)' },
+        result: { structured: { path: 'src/foo.py', current: 'print(1)' } }
+    };
+    const editCall = {
+        tool_name: 'ApplyDiff',
+        args: { path: 'src/bar.py' },
+        result: { structured: { path: 'src/bar.py', previous: 'a', current: 'b' } }
+    };
+    const summary = app.summarizeStepChanges({}, [writeCall, editCall, { tool_name: 'ReadFile', args: { path: 'src/baz.py' } }]);
+    if (summary.files.length !== 2 || summary.toolCount !== 3) {
+        process.exit(1);
+    }
+    if (!summary.files.some(f => f.path === 'src/foo.py' && f.op === 'write')) {
+        process.exit(2);
+    }
+    if (!summary.files.some(f => f.path === 'src/bar.py' && f.op === 'edit')) {
+        process.exit(3);
+    }
+
+    // 2. renderChangesFooter includes file chips and tool count
+    const footer = app.renderChangesFooter({}, [writeCall, editCall]);
+    if (!footer.includes('change-chip') || !footer.includes('src/foo.py') || !footer.includes('src/bar.py') || !footer.includes('2 tool calls')) {
+        process.exit(4);
+    }
+
+    // 3. renderAssistantBubble wraps step in chat-bubble assistant
+    const step = {
+        role: 'build',
+        text: 'Implemented the feature.',
+        success: true,
+        usage: { backend: 'openrouter', model: 'deepseek-v4-flash', cost_usd: 0.012 }
+    };
+    const bubble = app.renderAssistantBubble(step, 0, [writeCall]);
+    if (!bubble.includes('chat-bubble assistant') || !bubble.includes('data-role=\"build\"') || !bubble.includes('step-role')) {
+        process.exit(5);
+    }
+    if (!bubble.includes('Implemented the feature.') || !bubble.includes('deepseek-v4-flash')) {
+        process.exit(6);
+    }
+    if (!bubble.includes('changes-footer') || !bubble.includes('src/foo.py')) {
+        process.exit(7);
+    }
+    if (!bubble.includes('bubble-tool-group') || !bubble.includes('tool callings (1)') || !bubble.includes('WriteFile')) {
+        process.exit(8);
+    }
+
+    // 4. renderUserBubble is right-aligned user bubble
+    const userBubble = app.renderUserBubble({ body: 'Can you also update tests?' });
+    if (!userBubble.includes('chat-bubble user') || !userBubble.includes('Can you also update tests?')) {
+        process.exit(9);
+    }
+
+    // 5. renderLiveAssistantBubble emits working indicator
+    const liveBubble = app.renderLiveAssistantBubble({ role: 'review', liveText: '', toolCalls: [], iteration: 1 });
+    if (!liveBubble.includes('chat-bubble assistant live') || !liveBubble.includes('thinking')) {
+        process.exit(10);
+    }
+    """
+    res = subprocess.run([node_bin, "-e", script], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node script failed with: {res.stderr}"
 
 
+def test_static_assets_contain_chat_bubble_ui(tmp_path):
+    client = _make_client(tmp_path)
 
+    html_resp = client.get("/")
+    assert html_resp.status_code == 200
+    assert 'id="follow-indicator"' in html_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "renderAssistantBubble" in js_resp.text
+    assert "renderUserBubble" in js_resp.text
+    assert "renderChangesFooter" in js_resp.text
+    assert "chat-bubble" in js_resp.text
+    assert "maybeScrollThreadToBottom" in js_resp.text
+
+    css_resp = client.get("/static/console.css")
+    assert css_resp.status_code == 200
+    assert ".chat-thread" in css_resp.text
+    assert ".chat-bubble" in css_resp.text
+    assert ".chat-bubble.user" in css_resp.text
+    assert ".changes-footer" in css_resp.text
+    assert ".follow-indicator" in css_resp.text
 
 
 

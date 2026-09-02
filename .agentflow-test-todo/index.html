@@ -11,9 +11,15 @@
         input[type="text"], input[type="password"] { width: 100%; padding: 8px; margin: 5px 0; box-sizing: border-box; }
         button { padding: 10px 15px; margin-top: 10px; background: #4CAF50; color: white; border: none; cursor: pointer; }
         button.secondary { background: #ccc; color: black; }
-        #todo-list { list-style: none; padding: 0; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        #status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        #status-msg.error { background: #ffe6e6; color: #cc0000; border: 1px solid #ff9999; }
+        #status-msg.loading { background: #e6f3ff; color: #0066cc; border: 1px solid #99ccff; }
+        #todo-list { list-style: none; padding: 0; min-height: 40px; }
         #todo-list li { display: flex; align-items: center; padding: 10px; margin: 5px 0; background: #f9f9f9; border-radius: 4px; cursor: grab; }
         #todo-list li.dragging { opacity: 0.5; }
+        #todo-list .empty-drop-hint { display: none; text-align: center; color: #888; padding: 15px; border: 2px dashed #ccc; border-radius: 4px; }
+        #todo-list.drag-over .empty-drop-hint { display: block; }
         #todo-list .actions { margin-left: auto; }
         #todo-list .actions button { margin-left: 5px; padding: 5px 8px; font-size: 12px; }
         .done { text-decoration: line-through; color: #888; }
@@ -21,6 +27,9 @@
 </head>
 <body>
     <h1>Todo App with SQLite</h1>
+
+    <!-- Status / errors -->
+    <div id="status-msg" class="hidden"></div>
 
     <!-- Auth Section -->
     <div id="auth">
@@ -30,8 +39,8 @@
             <input type="text" id="username" required>
             <label for="password">Password</label>
             <input type="password" id="password" required>
-            <button type="submit" id="auth-btn">Login</button>
-            <button type="button" id="toggle-auth" class="secondary">Switch to Sign Up</button>
+            <button type="submit" id="auth-btn" disabled>Login</button>
+            <button type="button" id="toggle-auth" class="secondary" disabled>Switch to Sign Up</button>
             <p id="auth-msg" style="color: red;"></p>
         </form>
     </div>
@@ -40,8 +49,8 @@
     <div id="todo" class="hidden">
         <h2>Your Todo List</h2>
         <div>
-            <input type="text" id="new-todo" placeholder="Add a new todo...">
-            <button id="add-todo">Add</button>
+            <input type="text" id="new-todo" placeholder="Add a new todo..." disabled>
+            <button id="add-todo" disabled>Add</button>
         </div>
         <ul id="todo-list"></ul>
         <button id="logout" class="secondary">Logout</button>
@@ -54,6 +63,58 @@
         let currentUserId = null;
         let todos = [];
         let draggedItem = null;
+        let ready = false;
+
+        const statusMsg = document.getElementById('status-msg');
+
+        function showStatus(message, type) {
+            statusMsg.textContent = message;
+            statusMsg.className = type || '';
+            statusMsg.classList.remove('hidden');
+        }
+
+        function clearStatus() {
+            statusMsg.textContent = '';
+            statusMsg.className = 'hidden';
+        }
+
+        function setControlsEnabled(enabled) {
+            document.getElementById('auth-btn').disabled = !enabled;
+            document.getElementById('toggle-auth').disabled = !enabled;
+            document.getElementById('new-todo').disabled = !enabled;
+            document.getElementById('add-todo').disabled = !enabled;
+            document.getElementById('username').disabled = !enabled;
+            document.getElementById('password').disabled = !enabled;
+        }
+
+        // Show loading state right away
+        showStatus('Loading database…', 'loading');
+        setControlsEnabled(false);
+
+        function markReady() {
+            ready = true;
+            setControlsEnabled(true);
+        }
+
+        // Detect CDN/script load failures (also covers WASM fetch errors)
+        function setupErrorHandling() {
+            window.addEventListener('error', function (e) {
+                const target = e.target;
+                if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
+                    showStatus('Failed to load SQL.js from CDN. Check your internet connection and reload the page.', 'error');
+                    setControlsEnabled(false);
+                } else if (!target || target === window) {
+                    // Runtime error in inline script. Only show the CDN message if initSqlJs
+                    // never became available (e.g. the external script was blocked/failed).
+                    if (typeof initSqlJs === 'undefined') {
+                        showStatus('Failed to load SQL.js from CDN. Check your internet connection and reload the page.', 'error');
+                        setControlsEnabled(false);
+                    }
+                }
+            }, true);
+        }
+
+        setupErrorHandling();
 
         // Load SQL.js and initialize database
         const initSqlJsPromise = initSqlJs({
@@ -74,6 +135,12 @@
                 persistDb();
             }
             console.log('SQL.js loaded');
+            clearStatus();
+            markReady();
+        }).catch(err => {
+            console.error('SQL.js failed to init:', err);
+            showStatus('Failed to initialize the database. Please check your connection and reload.', 'error');
+            setControlsEnabled(false);
         });
 
         function createTables() {
@@ -135,6 +202,7 @@
         function renderTodos() {
             const list = document.getElementById('todo-list');
             list.innerHTML = '';
+
             todos.forEach(todo => {
                 const li = document.createElement('li');
                 li.draggable = true;
@@ -149,6 +217,14 @@
                 `;
                 list.appendChild(li);
             });
+
+            // Empty-state drop hint (visible only while dragging over empty space)
+            const hint = document.createElement('li');
+            hint.className = 'empty-drop-hint';
+            hint.textContent = 'Drop here to move to end';
+            hint.style.cursor = 'grab';
+            list.appendChild(hint);
+
             attachEventListeners();
         }
 
@@ -164,6 +240,7 @@
                 checkbox.addEventListener('change', function() {
                     const id = parseInt(this.closest('li').dataset.id);
                     const todo = todos.find(t => t.id === id);
+                    if (!todo) return;
                     todo.done = this.checked;
                     db.run('UPDATE todos SET done = ? WHERE id = ?', [todo.done ? 1 : 0, id]);
                     persistDb();
@@ -176,6 +253,7 @@
                 btn.addEventListener('click', function() {
                     const id = parseInt(this.closest('li').dataset.id);
                     const todo = todos.find(t => t.id === id);
+                    if (!todo) return;
                     const newTitle = prompt('Edit todo:', todo.title);
                     if (newTitle !== null && newTitle.trim()) {
                         todo.title = newTitle.trim();
@@ -200,11 +278,13 @@
             });
 
             // Drag and drop
-            document.querySelectorAll('#todo-list li').forEach(item => {
+            document.querySelectorAll('#todo-list li[draggable]').forEach(item => {
                 item.addEventListener('dragstart', function(e) {
                     draggedItem = this;
                     e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', this.dataset.id);
                     this.classList.add('dragging');
+                    document.getElementById('todo-list').classList.add('drag-over');
                 });
                 item.addEventListener('dragover', function(e) {
                     e.preventDefault();
@@ -213,7 +293,7 @@
                     if (this !== original) {
                         // Reorder DOM
                         const list = document.getElementById('todo-list');
-                        const items = Array.from(list.children);
+                        const items = Array.from(list.querySelectorAll('li[draggable]'));
                         const dragIndex = items.indexOf(original);
                         const dropIndex = items.indexOf(this);
                         if (dragIndex < dropIndex) {
@@ -225,26 +305,65 @@
                 });
                 item.addEventListener('drop', function(e) {
                     e.preventDefault();
-                    this.classList.remove('dragging');
-                    const list = document.getElementById('todo-list');
-                    const items = Array.from(list.children);
-                    // Rebuild todos array with new positions
-                    todos = items.map((li) => {
-                        const id = parseInt(li.dataset.id);
-                        return todos.find(t => t.id === id);
-                    });
-                    // Update positions in DB
-                    todos.forEach((todo, idx) => {
-                        db.run('UPDATE todos SET position = ? WHERE id = ?', [idx, todo.id]);
-                    });
-                    persistDb();
-                    renderTodos(); // Re-render to ensure consistent state
+                    e.stopPropagation();
+                    persistOrderFromDom();
                 });
                 item.addEventListener('dragend', function() {
                     this.classList.remove('dragging');
+                    document.getElementById('todo-list').classList.remove('drag-over');
                     draggedItem = null;
                 });
             });
+
+            // Allow dropping into empty space at the bottom of the list
+            const listEl = document.getElementById('todo-list');
+            listEl.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                listEl.classList.add('drag-over');
+            });
+            listEl.addEventListener('drop', function(e) {
+                e.preventDefault();
+                listEl.classList.remove('drag-over');
+                if (!draggedItem) return;
+                // Append dragged item to the end of the list
+                const realItems = Array.from(listEl.querySelectorAll('li[draggable]'));
+                const dropTarget = e.target.closest('li');
+                const trailingHint = listEl.querySelector('.empty-drop-hint');
+
+                if (dropTarget && realItems.includes(dropTarget) && dropTarget !== draggedItem) {
+                    // Dropped on a specific item — handle reorder
+                    const lastReal = realItems[realItems.length - 1];
+                    if (dropTarget === lastReal || e.target === listEl) {
+                        listEl.insertBefore(draggedItem, trailingHint);
+                    } else {
+                        listEl.insertBefore(draggedItem, dropTarget.nextSibling);
+                    }
+                } else {
+                    // Empty drop zone: move to the end
+                    listEl.insertBefore(draggedItem, trailingHint);
+                }
+                persistOrderFromDom();
+            });
+        }
+
+        function persistOrderFromDom() {
+            if (!draggedItem) return;
+            const list = document.getElementById('todo-list');
+            const items = Array.from(list.querySelectorAll('li[draggable]'));
+            // Rebuild todos array with new positions
+            todos = items.map((li) => {
+                const id = parseInt(li.dataset.id);
+                return todos.find(t => t.id === id);
+            }).filter(Boolean);
+            // Update positions in DB
+            todos.forEach((todo, idx) => {
+                db.run('UPDATE todos SET position = ? WHERE id = ?', [idx, todo.id]);
+            });
+            persistDb();
+            renderTodos(); // Re-render to ensure consistent state
+            draggedItem = null;
+            list.classList.remove('drag-over');
         }
 
         // Auth handlers
@@ -266,6 +385,10 @@
 
         authForm.addEventListener('submit', function(e) {
             e.preventDefault();
+            if (!ready) {
+                authMsg.textContent = 'Database is still loading. Please wait.';
+                return;
+            }
             const username = document.getElementById('username').value.trim();
             const password = document.getElementById('password').value;
 
@@ -305,6 +428,7 @@
 
         // Add todo
         document.getElementById('add-todo').addEventListener('click', function() {
+            if (!ready) return;
             const input = document.getElementById('new-todo');
             const title = input.value.trim();
             if (!title) return;
@@ -314,6 +438,14 @@
             persistDb();
             loadTodos();
             input.value = '';
+        });
+
+        // Allow pressing Enter in the new-todo input
+        document.getElementById('new-todo').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                document.getElementById('add-todo').click();
+            }
         });
 
         // Logout

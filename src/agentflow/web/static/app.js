@@ -1,6 +1,6 @@
 // ===================================================================
-// agentflow web console — "Transport" Frontend (Phase K)
-// Zero-build, vanilla JS, SSE-driven, playhead-scrubbed master console.
+// agentflow web console — chat-first agent run UI
+// Zero-build, vanilla JS, SSE-driven.
 // ===================================================================
 
 const RUNS_PAGE_SIZE = 25;
@@ -17,8 +17,6 @@ let currentRunId = null;
 let currentRun = null;
 let currentEvents = [];
 let currentToolCalls = [];
-let playheadIndex = -1; // -1 means live/end edge
-let isLive = true;
 let eventSource = null;
 let projectFiles = [];
 let openPanelName = null;
@@ -33,6 +31,10 @@ let lastNotifiedRunId = null;
 // Config state
 let mcpServersList = [];
 let requirementsAwaiting = false;
+
+// Chat thread auto-scroll state
+let isFollowing = true;
+let userPausedScroll = false;
 
 // -------------------------------------------------------------------
 // Helper: Is Run Live & Run State
@@ -57,14 +59,10 @@ function startLiveClock() {
     clockInterval = setInterval(() => {
         if (!isRunLive()) {
             stopLiveClock();
-            updateTimelineLanes();
-            updatePlayheadUI();
             updateTransportUI();
             return;
         }
         brailleIdx = (brailleIdx + 1) % BRAILLE_FRAMES.length;
-        updateTimelineLanes();
-        if (isLive) updatePlayheadUI();
         updateTransportStatus();
     }, 120);
 }
@@ -309,8 +307,6 @@ function startNewSession() {
     currentRun = null;
     currentEvents = [];
     currentToolCalls = [];
-    playheadIndex = -1;
-    isLive = true;
 
     if (eventSource) {
         eventSource.close();
@@ -338,9 +334,6 @@ function startNewSession() {
 
 function resetRunView() {
     updateLiveClass();
-    updateTimelineLanes();
-    renderRulerTicks();
-    updatePlayheadUI();
 
     const thread = document.getElementById('thread-content');
     if (thread) {
@@ -370,8 +363,6 @@ function resetRunView() {
 // -------------------------------------------------------------------
 async function selectRun(runId) {
     currentRunId = runId;
-    isLive = true;
-    playheadIndex = -1;
 
     try {
         const pq = projectQuery();
@@ -408,10 +399,6 @@ async function selectRun(runId) {
             currentToolCalls = [];
         }
 
-        // Set playhead default to the end edge
-        playheadIndex = currentEvents.length > 0 ? currentEvents.length - 1 : -1;
-        isLive = true;
-
         updateLiveClass();
 
         // Connect SSE stream only if run is active
@@ -423,9 +410,6 @@ async function selectRun(runId) {
         }
 
         // Update UI
-        updateTimelineLanes();
-        renderRulerTicks();
-        updatePlayheadUI();
         renderThread();
         updateTransportUI();
     } catch (e) {
@@ -560,17 +544,7 @@ function handleStreamEvent(event) {
     }
 
     updateLiveClass();
-
-    if (isLive) {
-        playheadIndex = currentEvents.length - 1;
-        updateTimelineLanes();
-        renderRulerTicks();
-        updatePlayheadUI();
-        renderThread();
-    } else {
-        renderRulerTicks();
-    }
-
+    renderThread();
     updateTransportUI();
 }
 
@@ -580,8 +554,6 @@ function onRunEnded() {
     }
 
     updateLiveClass();
-    updateTimelineLanes();
-    updatePlayheadUI();
     renderThread();
     updateTransportUI();
 
@@ -592,280 +564,6 @@ function onRunEnded() {
     }
 
     loadSessions(false);
-}
-
-// -------------------------------------------------------------------
-// Timeline & Playhead
-// -------------------------------------------------------------------
-function updateTimelineLanes() {
-    const roles = ['review', 'build', 'verify'];
-    const steps = (currentRun && currentRun.steps) || [];
-    const maxIterations = (currentRun && currentRun.config && currentRun.config.max_iterations) || 3;
-    const running = isRunLive();
-
-    let activeRole = null;
-    if (running) {
-        const lastEv = currentEvents[currentEvents.length - 1];
-        if (lastEv && lastEv.type === 'step_started') {
-            activeRole = lastEv.payload.role;
-        } else if (steps.length > 0) {
-            activeRole = steps[steps.length - 1].role;
-        } else {
-            activeRole = 'review';
-        }
-    }
-
-    roles.forEach(role => {
-        const fillEl = document.getElementById(`lane-fill-${role}`);
-        const statusEl = document.getElementById(`lane-status-${role}`);
-        const costEl = document.getElementById(`lane-cost-${role}`);
-        if (!fillEl || !statusEl || !costEl) return;
-
-        const roleSteps = steps.filter(s => s.role === role);
-        const roleCost = roleSteps.reduce((sum, s) => sum + (Number(s.usage && s.usage.cost_usd) || 0), 0);
-
-        costEl.textContent = roleCost > 0 ? `$${roleCost.toFixed(roleCost < 0.01 ? 4 : 2)}` : '';
-
-        // Reset classes
-        fillEl.className = 'lane-fill';
-        statusEl.className = 'lane-status mono';
-
-        if (role === 'review') {
-            const hasReviewStep = roleSteps.length > 0;
-            if (activeRole === 'review') {
-                fillEl.style.width = '100%';
-                fillEl.classList.add('running');
-                statusEl.textContent = BRAILLE_FRAMES[brailleIdx];
-                statusEl.classList.add('active');
-            } else if (hasReviewStep) {
-                fillEl.style.width = '100%';
-                statusEl.textContent = '✓';
-            } else if (currentRun && currentRun.interrupted) {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            } else {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            }
-        } else if (role === 'build') {
-            const hasBuildSteps = roleSteps.length > 0;
-            const currentIter = roleSteps.length;
-            const progressPct = Math.min(100, Math.round((currentIter / maxIterations) * 100));
-
-            if (activeRole === 'build') {
-                fillEl.style.width = `${Math.max(15, progressPct)}%`;
-                fillEl.classList.add('running');
-                statusEl.textContent = BRAILLE_FRAMES[brailleIdx];
-                statusEl.classList.add('active');
-            } else if (currentRun && currentRun.interrupted) {
-                fillEl.style.width = `${progressPct || 0}%`;
-                fillEl.classList.add('interrupted');
-                statusEl.textContent = '·';
-            } else if (currentRun && currentRun.stopped) {
-                fillEl.style.width = `${progressPct}%`;
-                fillEl.classList.add('stopped');
-                statusEl.textContent = '▪';
-            } else if (currentRun && currentRun.error) {
-                fillEl.style.width = `${progressPct || 50}%`;
-                fillEl.classList.add('failed');
-                statusEl.textContent = '!';
-                statusEl.classList.add('failed');
-            } else if (hasBuildSteps) {
-                fillEl.style.width = '100%';
-                statusEl.textContent = '✓';
-            } else {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            }
-        } else if (role === 'verify') {
-            const hasVerifyStep = roleSteps.length > 0;
-            const lastVerify = roleSteps[roleSteps.length - 1];
-            const verdict = lastVerify ? verifyVerdict(lastVerify.text) : null;
-
-            if (activeRole === 'verify') {
-                fillEl.style.width = '100%';
-                fillEl.classList.add('running');
-                statusEl.textContent = BRAILLE_FRAMES[brailleIdx];
-                statusEl.classList.add('active');
-            } else if (hasVerifyStep) {
-                if (verdict === 'PASS' || (lastVerify && lastVerify.success)) {
-                    fillEl.style.width = '100%';
-                    statusEl.textContent = '✓';
-                } else if (verdict === 'FAIL' || (lastVerify && lastVerify.success === false)) {
-                    fillEl.style.width = '100%';
-                    fillEl.classList.add('failed');
-                    statusEl.textContent = '!';
-                    statusEl.classList.add('failed');
-                } else {
-                    fillEl.style.width = '100%';
-                    statusEl.textContent = '✓';
-                }
-            } else {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            }
-        }
-    });
-}
-
-function renderRulerTicks() {
-    const ticksContainer = document.getElementById('ruler-ticks');
-    if (!ticksContainer) return;
-
-    if (currentEvents.length <= 1) {
-        ticksContainer.innerHTML = '';
-        return;
-    }
-
-    const total = currentEvents.length - 1;
-    ticksContainer.innerHTML = currentEvents.map((ev, i) => {
-        const pct = (i / total) * 100;
-        const isStep = ev.type === 'step_started' || ev.type === 'step_finished';
-        return `<div class="ruler-tick ${isStep ? 'step' : ''}" style="left: ${pct}%;"></div>`;
-    }).join('');
-}
-
-function updatePlayheadUI() {
-    const thumb = document.getElementById('playhead-thumb');
-    const rulerTime = document.getElementById('ruler-time');
-    const snapBtn = document.getElementById('btn-snap-live');
-    const scrubBanner = document.getElementById('scrub-banner');
-    const scrubLabel = document.getElementById('scrub-label');
-
-    let pct = 100;
-    if (!isLive && currentEvents.length > 1 && playheadIndex >= 0) {
-        pct = (playheadIndex / (currentEvents.length - 1)) * 100;
-    }
-
-    if (thumb) {
-        thumb.style.left = `${pct}%`;
-    }
-
-    const running = isRunLive();
-
-    if (snapBtn) {
-        if (!running) {
-            snapBtn.hidden = true;
-        } else {
-            if (!isLive) {
-                snapBtn.hidden = false;
-                snapBtn.classList.add('live');
-            } else {
-                snapBtn.hidden = true;
-            }
-        }
-    }
-
-    const start = (currentRun && currentRun.started_at) || 0;
-    let elapsedSec = 0;
-
-    if (isLive) {
-        if (currentRun && currentRun.finished_at && start) {
-            elapsedSec = Math.max(0, currentRun.finished_at - start);
-        } else if (currentRun && currentRun.interrupted && start) {
-            const lastEv = currentEvents.length > 0 ? currentEvents[currentEvents.length - 1] : null;
-            elapsedSec = (lastEv && lastEv.ts && lastEv.ts > start) ? Math.max(0, lastEv.ts - start) : 0;
-        } else if (running && start) {
-            elapsedSec = Math.max(0, (Date.now() / 1000) - start);
-        }
-        if (scrubBanner) scrubBanner.hidden = true;
-    } else {
-        const currentEv = currentEvents[playheadIndex];
-        const evTs = (currentEv && currentEv.ts) || (start + (playheadIndex * 2));
-        elapsedSec = start ? Math.max(0, evTs - start) : 0;
-
-        if (scrubBanner) {
-            scrubBanner.hidden = false;
-            if (scrubLabel) {
-                scrubLabel.textContent = `scrubbed to ${formatUnifiedDuration(elapsedSec)}`;
-            }
-        }
-    }
-
-    if (rulerTime) {
-        rulerTime.textContent = formatUnifiedDuration(elapsedSec);
-    }
-}
-
-function setPlayhead(index, isUserInteraction = true) {
-    if (index < 0 || index >= currentEvents.length - 1) {
-        isLive = true;
-        playheadIndex = currentEvents.length > 0 ? currentEvents.length - 1 : -1;
-    } else {
-        isLive = false;
-        playheadIndex = index;
-    }
-
-    updatePlayheadUI();
-    renderThread();
-}
-
-function setupPlayheadControls() {
-    const ruler = document.getElementById('playhead-ruler');
-    const snapBtn = document.getElementById('btn-snap-live');
-    const returnLiveBtn = document.getElementById('btn-return-live');
-
-    if (snapBtn) {
-        snapBtn.addEventListener('click', () => setPlayhead(-1));
-    }
-    if (returnLiveBtn) {
-        returnLiveBtn.addEventListener('click', () => setPlayhead(-1));
-    }
-
-    if (!ruler) return;
-
-    function handleRulerClick(e) {
-        if (currentEvents.length <= 1) return;
-        const rect = ruler.getBoundingClientRect();
-        const clientX = e.clientX || (e.touches && e.touches[0] && e.touches[0].clientX);
-        if (clientX === undefined) return;
-        const fraction = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        const targetIndex = Math.round(fraction * (currentEvents.length - 1));
-        setPlayhead(targetIndex);
-    }
-
-    let isDragging = false;
-
-    ruler.addEventListener('mousedown', (e) => {
-        isDragging = true;
-        handleRulerClick(e);
-    });
-
-    window.addEventListener('mousemove', (e) => {
-        if (isDragging) handleRulerClick(e);
-    });
-
-    window.addEventListener('mouseup', () => {
-        isDragging = false;
-    });
-
-    ruler.addEventListener('touchstart', (e) => {
-        isDragging = true;
-        handleRulerClick(e);
-    }, { passive: true });
-
-    window.addEventListener('touchmove', (e) => {
-        if (isDragging) handleRulerClick(e);
-    }, { passive: true });
-
-    window.addEventListener('touchend', () => {
-        isDragging = false;
-    });
-
-    ruler.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowLeft') {
-            e.preventDefault();
-            const curr = isLive ? currentEvents.length - 1 : playheadIndex;
-            setPlayhead(Math.max(0, curr - 1));
-        } else if (e.key === 'ArrowRight') {
-            e.preventDefault();
-            const curr = isLive ? currentEvents.length - 1 : playheadIndex;
-            setPlayhead(curr + 1);
-        } else if (e.key === ' ') {
-            e.preventDefault();
-            setPlayhead(isLive ? (playheadIndex >= 0 ? playheadIndex : 0) : -1);
-        }
-    });
 }
 
 // -------------------------------------------------------------------
@@ -958,40 +656,59 @@ function renderThread() {
         return;
     }
 
-    const visibleEvents = isLive ? currentEvents : currentEvents.slice(0, playheadIndex + 1);
+    const visibleEvents = currentEvents;
 
-    const steps = [];
-    const blockers = [];
-    const userMessages = [];
-    let activeStep = null;
+    // Build chronological chat turns from the event log.
+    const turns = [];
+    let assistantTurn = null;
+    let assistantStepIndex = 0;
+    const fatalBlockers = [];
 
     visibleEvents.forEach(ev => {
-        if (ev.type === 'step_started') {
-            activeStep = {
+        if (ev.type === 'user_message') {
+            turns.push({ type: 'user', payload: ev.payload, seq: ev.seq, ts: ev.ts });
+        } else if (ev.type === 'step_started') {
+            assistantTurn = {
+                type: 'assistant',
                 role: ev.payload.role,
                 model: ev.payload.model,
                 backend: ev.payload.backend,
                 iteration: ev.payload.iteration,
                 started_at: ev.ts,
-                in_progress: true
+                seq: ev.seq,
+                liveText: '',
+                toolCalls: [],
+                stepIndex: assistantStepIndex
             };
-        } else if (ev.type === 'step_finished') {
-            steps.push(ev.payload);
-            activeStep = null;
         } else if (ev.type === 'text_delta') {
-            if (activeStep) activeStep.liveText = (activeStep.liveText || '') + (ev.payload.delta || '');
-            if (activeStep) activeStep.liveToolCallCount = currentToolCalls.length;
+            if (assistantTurn) assistantTurn.liveText += (ev.payload.delta || '');
         } else if (ev.type === 'tool_call') {
-            if (activeStep) activeStep.liveToolCallCount = currentToolCalls.length;
+            if (assistantTurn) assistantTurn.toolCalls.push(ev.payload);
+        } else if (ev.type === 'step_finished') {
+            if (assistantTurn) {
+                turns.push({ ...assistantTurn, ...ev.payload, finished_at: ev.ts, toolCalls: assistantTurn.toolCalls });
+                assistantTurn = null;
+                assistantStepIndex++;
+            } else {
+                turns.push({ type: 'assistant', ...ev.payload, finished_at: ev.ts, toolCalls: [], stepIndex: assistantStepIndex });
+                assistantStepIndex++;
+            }
         } else if (ev.type === 'blocker') {
-            blockers.push(ev.payload);
-        } else if (ev.type === 'user_message') {
-            userMessages.push(ev.payload);
+            if (ev.payload.fatal) fatalBlockers.push(ev.payload);
+            turns.push({ type: 'blocker', payload: ev.payload, seq: ev.seq, ts: ev.ts });
+        } else if (ev.type === 'requirements_pending') {
+            turns.push({ type: 'requirements_pending', payload: ev.payload, seq: ev.seq, ts: ev.ts });
+        } else if (ev.type === 'requirements_answer') {
+            turns.push({ type: 'requirements_answer', payload: ev.payload, seq: ev.seq, ts: ev.ts });
         }
     });
 
-    const displaySteps = steps.length > 0 ? steps : ((currentRun && currentRun.steps) || []);
-    const displayBlockers = blockers.length > 0 ? blockers : ((currentRun && currentRun.blockers) || []);
+    // Also surface persisted blockers for completed runs when the event log lacks them.
+    if (currentRun && Array.isArray(currentRun.blockers) && fatalBlockers.length === 0) {
+        currentRun.blockers.forEach(b => {
+            if (b.fatal) fatalBlockers.push(b);
+        });
+    }
 
     let html = '';
 
@@ -1003,14 +720,13 @@ function renderThread() {
         html += renderSessionThread(currentSessionData, currentRunId);
     }
 
-    if (displayBlockers.length > 0) {
+    if (fatalBlockers.length > 0) {
         html += '<div class="blockers">';
-        displayBlockers.forEach(b => {
-            const isFatal = b.fatal;
+        fatalBlockers.forEach(b => {
             const reason = blockerLabel(b.reason);
             const { prose: cleanDetail } = splitToolBlocks(b.detail || '');
             html += `
-                <div class="blocker ${isFatal ? 'fatal' : ''}">
+                <div class="blocker fatal">
                     <span class="blocker-reason">${escapeHtml(reason)}</span>
                     <span class="blocker-detail">${escapeHtml(cleanDetail || b.detail || '')}</span>
                 </div>
@@ -1019,56 +735,48 @@ function renderThread() {
         html += '</div>';
     }
 
-    if (userMessages.length > 0) {
-        userMessages.forEach(msg => {
-            html += `
-                <div class="user-msg-item mono">
-                    <span class="user-msg-prefix"><svg class="icon icon-stroke" style="width: 12px; height: 12px;"><use href="#icon-skip"/></svg> you:</span>
-                    <span class="user-msg-text">${escapeHtml(msg.body || msg.text || '')}</span>
-                </div>
-            `;
-        });
-    }
+    html += '<div class="chat-thread">';
 
-    if (displaySteps.length > 0) {
-        displaySteps.forEach((step, idx) => {
-            html += renderStep(step, idx);
-        });
-    } else if (activeStep) {
-        const roleLabel = (activeStep.role || 'step');
-        const liveProse = (activeStep.liveText || '');
-        const liveClean = liveProse ? splitToolBlocks(liveProse).prose.trim() : '';
-        const liveHtml = liveClean
-            ? `<div class="md">${renderMarkdown(liveClean)}</div>`
-            : (activeStep.liveToolCallCount
-                ? `<div class="md step-live">working (${activeStep.liveToolCallCount} tool call${activeStep.liveToolCallCount === 1 ? '' : 's'} so far)…</div>`
-                : `<div class="md step-live thinking">thinking…</div>`);
-        html += `
-            <div class="step-item step-live-item">
-                <div class="step-header">
-                    <div class="step-header-left">
-                        <span class="step-caret open"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
-                        <span class="step-role mono">${escapeHtml(roleLabel)}</span>
-                        <span class="step-verdict pass">…</span>
-                        ${activeStep.iteration ? `<span class="mono" style="color: var(--text-faint);">· iter ${activeStep.iteration}</span>` : ''}
-                    </div>
-                    <div class="step-meta mono"><span>working…</span></div>
-                </div>
-                <div class="step-body">${liveHtml}</div>
-            </div>
-        `;
+    if (turns.length === 0 && !assistantTurn) {
+        html += `<div class="chat-bubble system"><p class="md step-noresponse">Waiting for step events…</p></div>`;
     } else {
-        html += `<p class="md step-noresponse" style="padding: 1.5rem 0;">Waiting for step events…</p>`;
+        turns.forEach((turn, idx) => {
+            if (turn.type === 'user') {
+                html += renderUserBubble(turn.payload);
+            } else if (turn.type === 'assistant') {
+                html += renderAssistantBubble(turn, idx, turn.toolCalls);
+            } else if (turn.type === 'blocker') {
+                const b = turn.payload;
+                const reason = blockerLabel(b.reason);
+                const { prose: cleanDetail } = splitToolBlocks(b.detail || '');
+                html += `
+                    <div class="chat-bubble system ${b.fatal ? 'fatal' : ''}">
+                        <div class="system-blocker">
+                            <span class="system-blocker-reason">${escapeHtml(reason)}${b.fatal ? ' (fatal)' : ''}</span>
+                            <span class="system-blocker-detail">${escapeHtml(cleanDetail || b.detail || '')}</span>
+                        </div>
+                    </div>
+                `;
+            } else if (turn.type === 'requirements_pending') {
+                const questions = (turn.payload.questions || []).map(q => `<li>${escapeHtml(String(q))}</li>`).join('');
+                html += `
+                    <div class="chat-bubble system requirements">
+                        <div class="system-requirements-title">awaiting your requirements</div>
+                        ${questions ? `<ol class="system-requirements-list">${questions}</ol>` : `<p class="md">${escapeHtml(turn.payload.body || '')}</p>`}
+                    </div>
+                `;
+            } else if (turn.type === 'requirements_answer') {
+                html += renderUserBubble({ body: turn.payload.body || '' }, 'answer');
+            }
+        });
     }
 
-    const displayToolCalls = currentToolCalls.length > 0 ? currentToolCalls : ((currentRun && currentRun.tool_calls) || []);
-    if (displayToolCalls.length > 0) {
-        html += '<div class="tool-timeline"><h3 style="font-size: 11px; text-transform: uppercase; color: var(--text-faint); letter-spacing: 0.05em; margin-bottom: 0.4rem;">Tool Calls</h3>';
-        displayToolCalls.forEach((call, idx) => {
-            html += renderToolCall(call, idx);
-        });
-        html += '</div>';
+    // Live in-progress assistant turn appended at the bottom.
+    if (assistantTurn) {
+        html += renderLiveAssistantBubble(assistantTurn);
     }
+
+    html += '</div>';
 
     container.innerHTML = html;
 
@@ -1098,12 +806,28 @@ function renderThread() {
         });
     });
 
+    container.querySelectorAll('.bubble-tool-toggle').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const group = btn.closest('.bubble-tool-group');
+            const list = group.querySelector('.bubble-tool-list');
+            const caret = btn.querySelector('.step-caret');
+            if (list) {
+                const hidden = list.hidden;
+                list.hidden = !hidden;
+                btn.setAttribute('aria-expanded', String(!hidden));
+                if (caret) caret.classList.toggle('open', !list.hidden);
+            }
+        });
+    });
+
     container.querySelectorAll('.session-turn:not(.current)').forEach(turn => {
         turn.addEventListener('click', () => {
             const targetRunId = turn.dataset.runId;
             if (targetRunId) selectRun(targetRunId);
         });
     });
+
+    maybeScrollThreadToBottom();
 }
 
 function renderStep(step, index) {
@@ -1165,6 +889,189 @@ function renderStep(step, index) {
             <div class="step-body" ${isFailedBuild ? 'hidden' : ''}>${bodyHtml}</div>
         </div>
     `;
+}
+
+function summarizeStepChanges(step, toolCalls) {
+    const files = [];
+    const seenPaths = new Set();
+    const writeTools = ['WriteFile', 'EditFile', 'ApplyDiff', 'PatchFile'];
+
+    (toolCalls || []).forEach(call => {
+        const name = call.tool_name || '';
+        const result = (call.result && typeof call.result === 'object') ? call.result : {};
+        const structured = result.structured || {};
+        const args = call.args || {};
+
+        if (structured.current !== undefined && structured.path) {
+            if (!seenPaths.has(structured.path)) {
+                seenPaths.add(structured.path);
+                files.push({ path: structured.path, op: structured.previous !== undefined ? 'edit' : 'write' });
+            }
+        } else if (writeTools.includes(name) && args.path) {
+            if (!seenPaths.has(args.path)) {
+                seenPaths.add(args.path);
+                files.push({ path: args.path, op: 'write' });
+            }
+        } else if (name === 'Shell' && args.command) {
+            const cmd = String(args.command);
+            const m = cmd.match(/git\s+diff(?:\s+--[^\s]+)*\s+(.+)/);
+            if (m && m[1]) {
+                m[1].trim().split(/\s+/).forEach(p => {
+                    if (p && !p.startsWith('-') && !seenPaths.has(p)) {
+                        seenPaths.add(p);
+                        files.push({ path: p, op: 'edit' });
+                    }
+                });
+            }
+        }
+    });
+
+    return { files, toolCount: (toolCalls || []).length };
+}
+
+function renderChangesFooter(step, toolCalls) {
+    const { files, toolCount } = summarizeStepChanges(step, toolCalls);
+    if (files.length === 0 && toolCount === 0) return '';
+
+    const fileChips = files.map(f => {
+        const glyph = f.op === 'write' ? '+' : '±';
+        return `<span class="change-chip ${f.op}"><span class="change-glyph">${glyph}</span><span class="change-path mono">${escapeHtml(f.path)}</span></span>`;
+    }).join('');
+
+    const toolSummary = toolCount > 0
+        ? `<span class="change-tool-count mono">${toolCount} tool call${toolCount === 1 ? '' : 's'}</span>`
+        : '';
+
+    return `
+        <div class="changes-footer">
+            ${fileChips ? `<div class="change-files">${fileChips}</div>` : ''}
+            ${toolSummary}
+        </div>
+    `;
+}
+
+function renderBubbleToolCalls(toolCalls) {
+    if (!toolCalls || toolCalls.length === 0) return '';
+    const count = toolCalls.length;
+    const listHtml = toolCalls.map((call, idx) => renderToolCall(call, idx)).join('');
+    return `
+        <div class="bubble-tool-group">
+            <button class="bubble-tool-toggle" type="button" aria-expanded="false">
+                <span class="step-caret"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
+                <span class="mono">tool callings (${count})</span>
+            </button>
+            <div class="bubble-tool-list" hidden>
+                ${listHtml}
+            </div>
+        </div>
+    `;
+}
+
+function renderAssistantBubble(step, index, toolCalls) {
+    const role = step.role || 'step';
+    const isLive = step.in_progress === true;
+    const bubbleClass = isLive ? 'assistant live' : 'assistant';
+    const stepHtml = renderStep(step, index);
+    const changesFooter = renderChangesFooter(step, toolCalls);
+    const toolsHtml = renderBubbleToolCalls(toolCalls);
+
+    return `
+        <div class="chat-bubble ${bubbleClass}" data-step-index="${index}" data-role="${escapeHtml(role)}">
+            <div class="bubble-header">
+                <span class="bubble-avatar mono">${escapeHtml(role[0] || '·')}</span>
+                <span class="bubble-role mono">${escapeHtml(role)}</span>
+                ${isLive ? '<span class="bubble-live-pulse" aria-label="working"></span>' : ''}
+            </div>
+            <div class="bubble-body">
+                ${stepHtml}
+                ${toolsHtml}
+                ${changesFooter}
+            </div>
+        </div>
+    `;
+}
+
+function renderLiveAssistantBubble(activeTurn) {
+    const role = activeTurn.role || 'step';
+    const liveProse = (activeTurn.liveText || '');
+    const { prose: liveClean } = splitToolBlocks(liveProse);
+    const hasToolCalls = activeTurn.toolCalls && activeTurn.toolCalls.length > 0;
+
+    let bodyHtml = '';
+    if (liveClean.trim()) {
+        bodyHtml += `<div class="md">${renderMarkdown(liveClean.trim())}</div>`;
+    } else if (hasToolCalls) {
+        bodyHtml += `<div class="md step-live">working (${activeTurn.toolCalls.length} tool call${activeTurn.toolCalls.length === 1 ? '' : 's'} so far)…</div>`;
+    } else {
+        bodyHtml += `<div class="md step-live thinking">thinking…</div>`;
+    }
+
+    const toolsHtml = renderBubbleToolCalls(activeTurn.toolCalls);
+
+    return `
+        <div class="chat-bubble assistant live" data-role="${escapeHtml(role)}">
+            <div class="bubble-header">
+                <span class="bubble-avatar mono">${escapeHtml(role[0] || '·')}</span>
+                <span class="bubble-role mono">${escapeHtml(role)}</span>
+                <span class="bubble-live-pulse" aria-label="working"></span>
+            </div>
+            <div class="bubble-body">
+                <div class="step-item step-live-item">
+                    <div class="step-header">
+                        <div class="step-header-left">
+                            <span class="step-caret open"><svg class="icon"><use href="#icon-chevron-right"/></svg></span>
+                            <span class="step-role mono">${escapeHtml(role)}</span>
+                            <span class="step-verdict pass">…</span>
+                            ${activeTurn.iteration ? `<span class="mono" style="color: var(--text-faint);">· iter ${activeTurn.iteration}</span>` : ''}
+                        </div>
+                        <div class="step-meta mono"><span>working…</span></div>
+                    </div>
+                    <div class="step-body">${bodyHtml}</div>
+                </div>
+                ${toolsHtml}
+            </div>
+        </div>
+    `;
+}
+
+function renderUserBubble(msg, kind) {
+    const body = msg.body || msg.text || '';
+    const label = kind === 'answer' ? 'answer' : 'you';
+    return `
+        <div class="chat-bubble user">
+            <div class="bubble-header user-header">
+                <span class="bubble-role mono">${label}</span>
+            </div>
+            <div class="bubble-body user-body">
+                <p class="md">${escapeHtml(body)}</p>
+            </div>
+        </div>
+    `;
+}
+
+function isThreadNearBottom() {
+    const threadArea = document.getElementById('thread-area');
+    if (!threadArea) return true;
+    const threshold = 60;
+    return threadArea.scrollHeight - threadArea.scrollTop - threadArea.clientHeight <= threshold;
+}
+
+function updateFollowIndicator() {
+    const indicator = document.getElementById('follow-indicator');
+    if (!indicator) return;
+    const paused = !isFollowing || userPausedScroll;
+    indicator.textContent = paused ? 'paused' : 'following';
+    indicator.classList.toggle('paused', paused);
+    indicator.classList.toggle('following', !paused);
+}
+
+function maybeScrollThreadToBottom() {
+    const threadArea = document.getElementById('thread-area');
+    if (!threadArea) return;
+    if (isFollowing && !userPausedScroll) {
+        threadArea.scrollTop = threadArea.scrollHeight;
+    }
+    updateFollowIndicator();
 }
 
 function renderToolCall(call, index) {
@@ -2785,7 +2692,31 @@ if (typeof document !== 'undefined') {
             if (e.key === 'Escape') setSessionRailOpen(false);
         });
 
-        setupPlayheadControls();
+        const threadArea = document.getElementById('thread-area');
+        if (threadArea) {
+            threadArea.addEventListener('scroll', () => {
+                const nearBottom = isThreadNearBottom();
+                if (!nearBottom && isFollowing) {
+                    isFollowing = false;
+                    userPausedScroll = true;
+                    updateFollowIndicator();
+                } else if (nearBottom && !isFollowing && userPausedScroll) {
+                    isFollowing = true;
+                    userPausedScroll = false;
+                    updateFollowIndicator();
+                }
+            }, { passive: true });
+        }
+
+        const followIndicator = document.getElementById('follow-indicator');
+        if (followIndicator) {
+            followIndicator.addEventListener('click', () => {
+                userPausedScroll = false;
+                isFollowing = true;
+                maybeScrollThreadToBottom();
+            });
+        }
+
         setupFileMention();
         setupCommandPalette();
         setupOverlayPanels();
@@ -2809,6 +2740,11 @@ if (typeof module !== 'undefined' && module.exports) {
         formatToolReqArgs,
         renderToolReq,
         renderStep,
+        renderAssistantBubble,
+        renderLiveAssistantBubble,
+        renderUserBubble,
+        renderChangesFooter,
+        summarizeStepChanges,
         renderRunHeader,
         getRoleModels,
         renderSessionThread,

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>agentflow</title>
-    <link rel="stylesheet" href="/static/console.css">
+    <link rel="stylesheet" href="/static/console.css?v=phase-o">
 </head>
 <body>
 <!--
@@ -153,59 +153,6 @@
 
         <!-- Center Stage -->
         <main class="center-column">
-            <!-- Timeline Section (Sticky) -->
-            <div id="timeline-area" class="timeline-area">
-                <div class="timeline-lanes">
-                    <!-- Review Lane -->
-                    <div class="timeline-lane" data-role="review">
-                        <span class="lane-label mono">review</span>
-                        <div class="lane-track">
-                            <div class="lane-fill" id="lane-fill-review"></div>
-                        </div>
-                        <span class="lane-status mono" id="lane-status-review">·</span>
-                        <span class="lane-cost mono tabular-nums" id="lane-cost-review"></span>
-                    </div>
-                    <!-- Build Lane -->
-                    <div class="timeline-lane" data-role="build">
-                        <span class="lane-label mono">build</span>
-                        <div class="lane-track">
-                            <div class="lane-fill" id="lane-fill-build"></div>
-                        </div>
-                        <span class="lane-status mono" id="lane-status-build">·</span>
-                        <span class="lane-cost mono tabular-nums" id="lane-cost-build"></span>
-                    </div>
-                    <!-- Verify Lane -->
-                    <div class="timeline-lane" data-role="verify">
-                        <span class="lane-label mono">verify</span>
-                        <div class="lane-track">
-                            <div class="lane-fill" id="lane-fill-verify"></div>
-                        </div>
-                        <span class="lane-status mono" id="lane-status-verify">·</span>
-                        <span class="lane-cost mono tabular-nums" id="lane-cost-verify"></span>
-                    </div>
-                </div>
-
-                <!-- Playhead Ruler -->
-                <div class="playhead-ruler-wrap">
-                    <div class="ruler-spacer"></div>
-                    <div id="playhead-ruler" class="playhead-ruler" tabindex="0" role="slider" aria-label="Timeline playhead" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
-                        <div class="ruler-line"></div>
-                        <div id="ruler-ticks" class="ruler-ticks"></div>
-                        <div id="playhead-thumb" class="playhead-thumb" style="left: 100%;"></div>
-                    </div>
-                    <div class="ruler-meta">
-                        <span id="ruler-time" class="ruler-time mono tabular-nums">00:00</span>
-                        <button id="btn-snap-live" class="btn-snap-live live mono" title="Snap to live edge"><svg class="icon icon-stroke" style="width: 10px; height: 10px; margin-right: 0.3ch;"><use href="#icon-play"/></svg>live</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Scrub Indicator Banner -->
-            <div id="scrub-banner" class="scrub-banner mono" hidden>
-                <span id="scrub-label">scrubbed to 00:00</span>
-                <button id="btn-return-live" class="btn-return-live mono" type="button"><svg class="icon icon-stroke" style="width: 10px; height: 10px; margin-right: 0.3ch;"><use href="#icon-play"/></svg>return to live</button>
-            </div>
-
             <!-- Event / Step Thread Scroll View -->
             <div id="thread-area" class="thread-area">
                 <div id="thread-content" class="thread-content">
@@ -214,6 +161,7 @@
                         <div class="empty-thread-sub mono">describe a run in the bar below to start ↓</div>
                     </div>
                 </div>
+                <button id="follow-indicator" class="follow-indicator mono" type="button" hidden>following</button>
             </div>
         </main>
     </div>
@@ -475,7 +423,7 @@
     <span id="composer-status" class="composer-status" hidden></span>
 </div>
 
-<script src="/static/md.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/md.js?v=phase-o"></script>
+<script src="/static/app.js?v=phase-o"></script>
 </body>
 </html>
