@@ -71,6 +71,10 @@ def _apply_overrides(config, args):
         config.max_requirements_rounds = args.max_requirements_rounds
     if args.no_build_review:
         config.build_review = False
+    if args.max_tool_calls is not None:
+        config.max_tool_calls = args.max_tool_calls
+    if args.max_read_tool_calls is not None:
+        config.max_read_tool_calls = args.max_read_tool_calls
     if args.review_backend:
         config.review.backend = args.review_backend
     if args.review_model is not None:
@@ -190,6 +194,18 @@ def main(argv: list[str] | None = None) -> int:
         "--no-build-review",
         action="store_true",
         help="Skip the post-build code review step (build review is on by default)",
+    )
+    parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=None,
+        help="Max tool calls per build/verify step (default 10)",
+    )
+    parser.add_argument(
+        "--max-read-tool-calls",
+        type=int,
+        default=None,
+        help="Max tool calls per read-only (review/requirements/build-review) step (default 40)",
     )
     parser.add_argument("--review-backend", choices=list(BACKENDS), help="Override review backend")
     parser.add_argument("--review-model", help="Override review model")

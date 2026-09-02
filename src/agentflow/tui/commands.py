@@ -160,6 +160,8 @@ def dispatch(
                 f"  • max_iterations: {config.max_iterations}",
                 f"  • max_requirements_rounds: {config.max_requirements_rounds}",
                 f"  • build_review: {config.build_review}",
+                f"  • max_tool_calls: {config.max_tool_calls}",
+                f"  • max_read_tool_calls: {config.max_read_tool_calls}",
             ]
             return CommandResult("\n".join(lines))
 

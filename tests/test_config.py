@@ -21,6 +21,10 @@ def test_dump_and_load_config_notifications_roundtrip(tmp_path):
         build=RoleConfig(backend="antigravity", model="gemini-2.5-pro"),
         verify=RoleConfig(backend="claude-code"),
         max_iterations=4,
+        max_requirements_rounds=5,
+        build_review=True,
+        max_tool_calls=12,
+        max_read_tool_calls=50,
         permissions="prompt",
         max_cost_usd=2.5,
         notifications=NotificationConfig(
@@ -51,6 +55,10 @@ def test_dump_and_load_config_notifications_roundtrip(tmp_path):
     # Verify load_config loads NotificationConfig correctly
     loaded = load_config(str(config_file))
     assert loaded.max_iterations == 4
+    assert loaded.max_requirements_rounds == 5
+    assert loaded.build_review is True
+    assert loaded.max_tool_calls == 12
+    assert loaded.max_read_tool_calls == 50
     assert loaded.permissions == "prompt"
     assert loaded.max_cost_usd == 2.5
     assert loaded.notifications is not None

@@ -75,6 +75,8 @@ class ConfigUpdate(BaseModel):
     max_iterations: int = Field(3, ge=1, le=10)
     max_requirements_rounds: int = Field(3, ge=0, le=10)
     build_review: bool = True
+    max_tool_calls: int = Field(10, ge=1, le=200)
+    max_read_tool_calls: int = Field(40, ge=1, le=500)
     permissions: Optional[PermissionMode] = None
     max_cost_usd: Optional[float] = Field(None, ge=0)
     openrouter_api_key: Optional[str] = None
@@ -103,6 +105,8 @@ class RunCreate(BaseModel):
     max_iterations: Optional[int] = Field(None, ge=1, le=10)
     max_requirements_rounds: Optional[int] = Field(None, ge=0, le=10)
     build_review: Optional[bool] = None
+    max_tool_calls: Optional[int] = Field(None, ge=1, le=200)
+    max_read_tool_calls: Optional[int] = Field(None, ge=1, le=500)
 
 
 class MessageCreate(BaseModel):
@@ -139,6 +143,12 @@ def _build_config_from_overrides(
         ),
         build_review=(
             overrides.build_review if overrides.build_review is not None else base_config.build_review
+        ),
+        max_tool_calls=(
+            overrides.max_tool_calls if overrides.max_tool_calls is not None else base_config.max_tool_calls
+        ),
+        max_read_tool_calls=(
+            overrides.max_read_tool_calls if overrides.max_read_tool_calls is not None else base_config.max_read_tool_calls
         ),
         permissions=base_config.permissions,
         max_cost_usd=base_config.max_cost_usd,
@@ -291,6 +301,8 @@ def create_app(
             max_iterations=data.max_iterations,
             max_requirements_rounds=data.max_requirements_rounds,
             build_review=data.build_review,
+            max_tool_calls=data.max_tool_calls,
+            max_read_tool_calls=data.max_read_tool_calls,
             permissions=data.permissions if data.permissions is not None else (current_config.permissions if current_config else "auto"),
             max_cost_usd=max_cost,
             notifications=notif_cfg,

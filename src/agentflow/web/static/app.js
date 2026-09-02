@@ -1875,6 +1875,12 @@ async function loadConfig() {
         const reqRounds = document.getElementById('config-max_requirements_rounds');
         if (reqRounds && config.max_requirements_rounds !== undefined) reqRounds.value = config.max_requirements_rounds;
 
+        const maxCalls = document.getElementById('config-max_tool_calls');
+        if (maxCalls && config.max_tool_calls !== undefined) maxCalls.value = config.max_tool_calls;
+
+        const maxRead = document.getElementById('config-max_read_tool_calls');
+        if (maxRead && config.max_read_tool_calls !== undefined) maxRead.value = config.max_read_tool_calls;
+
         const buildReview = document.getElementById('config-build_review');
         if (buildReview && config.build_review !== undefined) buildReview.checked = !!config.build_review;
 
@@ -2119,6 +2125,8 @@ async function submitConfig(e) {
         verify_model: (form.verify_model && form.verify_model.value) || null,
         max_iterations: form.max_iterations ? parseInt(form.max_iterations.value, 10) : 3,
         max_requirements_rounds: form.max_requirements_rounds ? parseInt(form.max_requirements_rounds.value, 10) : 3,
+        max_tool_calls: form.max_tool_calls ? parseInt(form.max_tool_calls.value, 10) : 10,
+        max_read_tool_calls: form.max_read_tool_calls ? parseInt(form.max_read_tool_calls.value, 10) : 40,
         build_review: form.build_review ? form.build_review.checked : true,
         permissions: (form.permissions && form.permissions.value) || 'auto',
         max_cost_usd: maxCostVal,

@@ -75,6 +75,7 @@ def test_tool_loop_respects_max_calls(cwd):
         review=RoleConfig(backend="openrouter"),
         build=RoleConfig(backend="openrouter"),
         verify=RoleConfig(backend="openrouter"),
+        max_read_tool_calls=10,
     )
 
     # Always request a different tool call each time, never produce a final answer.

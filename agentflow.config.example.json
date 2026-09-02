@@ -14,6 +14,8 @@
   "max_iterations": 3,
   "max_requirements_rounds": 3,
   "build_review": true,
+  "max_tool_calls": 10,
+  "max_read_tool_calls": 40,
   "mcp_servers": [
     {
       "name": "playwright",

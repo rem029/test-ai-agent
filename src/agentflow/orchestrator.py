@@ -50,6 +50,10 @@ from .tools import ToolContext, get_tool, list_tools, parse_tool_requests
 from .tools.base import Tool, ToolResult
 
 MAX_TOOL_CALLS_PER_STEP = 10
+# Read-only steps (review, requirements, build_review) may legitimately explore a
+# multi-file repo before answering; build/verify are write/test-gated and stay at
+# the tighter cap above.
+MAX_READ_TOOL_CALLS_PER_STEP = 40
 
 
 class RunInProgressError(Exception):
@@ -688,6 +692,7 @@ def _run_with_tools(
     parse_retries = 0
     recent_tool_calls: list[tuple[str, str]] = []
     mutating_calls_count = 0
+    seen_read_calls: dict[tuple[str, str], int] = {}
 
     for call_index in range(max_calls):
         if has_stop_signal(state.run_id, database_path):
@@ -851,6 +856,21 @@ def _run_with_tools(
                     usage=result.usage,
                     raw=result.raw,
                 )
+
+            # Read-only re-read guard: re-reading the exact same file/args 3+
+            # times in one step is spinning, not progress.
+            is_mutating_tool = req.name in ("WriteFile", "EditFile", "Shell")
+            if mode != "write" and not is_mutating_tool:
+                seen_read_calls[(req.name, args_key)] = seen_read_calls.get((req.name, args_key), 0) + 1
+                if seen_read_calls[(req.name, args_key)] >= 3:
+                    stop_msg = f"Stopped: the {role} backend re-requested the same read ({req.name}) 3 times without progressing."
+                    state.add_blocker("backend_error", stop_msg, fatal=False, step_index=step_index, database_path=database_path)
+                    return RunResult(
+                        success=False,
+                        text=stop_msg,
+                        usage=result.usage,
+                        raw=result.raw,
+                    )
 
             state.log_event(
                 "tool_call",
@@ -1197,6 +1217,8 @@ def run_workflow(
         state_config["max_iterations"] = config.max_iterations
         state_config["max_requirements_rounds"] = getattr(config, "max_requirements_rounds", 3)
         state_config["build_review"] = getattr(config, "build_review", True)
+        state_config["max_tool_calls"] = getattr(config, "max_tool_calls", MAX_TOOL_CALLS_PER_STEP)
+        state_config["max_read_tool_calls"] = getattr(config, "max_read_tool_calls", MAX_READ_TOOL_CALLS_PER_STEP)
         state_config["permissions"] = config.permissions
         if config.max_cost_usd is not None:
             state_config["max_cost_usd"] = config.max_cost_usd
@@ -1307,6 +1329,7 @@ def run_workflow(
             database_path=database_path,
             permission_handler=permission_handler,
             toolset=toolset,
+            max_calls=getattr(config, "max_read_tool_calls", MAX_READ_TOOL_CALLS_PER_STEP),
         )
         tool_count, tool_names = _step_tool_summary(state, 0)
         cleaned_review_text, build_needed = parse_and_strip_build_needed(review_result.text)
@@ -1463,6 +1486,7 @@ def run_workflow(
                     database_path=database_path,
                     permission_handler=permission_handler,
                     toolset=toolset,
+                    max_calls=getattr(config, "max_read_tool_calls", MAX_READ_TOOL_CALLS_PER_STEP),
                 )
                 rr_tool_count, rr_tool_names = _step_tool_summary(state, re_review_idx)
                 rr_clean, rr_build_needed = parse_and_strip_build_needed(re_review_result.text)
@@ -1534,6 +1558,7 @@ def run_workflow(
                 database_path=database_path,
                 permission_handler=permission_handler,
                 toolset=toolset,
+                max_calls=getattr(config, "max_tool_calls", MAX_TOOL_CALLS_PER_STEP),
             )
             tool_count, tool_names = _step_tool_summary(state, iteration)
             rec_build = _record(
@@ -1603,6 +1628,7 @@ def run_workflow(
                     database_path=database_path,
                     permission_handler=permission_handler,
                     toolset=toolset,
+                    max_calls=getattr(config, "max_read_tool_calls", MAX_READ_TOOL_CALLS_PER_STEP),
                 )
                 br_tool_count, br_tool_names = _step_tool_summary(state, iteration)
                 rec_build_review = _record(
@@ -1645,6 +1671,7 @@ def run_workflow(
                 database_path=database_path,
                 permission_handler=permission_handler,
                 toolset=toolset,
+                max_calls=getattr(config, "max_tool_calls", MAX_TOOL_CALLS_PER_STEP),
             )
             tool_count, tool_names = _step_tool_summary(state, iteration)
             rec_verify = _record(

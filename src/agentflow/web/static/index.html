@@ -326,6 +326,18 @@
                             <p class="form-hint">Max times to ask you to clarify requirements (0 = off).</p>
                         </div>
                         <div class="form-group">
+                            <label for="config-max_tool_calls">Max Tool Calls</label>
+                            <input type="number" id="config-max_tool_calls" name="max_tool_calls" min="1" max="200" value="10">
+                            <p class="form-hint">Per build/verify step.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="config-max_read_tool_calls">Max Read Calls</label>
+                            <input type="number" id="config-max_read_tool_calls" name="max_read_tool_calls" min="1" max="500" value="40">
+                            <p class="form-hint">Per review/requirements/build-review step.</p>
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
                             <label class="checkbox-label">
                                 <input type="checkbox" id="config-build_review" name="build_review">
                                 <span>Review build before verify</span>

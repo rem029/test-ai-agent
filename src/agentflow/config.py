@@ -92,6 +92,8 @@ class Config(BaseModel):
     max_iterations: int = 3
     max_requirements_rounds: int = 3
     build_review: bool = False
+    max_tool_calls: int = 10
+    max_read_tool_calls: int = 40
     permissions: PermissionMode = "auto"
     workflow_mode: WorkflowMode = "auto"
     max_cost_usd: float | None = None
@@ -180,6 +182,18 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
     if build_review is not None:
         roles["build_review"] = build_review
 
+    max_tool_calls = file_data.get("max_tool_calls")
+    if os.environ.get("AGENTFLOW_MAX_TOOL_CALLS"):
+        max_tool_calls = int(os.environ["AGENTFLOW_MAX_TOOL_CALLS"])
+    if max_tool_calls is not None:
+        roles["max_tool_calls"] = max_tool_calls
+
+    max_read_tool_calls = file_data.get("max_read_tool_calls")
+    if os.environ.get("AGENTFLOW_MAX_READ_TOOL_CALLS"):
+        max_read_tool_calls = int(os.environ["AGENTFLOW_MAX_READ_TOOL_CALLS"])
+    if max_read_tool_calls is not None:
+        roles["max_read_tool_calls"] = max_read_tool_calls
+
     notifications_data = file_data.get("notifications")
     if isinstance(notifications_data, dict):
         notif = NotificationConfig(**notifications_data)
@@ -242,6 +256,8 @@ def dump_config(
         "max_iterations": config.max_iterations,
         "max_requirements_rounds": config.max_requirements_rounds,
         "build_review": config.build_review,
+        "max_tool_calls": config.max_tool_calls,
+        "max_read_tool_calls": config.max_read_tool_calls,
         "permissions": config.permissions,
         "workflow_mode": config.workflow_mode,
     }

@@ -1358,10 +1358,30 @@ mcp_servers:
   (model default `False`; the shipped `agentflow.config.yaml` and example set
   `build_review: true` so real runs review the build). `load_config` /
   `dump_config` / env overrides updated.
-- CLI: `--max-requirements-rounds <n>`, `--no-build-review`.
-- Web config panel: "Clarify Rounds" input + "Review build before verify"
-  toggle, wired through `POST/PUT /api/config`.
-- TUI `/config` shows the two new fields.
+- Tool-call caps are configurable too: `Config.max_tool_calls: int = 10`
+  (build/verify) and `Config.max_read_tool_calls: int = 40`
+  (review/requirements/build-review). `load_config` / `dump_config` / env
+  overrides (`AGENTFLOW_MAX_TOOL_CALLS`, `AGENTFLOW_MAX_READ_TOOL_CALLS`)
+  updated.
+- CLI: `--max-requirements-rounds <n>`, `--no-build-review`,
+  `--max-tool-calls <n>`, `--max-read-tool-calls <n>`.
+- Web config panel: "Clarify Rounds", "Max Tool Calls", "Max Read Calls"
+  inputs + "Review build before verify" toggle, wired through `POST/PUT
+  /api/config`.
+- TUI `/config` shows the new fields.
+
+### Review read-cap fix (from live test)
+
+A live re-test (`run-20260902-160621`) showed the **review** step faulting with
+"Reached the maximum of 10 tool calls without a final response": the reviewer
+was legitimately exploring a multi-file repo (read `app.py`, `db.py`,
+`schema.sql`, templates, static, git status, ls) but hit the old 10-call cap
+before writing its analysis. Changes:
+- Read-only steps (review, requirements, build-review) now allow
+  `max_read_tool_calls` (default 40); build/verify stay at `max_tool_calls`
+  (default 10) since they're write/test-gated.
+- Added a read-only re-read guard: re-requesting the exact same read 3+ times in
+  one step stops the run (catches spinner loops that aren't identical-consecutive).
 
 ### Verification
 
