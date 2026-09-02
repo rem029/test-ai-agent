@@ -1,6 +1,6 @@
 // ===================================================================
-// agentflow web console — "Transport" Frontend (Phase K)
-// Zero-build, vanilla JS, SSE-driven, playhead-scrubbed master console.
+// agentflow web console — chat-first agent run UI
+// Zero-build, vanilla JS, SSE-driven.
 // ===================================================================
 
 const RUNS_PAGE_SIZE = 25;
@@ -17,8 +17,6 @@ let currentRunId = null;
 let currentRun = null;
 let currentEvents = [];
 let currentToolCalls = [];
-let playheadIndex = -1; // -1 means live/end edge
-let isLive = true;
 let eventSource = null;
 let projectFiles = [];
 let openPanelName = null;
@@ -61,14 +59,10 @@ function startLiveClock() {
     clockInterval = setInterval(() => {
         if (!isRunLive()) {
             stopLiveClock();
-            updateTimelineLanes();
-            updatePlayheadUI();
             updateTransportUI();
             return;
         }
         brailleIdx = (brailleIdx + 1) % BRAILLE_FRAMES.length;
-        updateTimelineLanes();
-        if (isLive) updatePlayheadUI();
         updateTransportStatus();
     }, 120);
 }
@@ -313,8 +307,6 @@ function startNewSession() {
     currentRun = null;
     currentEvents = [];
     currentToolCalls = [];
-    playheadIndex = -1;
-    isLive = true;
 
     if (eventSource) {
         eventSource.close();
@@ -342,9 +334,6 @@ function startNewSession() {
 
 function resetRunView() {
     updateLiveClass();
-    updateTimelineLanes();
-    renderRulerTicks();
-    updatePlayheadUI();
 
     const thread = document.getElementById('thread-content');
     if (thread) {
@@ -374,8 +363,6 @@ function resetRunView() {
 // -------------------------------------------------------------------
 async function selectRun(runId) {
     currentRunId = runId;
-    isLive = true;
-    playheadIndex = -1;
 
     try {
         const pq = projectQuery();
@@ -412,10 +399,6 @@ async function selectRun(runId) {
             currentToolCalls = [];
         }
 
-        // Set playhead default to the end edge
-        playheadIndex = currentEvents.length > 0 ? currentEvents.length - 1 : -1;
-        isLive = true;
-
         updateLiveClass();
 
         // Connect SSE stream only if run is active
@@ -427,9 +410,6 @@ async function selectRun(runId) {
         }
 
         // Update UI
-        updateTimelineLanes();
-        renderRulerTicks();
-        updatePlayheadUI();
         renderThread();
         updateTransportUI();
     } catch (e) {
@@ -564,17 +544,7 @@ function handleStreamEvent(event) {
     }
 
     updateLiveClass();
-
-    if (isLive) {
-        playheadIndex = currentEvents.length - 1;
-        updateTimelineLanes();
-        renderRulerTicks();
-        updatePlayheadUI();
-        renderThread();
-    } else {
-        renderRulerTicks();
-    }
-
+    renderThread();
     updateTransportUI();
 }
 
@@ -584,8 +554,6 @@ function onRunEnded() {
     }
 
     updateLiveClass();
-    updateTimelineLanes();
-    updatePlayheadUI();
     renderThread();
     updateTransportUI();
 
@@ -596,293 +564,6 @@ function onRunEnded() {
     }
 
     loadSessions(false);
-}
-
-// -------------------------------------------------------------------
-// Timeline & Playhead
-// -------------------------------------------------------------------
-function updateTimelineLanes() {
-    const roles = ['review', 'build', 'verify'];
-    const steps = (currentRun && currentRun.steps) || [];
-    const maxIterations = (currentRun && currentRun.config && currentRun.config.max_iterations) || 3;
-    const running = isRunLive();
-
-    let activeRole = null;
-    if (running) {
-        const lastEv = currentEvents[currentEvents.length - 1];
-        if (lastEv && lastEv.type === 'step_started') {
-            activeRole = lastEv.payload.role;
-        } else if (steps.length > 0) {
-            activeRole = steps[steps.length - 1].role;
-        } else {
-            activeRole = 'review';
-        }
-    }
-
-    roles.forEach(role => {
-        const fillEl = document.getElementById(`lane-fill-${role}`);
-        const statusEl = document.getElementById(`lane-status-${role}`);
-        const costEl = document.getElementById(`lane-cost-${role}`);
-        if (!fillEl || !statusEl || !costEl) return;
-
-        const roleSteps = steps.filter(s => s.role === role);
-        const roleCost = roleSteps.reduce((sum, s) => sum + (Number(s.usage && s.usage.cost_usd) || 0), 0);
-
-        costEl.textContent = roleCost > 0 ? `$${roleCost.toFixed(roleCost < 0.01 ? 4 : 2)}` : '';
-
-        // Reset classes
-        fillEl.className = 'lane-fill';
-        statusEl.className = 'lane-status mono';
-
-        if (role === 'review') {
-            const hasReviewStep = roleSteps.length > 0;
-            if (activeRole === 'review') {
-                fillEl.style.width = '100%';
-                fillEl.classList.add('running');
-                statusEl.textContent = BRAILLE_FRAMES[brailleIdx];
-                statusEl.classList.add('active');
-            } else if (hasReviewStep) {
-                fillEl.style.width = '100%';
-                statusEl.textContent = '✓';
-            } else if (currentRun && currentRun.interrupted) {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            } else {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            }
-        } else if (role === 'build') {
-            const hasBuildSteps = roleSteps.length > 0;
-            const currentIter = roleSteps.length;
-            const progressPct = Math.min(100, Math.round((currentIter / maxIterations) * 100));
-
-            if (activeRole === 'build') {
-                fillEl.style.width = `${Math.max(15, progressPct)}%`;
-                fillEl.classList.add('running');
-                statusEl.textContent = BRAILLE_FRAMES[brailleIdx];
-                statusEl.classList.add('active');
-            } else if (currentRun && currentRun.interrupted) {
-                fillEl.style.width = `${progressPct || 0}%`;
-                fillEl.classList.add('interrupted');
-                statusEl.textContent = '·';
-            } else if (currentRun && currentRun.stopped) {
-                fillEl.style.width = `${progressPct}%`;
-                fillEl.classList.add('stopped');
-                statusEl.textContent = '▪';
-            } else if (currentRun && currentRun.error) {
-                fillEl.style.width = `${progressPct || 50}%`;
-                fillEl.classList.add('failed');
-                statusEl.textContent = '!';
-                statusEl.classList.add('failed');
-            } else if (hasBuildSteps) {
-                fillEl.style.width = '100%';
-                statusEl.textContent = '✓';
-            } else {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            }
-        } else if (role === 'verify') {
-            const hasVerifyStep = roleSteps.length > 0;
-            const lastVerify = roleSteps[roleSteps.length - 1];
-            const verdict = lastVerify ? verifyVerdict(lastVerify.text) : null;
-
-            if (activeRole === 'verify') {
-                fillEl.style.width = '100%';
-                fillEl.classList.add('running');
-                statusEl.textContent = BRAILLE_FRAMES[brailleIdx];
-                statusEl.classList.add('active');
-            } else if (hasVerifyStep) {
-                if (verdict === 'PASS' || (lastVerify && lastVerify.success)) {
-                    fillEl.style.width = '100%';
-                    statusEl.textContent = '✓';
-                } else if (verdict === 'FAIL' || (lastVerify && lastVerify.success === false)) {
-                    fillEl.style.width = '100%';
-                    fillEl.classList.add('failed');
-                    statusEl.textContent = '!';
-                    statusEl.classList.add('failed');
-                } else {
-                    fillEl.style.width = '100%';
-                    statusEl.textContent = '✓';
-                }
-            } else {
-                fillEl.style.width = '0%';
-                statusEl.textContent = '·';
-            }
-        }
-    });
-}
-
-function renderRulerTicks() {
-    const ticksContainer = document.getElementById('ruler-ticks');
-    if (!ticksContainer) return;
-
-    if (currentEvents.length <= 1) {
-        ticksContainer.innerHTML = '';
-        return;
-    }
-
-    const total = currentEvents.length - 1;
-    ticksContainer.innerHTML = currentEvents.map((ev, i) => {
-        const pct = (i / total) * 100;
-        const isStep = ev.type === 'step_started' || ev.type === 'step_finished';
-        return `<div class="ruler-tick ${isStep ? 'step' : ''}" style="left: ${pct}%;"></div>`;
-    }).join('');
-}
-
-function updatePlayheadUI() {
-    const thumb = document.getElementById('playhead-thumb');
-    const rulerTime = document.getElementById('ruler-time');
-    const snapBtn = document.getElementById('btn-snap-live');
-    const scrubBanner = document.getElementById('scrub-banner');
-    const scrubLabel = document.getElementById('scrub-label');
-
-    let pct = 100;
-    if (!isLive && currentEvents.length > 1 && playheadIndex >= 0) {
-        pct = (playheadIndex / (currentEvents.length - 1)) * 100;
-    }
-
-    if (thumb) {
-        thumb.style.left = `${pct}%`;
-    }
-
-    const running = isRunLive();
-
-    if (snapBtn) {
-        if (!running) {
-            snapBtn.hidden = true;
-        } else {
-            if (!isLive) {
-                snapBtn.hidden = false;
-                snapBtn.classList.add('live');
-            } else {
-                snapBtn.hidden = true;
-            }
-        }
-    }
-
-    const start = (currentRun && currentRun.started_at) || 0;
-    let elapsedSec = 0;
-
-    if (isLive) {
-        if (currentRun && currentRun.finished_at && start) {
-            elapsedSec = Math.max(0, currentRun.finished_at - start);
-        } else if (currentRun && currentRun.interrupted && start) {
-            const lastEv = currentEvents.length > 0 ? currentEvents[currentEvents.length - 1] : null;
-            elapsedSec = (lastEv && lastEv.ts && lastEv.ts > start) ? Math.max(0, lastEv.ts - start) : 0;
-        } else if (running && start) {
-            elapsedSec = Math.max(0, (Date.now() / 1000) - start);
-        }
-        if (scrubBanner) scrubBanner.hidden = true;
-    } else {
-        const currentEv = currentEvents[playheadIndex];
-        const evTs = (currentEv && currentEv.ts) || (start + (playheadIndex * 2));
-        elapsedSec = start ? Math.max(0, evTs - start) : 0;
-
-        if (scrubBanner) {
-            scrubBanner.hidden = false;
-            if (scrubLabel) {
-                scrubLabel.textContent = `scrubbed to ${formatUnifiedDuration(elapsedSec)}`;
-            }
-        }
-    }
-
-    if (rulerTime) {
-        rulerTime.textContent = formatUnifiedDuration(elapsedSec);
-    }
-}
-
-function setPlayhead(index, isUserInteraction = true) {
-    if (index < 0 || index >= currentEvents.length - 1) {
-        isLive = true;
-        playheadIndex = currentEvents.length > 0 ? currentEvents.length - 1 : -1;
-        userPausedScroll = false;
-        isFollowing = true;
-    } else {
-        isLive = false;
-        playheadIndex = index;
-    }
-
-    updatePlayheadUI();
-    renderThread();
-
-    if (isUserInteraction && !isLive && currentEvents.length > 0) {
-        const visibleEvents = currentEvents.slice(0, playheadIndex + 1);
-        let targetStepIndex = -1;
-        visibleEvents.forEach(ev => {
-            if (ev.type === 'step_started') targetStepIndex++;
-        });
-        if (targetStepIndex >= 0) {
-            setTimeout(() => scrollToStepBubble(targetStepIndex), 0);
-        }
-    }
-}
-
-function setupPlayheadControls() {
-    const ruler = document.getElementById('playhead-ruler');
-    const snapBtn = document.getElementById('btn-snap-live');
-    const returnLiveBtn = document.getElementById('btn-return-live');
-
-    if (snapBtn) {
-        snapBtn.addEventListener('click', () => setPlayhead(-1));
-    }
-    if (returnLiveBtn) {
-        returnLiveBtn.addEventListener('click', () => setPlayhead(-1));
-    }
-
-    if (!ruler) return;
-
-    function handleRulerClick(e) {
-        if (currentEvents.length <= 1) return;
-        const rect = ruler.getBoundingClientRect();
-        const clientX = e.clientX || (e.touches && e.touches[0] && e.touches[0].clientX);
-        if (clientX === undefined) return;
-        const fraction = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        const targetIndex = Math.round(fraction * (currentEvents.length - 1));
-        setPlayhead(targetIndex);
-    }
-
-    let isDragging = false;
-
-    ruler.addEventListener('mousedown', (e) => {
-        isDragging = true;
-        handleRulerClick(e);
-    });
-
-    window.addEventListener('mousemove', (e) => {
-        if (isDragging) handleRulerClick(e);
-    });
-
-    window.addEventListener('mouseup', () => {
-        isDragging = false;
-    });
-
-    ruler.addEventListener('touchstart', (e) => {
-        isDragging = true;
-        handleRulerClick(e);
-    }, { passive: true });
-
-    window.addEventListener('touchmove', (e) => {
-        if (isDragging) handleRulerClick(e);
-    }, { passive: true });
-
-    window.addEventListener('touchend', () => {
-        isDragging = false;
-    });
-
-    ruler.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowLeft') {
-            e.preventDefault();
-            const curr = isLive ? currentEvents.length - 1 : playheadIndex;
-            setPlayhead(Math.max(0, curr - 1));
-        } else if (e.key === 'ArrowRight') {
-            e.preventDefault();
-            const curr = isLive ? currentEvents.length - 1 : playheadIndex;
-            setPlayhead(curr + 1);
-        } else if (e.key === ' ') {
-            e.preventDefault();
-            setPlayhead(isLive ? (playheadIndex >= 0 ? playheadIndex : 0) : -1);
-        }
-    });
 }
 
 // -------------------------------------------------------------------
@@ -975,9 +656,9 @@ function renderThread() {
         return;
     }
 
-    const visibleEvents = isLive ? currentEvents : currentEvents.slice(0, playheadIndex + 1);
+    const visibleEvents = currentEvents;
 
-    // Build chronological chat turns from the visible event slice.
+    // Build chronological chat turns from the event log.
     const turns = [];
     let assistantTurn = null;
     let assistantStepIndex = 0;
@@ -1391,15 +1072,6 @@ function maybeScrollThreadToBottom() {
         threadArea.scrollTop = threadArea.scrollHeight;
     }
     updateFollowIndicator();
-}
-
-function scrollToStepBubble(stepIndex) {
-    const bubble = document.querySelector(`.chat-bubble[data-step-index="${stepIndex}"]`);
-    if (bubble) {
-        bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        bubble.classList.add('highlighted');
-        setTimeout(() => bubble.classList.remove('highlighted'), 1200);
-    }
 }
 
 function renderToolCall(call, index) {
@@ -3045,7 +2717,6 @@ if (typeof document !== 'undefined') {
             });
         }
 
-        setupPlayheadControls();
         setupFileMention();
         setupCommandPalette();
         setupOverlayPanels();
